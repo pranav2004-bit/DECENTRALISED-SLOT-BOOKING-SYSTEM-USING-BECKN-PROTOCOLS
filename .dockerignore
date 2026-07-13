@@ -1,0 +1,31 @@
+# Applies to the repo-root build context used by registry/Dockerfile, beckn-gateway/Dockerfile,
+# BAP/backend/Dockerfile, BPP/backend/Dockerfile (each needs shared/ as a sibling — see those
+# Dockerfiles' comments). BAP/web and BPP/web keep their own per-folder .dockerignore since
+# their build context is still their own directory.
+
+.git
+.github
+docs
+*.md
+.editorconfig
+.pre-commit-config.yaml
+.secrets.baseline
+.env
+.env.*
+!**/.env.example
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.sqlite3
+
+node_modules/
+.next/
+
+infra/
+*.tfstate*
+.terraform/

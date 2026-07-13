@@ -9,7 +9,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: registry
-      POSTGRES_PASSWORD: registry
+      POSTGRES_PASSWORD: registry  # pragma: allowlist secret
       POSTGRES_DB: registry
     volumes:
       - registry-db-data:/var/lib/postgresql/data
@@ -23,7 +23,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: bap
-      POSTGRES_PASSWORD: bap
+      POSTGRES_PASSWORD: bap  # pragma: allowlist secret
       POSTGRES_DB: bap
     volumes:
       - bap-db-data:/var/lib/postgresql/data
@@ -37,7 +37,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: bpp
-      POSTGRES_PASSWORD: bpp
+      POSTGRES_PASSWORD: bpp  # pragma: allowlist secret
       POSTGRES_DB: bpp
     volumes:
       - bpp-db-data:/var/lib/postgresql/data
@@ -69,8 +69,13 @@ services:
     profiles: ["with-gateway-cache"]  # optional per beckn_gateway_details_v1.1.md §4 — not started by default
 
   # --- Applications ---
+  # registry, beckn-gateway, bap-backend, bpp-backend build from the repo root (context: .)
+  # because each imports the shared/ monorepo folder (django_observability, contract_schemas)
+  # as a sibling of its own project dir — see each Dockerfile's top comment for why.
   registry:
-    build: ./registry
+    build:
+      context: .
+      dockerfile: registry/Dockerfile
     env_file: ./registry/.env
     depends_on:
       registry-db:
@@ -79,7 +84,9 @@ services:
       - "8000:8000"
 
   beckn-gateway:
-    build: ./beckn-gateway
+    build:
+      context: .
+      dockerfile: beckn-gateway/Dockerfile
     env_file: ./beckn-gateway/.env
     depends_on:
       - registry
@@ -87,7 +94,9 @@ services:
       - "8003:8000"
 
   bap-backend:
-    build: ./BAP/backend
+    build:
+      context: .
+      dockerfile: BAP/backend/Dockerfile
     env_file: ./BAP/backend/.env
     depends_on:
       bap-db:
@@ -108,7 +117,9 @@ services:
       - "3000:3000"
 
   bpp-backend:
-    build: ./BPP/backend
+    build:
+      context: .
+      dockerfile: BPP/backend/Dockerfile
     env_file: ./BPP/backend/.env
     depends_on:
       bpp-db:

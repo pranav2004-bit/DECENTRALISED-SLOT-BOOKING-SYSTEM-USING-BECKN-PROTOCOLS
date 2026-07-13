@@ -1,6 +1,4 @@
-# BPP Web — Next.js frontend. Multi-stage build, non-root runtime user.
-# NOTE: expects Phase 1.4's Next.js project layout (package.json at app root).
-# This Dockerfile is scaffolded ahead of that code landing — see README.md "Status note".
+# BPP Web — Next.js frontend. Multi-stage build, non-root runtime user, standalone output.
 
 FROM node:20-alpine AS deps
 WORKDIR /app
@@ -16,15 +14,17 @@ RUN npm run build
 FROM node:20-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+# See BAP/web/Dockerfile for why this is required — Next.js standalone mode binds
+# to the container's specific network IP by default, not 0.0.0.0.
+ENV HOSTNAME=0.0.0.0
 RUN addgroup --system app && adduser --system --ingroup app app
 COPY --from=build /app/public ./public
-COPY --from=build /app/.next ./.next
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/.next/standalone ./
+COPY --from=build /app/.next/static ./.next/static
 USER app
 
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD node -e "require('http').get('http://localhost:3000/health', r => process.exit(r.statusCode===200?0:1)).on('error', () => process.exit(1))"
 
-CMD ["npm", "start"]
+CMD ["node", "server.js"]

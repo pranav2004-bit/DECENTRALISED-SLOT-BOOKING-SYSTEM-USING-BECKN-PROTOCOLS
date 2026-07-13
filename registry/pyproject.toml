@@ -12,10 +12,14 @@ exclude = ["migrations"]
 select = ["E", "F", "I", "B", "S", "DJ"]  # pycodestyle, pyflakes, isort, bugbear, security, django
 ignore = ["DJ001"]  # null=True on CharField — Django convention debate, not a real bug here
 
+[tool.ruff.lint.per-file-ignores]
+"**/tests.py" = ["S101", "S106"]      # assert + fake test credentials are idiomatic in pytest
+"**/test_*.py" = ["S101", "S106"]
+
 [tool.ruff.format]
 quote-style = "double"
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "registry.settings"
-python_files = ["test_*.py", "*_test.py"]
+python_files = ["tests.py", "test_*.py", "*_test.py"]  # Django's "tests.py" convention + pytest's own
 addopts = "--cov --cov-report=term-missing"

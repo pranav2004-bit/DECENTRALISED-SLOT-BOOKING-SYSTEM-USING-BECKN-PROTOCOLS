@@ -135,7 +135,9 @@ jobs:
       - name: detect-secrets
         run: |
           pip install detect-secrets
-          detect-secrets scan --baseline .secrets.baseline
+          # .secrets.baseline is excluded from its own scan — its hashed_secret values
+          # look like high-entropy strings otherwise. Found for real in Phase 1 Exit.
+          detect-secrets scan --baseline .secrets.baseline --exclude-files '\.secrets\.baseline$'
           detect-secrets audit --report --fail-on-unaudited --fail-on-live --fail-on-audited-real .secrets.baseline
 
   build:

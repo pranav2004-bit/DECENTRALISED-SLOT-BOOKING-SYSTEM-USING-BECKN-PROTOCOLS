@@ -8,7 +8,10 @@ repos:
     hooks:
       - id: detect-secrets
         args: ["--baseline", ".secrets.baseline"]
-        exclude: package-lock.json|.*\.lock$
+        # .secrets.baseline itself must be excluded — its own hashed_secret values look
+        # like high-entropy strings and the scanner otherwise flags itself. Found for
+        # real during Phase 1 Exit's regression check.
+        exclude: package-lock.json|.*\.lock$|\.secrets\.baseline$
 
   # --- Generic hygiene ---
   - repo: https://github.com/pre-commit/pre-commit-hooks

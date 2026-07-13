@@ -7,6 +7,10 @@
 | Python (registry, beckn-gateway, BAP/backend, BPP/backend) | `pytest` + `pytest-django` | Config in each app's `pyproject.toml` (`[tool.pytest.ini_options]`) |
 | TypeScript/Next.js (BAP/web, BPP/web) | `Vitest` | Faster than Jest for this project's scale; swap is low-cost later if needed |
 
+## Local Testing Gotcha (Windows/Docker Desktop/WSL2)
+
+Found in Phase 1.4: when running tests locally against a standalone Docker container (e.g., `docker run -p 6393:6379 redis:7-alpine` for a quick local Postgres/Redis instance, as opposed to `docker compose`), connecting via `localhost` can silently hit a stale `wslrelay.exe` binding on the IPv6 loopback (`[::1]`) instead of Docker's actual port-forward, causing connection resets and multi-minute timeouts that look like flakiness but aren't — `netstat -ano | findstr :<port>` will show two different PIDs bound to the same port on `0.0.0.0` vs `[::1]`. **Fix:** connect via `127.0.0.1` explicitly instead of `localhost` in local test `.env` files. This doesn't affect `docker compose` itself (services resolve each other by service name inside the Docker network, never touching host loopback), only ad hoc standalone containers used for quick local test runs.
+
 ## Test Database Strategy
 
 Django's test runner creates an isolated, ephemeral `test_<dbname>` per test run against the same Postgres instance defined in `docker-compose.yml` — never against a shared/persistent database. Fixtures/factories via `factory_boy`, not hand-rolled JSON fixtures, so test data stays close to real model shape as models evolve.

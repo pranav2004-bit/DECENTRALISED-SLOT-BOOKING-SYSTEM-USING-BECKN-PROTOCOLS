@@ -1,0 +1,21 @@
+[project]
+name = "registry"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = ["migrations"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "S", "DJ"]  # pycodestyle, pyflakes, isort, bugbear, security, django
+ignore = ["DJ001"]  # null=True on CharField — Django convention debate, not a real bug here
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "registry.settings"
+python_files = ["test_*.py", "*_test.py"]
+addopts = "--cov --cov-report=term-missing"

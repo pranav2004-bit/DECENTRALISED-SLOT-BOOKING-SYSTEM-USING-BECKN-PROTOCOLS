@@ -1,0 +1,49 @@
+# Pre-commit hooks — run `pre-commit install` once per clone to enable.
+# See SECURITY.md (secrets scanning) and CONTRIBUTING.md (code style) for rationale.
+
+repos:
+  # --- Secrets scanning (blocking, per SECURITY.md) ---
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+        exclude: package-lock.json|.*\.lock$
+
+  # --- Generic hygiene ---
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1000"]
+      - id: check-json
+      - id: check-yaml
+      - id: detect-private-key
+
+  # --- Python (registry, beckn-gateway, BAP/backend, BPP/backend) ---
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  # --- TypeScript / Next.js (BAP/web, BPP/web) — run via local npm scripts, not a pinned hook repo,
+  # so each app's own eslint/prettier config (see CONTRIBUTING.md §Code Style) is respected. ---
+  - repo: local
+    hooks:
+      - id: eslint-bap-web
+        name: eslint (BAP/web)
+        entry: bash -c 'cd BAP/web && npm run lint --silent'
+        language: system
+        files: ^BAP/web/.*\.(ts|tsx)$
+        pass_filenames: false
+      - id: eslint-bpp-web
+        name: eslint (BPP/web)
+        entry: bash -c 'cd BPP/web && npm run lint --silent'
+        language: system
+        files: ^BPP/web/.*\.(ts|tsx)$
+        pass_filenames: false

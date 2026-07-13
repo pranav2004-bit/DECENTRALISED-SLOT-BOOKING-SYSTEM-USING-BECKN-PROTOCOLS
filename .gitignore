@@ -1,0 +1,63 @@
+# --- Secrets & environment (never commit real values) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*_private_key*
+secrets/
+!secrets/.gitkeep
+
+# --- Python / Django (registry, beckn-gateway, BAP/backend, BPP/backend) ---
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+*.sqlite3
+*.sqlite3-journal
+venv/
+.venv/
+env/
+.env-*
+pip-wheel-metadata/
+*.egg-info/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+staticfiles/
+media/
+db.sqlite3
+
+# --- Node / Next.js (BAP/web, BPP/web) ---
+node_modules/
+.next/
+out/
+.turbo/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.eslintcache
+
+# --- Build / dist artifacts ---
+dist/
+build/
+*.tsbuildinfo
+
+# --- Docker ---
+*.log
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Terraform (Phase 0.9) ---
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log

@@ -1,0 +1,5 @@
+# Dependencies to run the reference tests in this folder: pip install -r shared/testing/requirements.txt
+pytest
+jsonschema
+requests
+responses

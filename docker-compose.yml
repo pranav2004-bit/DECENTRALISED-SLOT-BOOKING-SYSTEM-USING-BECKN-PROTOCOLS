@@ -1,0 +1,134 @@
+# Local/dev full-stack orchestration — 4 apps + 3 Postgres DBs + Redis.
+# See README.md for setup steps and ARCHITECTURE.md for the system overview.
+# STATUS: scaffolded ahead of Phase 1 application code — see README.md "Status note".
+# services will not report healthy until Phase 1 lands each app's /health endpoint.
+
+services:
+  # --- Databases ---
+  registry-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: registry
+      POSTGRES_PASSWORD: registry
+      POSTGRES_DB: registry
+    volumes:
+      - registry-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U registry"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bap-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bap
+      POSTGRES_PASSWORD: bap
+      POSTGRES_DB: bap
+    volumes:
+      - bap-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bap"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bpp-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bpp
+      POSTGRES_PASSWORD: bpp
+      POSTGRES_DB: bpp
+    volumes:
+      - bpp-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bpp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Cache ---
+  bap-cache:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bpp-cache:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  gateway-cache:
+    image: redis:7-alpine
+    profiles: ["with-gateway-cache"]  # optional per beckn_gateway_details_v1.1.md §4 — not started by default
+
+  # --- Applications ---
+  registry:
+    build: ./registry
+    env_file: ./registry/.env
+    depends_on:
+      registry-db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  beckn-gateway:
+    build: ./beckn-gateway
+    env_file: ./beckn-gateway/.env
+    depends_on:
+      - registry
+    ports:
+      - "8003:8000"
+
+  bap-backend:
+    build: ./BAP/backend
+    env_file: ./BAP/backend/.env
+    depends_on:
+      bap-db:
+        condition: service_healthy
+      bap-cache:
+        condition: service_healthy
+      registry:
+        condition: service_started
+    ports:
+      - "8001:8000"
+
+  bap-web:
+    build: ./BAP/web
+    env_file: ./BAP/web/.env
+    depends_on:
+      - bap-backend
+    ports:
+      - "3000:3000"
+
+  bpp-backend:
+    build: ./BPP/backend
+    env_file: ./BPP/backend/.env
+    depends_on:
+      bpp-db:
+        condition: service_healthy
+      bpp-cache:
+        condition: service_healthy
+      registry:
+        condition: service_started
+    ports:
+      - "8002:8000"
+
+  bpp-web:
+    build: ./BPP/web
+    env_file: ./BPP/web/.env
+    depends_on:
+      - bpp-backend
+    ports:
+      - "3001:3000"
+
+volumes:
+  registry-db-data:
+  bap-db-data:
+  bpp-db-data:

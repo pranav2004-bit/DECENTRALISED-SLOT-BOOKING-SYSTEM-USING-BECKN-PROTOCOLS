@@ -1,0 +1,169 @@
+# CI pipeline — lint, test, dependency scan (SCA), static analysis (SAST), container scan, build.
+# See CONTRIBUTING.md for when this must be green (every PR into main) and ARCHITECTURE.md for
+# environment promotion. Jobs are structured per-app via matrix so one failing app doesn't block
+# unrelated apps' status reporting.
+#
+# STATUS NOTE: Python/Node steps below assume each app has its Phase 1 project files
+# (requirements.txt / package.json). Until Phase 1 lands, `continue-on-error` on the
+# app-specific steps prevents this pipeline from permanently red-blocking Phase 0 work;
+# remove continue-on-error once each app's real source exists (tracked in livetracker1.md).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-python:
+    name: Lint (Python — ${{ matrix.app }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: [registry, beckn-gateway, BAP/backend, BPP/backend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install ruff
+      - name: Ruff check
+        working-directory: ${{ matrix.app }}
+        run: ruff check . || test ! -f requirements.txt
+        continue-on-error: true
+
+  lint-node:
+    name: Lint (Node — ${{ matrix.app }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: [BAP/web, BPP/web]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install & lint
+        working-directory: ${{ matrix.app }}
+        run: |
+          if [ -f package.json ]; then npm ci && npm run lint; else echo "no package.json yet — Phase 1 pending"; fi
+        continue-on-error: true
+
+  test-python:
+    name: Unit Tests (Python — ${{ matrix.app }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: [registry, beckn-gateway, BAP/backend, BPP/backend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run pytest with coverage
+        working-directory: ${{ matrix.app }}
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+            pytest --cov --cov-fail-under=0
+          else
+            echo "no requirements.txt yet — Phase 1 pending"
+          fi
+        continue-on-error: true
+
+  test-node:
+    name: Unit Tests (Node — ${{ matrix.app }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: [BAP/web, BPP/web]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Run tests
+        working-directory: ${{ matrix.app }}
+        run: |
+          if [ -f package.json ]; then npm ci && npm test; else echo "no package.json yet — Phase 1 pending"; fi
+        continue-on-error: true
+
+  sca-dependency-scan:
+    name: SCA — Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: pip-audit (Python apps)
+        run: |
+          pip install pip-audit
+          for app in registry beckn-gateway BAP/backend BPP/backend; do
+            if [ -f "$app/requirements.txt" ]; then
+              pip-audit -r "$app/requirements.txt" || true
+            fi
+          done
+      - name: npm audit (Node apps)
+        run: |
+          for app in BAP/web BPP/web; do
+            if [ -f "$app/package.json" ]; then
+              (cd "$app" && npm audit --audit-level=high || true)
+            fi
+          done
+
+  sast-static-analysis:
+    name: SAST — Static Code Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bandit (Python security linting)
+        run: |
+          pip install bandit
+          for app in registry beckn-gateway BAP/backend BPP/backend; do
+            if [ -d "$app" ]; then bandit -r "$app" -ll || true; fi
+          done
+
+  secrets-scan:
+    name: Secrets Scan (blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: detect-secrets
+        run: |
+          pip install detect-secrets
+          detect-secrets scan --baseline .secrets.baseline
+          detect-secrets audit --report --fail-on-unaudited --fail-on-live --fail-on-audited-real .secrets.baseline
+
+  build:
+    name: Build (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: [lint-python, lint-node, test-python, test-node]
+    strategy:
+      matrix:
+        service: [registry, beckn-gateway, BAP/backend, BAP/web, BPP/backend, BPP/web]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t beckn/${{ matrix.service }}:ci -f ${{ matrix.service }}/Dockerfile ${{ matrix.service }}
+
+  container-scan:
+    name: Container Image Scan (Trivy)
+    runs-on: ubuntu-latest
+    needs: [build]
+    strategy:
+      matrix:
+        service: [registry, beckn-gateway, BAP/backend, BAP/web, BPP/backend, BPP/web]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image for scan
+        run: docker build -t beckn/${{ matrix.service }}:ci -f ${{ matrix.service }}/Dockerfile ${{ matrix.service }}
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: beckn/${{ matrix.service }}:ci
+          severity: CRITICAL,HIGH
+          exit-code: "0" # non-blocking until Phase 1 real deps exist; tighten to "1" once app code lands

@@ -35,6 +35,14 @@ LOG_LEVEL = env("LOG_LEVEL", default="INFO")
 
 SERVICE_NAME = "registry"
 
+# Django's test runner (via django.test.utils.setup_test_environment, invoked by
+# pytest-django) force-sets DEBUG=False during tests regardless of .env — a deliberate
+# Django convention so tests don't accidentally depend on DEBUG-only behavior. Found for
+# real in Phase 2.1 when registry_keys.py's DEBUG-gated ephemeral-key fallback broke
+# under pytest. TESTING is the correct signal to use instead of DEBUG for "is this a
+# local/test run" checks that must hold true even though DEBUG gets forced off.
+TESTING = "pytest" in sys.modules
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -97,10 +105,26 @@ USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# --- Security headers (Phase 2.5 hardening) ---
+# Registry is backend-only, called by other backends per registry_details_v1.1.md §4 —
+# never by a browser — so no CORS/CSRF-for-forms concerns; these are the standard
+# transport/content-sniffing protections that apply regardless.
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = "DENY"
+SECURE_BROWSER_XSS_FILTER = True
+SECURE_REFERRER_POLICY = "no-referrer"
+# HTTPS-only headers are gated on DEBUG so local/dev over plain HTTP keeps working;
+# real deployments terminate TLS in front of gunicorn and must set DJANGO_DEBUG=false.
+SECURE_SSL_REDIRECT = not DEBUG
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+
 # --- Observability (per OBSERVABILITY.md) ---
 OBSERVABILITY_READINESS_CHECKS = [
     ("database", "django_observability.checks.database_check"),
 ]
+# Phase 2.6: subscribe/lookup/verify rate, latency, and error-rate metrics.
+EXTRA_METRICS_PROVIDERS = ["core.metrics.render_metrics"]
 
 LOGGING = {
     "version": 1,

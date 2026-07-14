@@ -3,11 +3,26 @@ manually during Phase 1.1 build (see livetracker1.md Phase 1.1 Test Gate), so it
 verified on every future change instead of relying on a one-time manual check.
 """
 
+import time
+
 import pytest
 from django.test import Client
 from django.urls import reverse
 
-from core.crypto import verify_request_signature
+from core.crypto import (
+    ChallengeDecryptionError,
+    SignatureVerificationError,
+    build_authorization_header,
+    build_signing_string,
+    compute_blake512_digest,
+    decrypt_challenge,
+    encrypt_challenge,
+    generate_encryption_key_pair,
+    generate_signing_key_pair,
+    parse_authorization_header,
+    sign_request,
+    verify_request_signature,
+)
 from core.validation import PayloadValidationError, validate_against_schema
 
 
@@ -110,9 +125,147 @@ def test_validate_against_schema_rejects_incomplete_payload():
         validate_against_schema({"context": {}, "message": {}}, "subscribe_request.schema.json")
 
 
-def test_crypto_stub_raises_not_implemented():
-    """Confirms Phase 2.3 hasn't been silently implemented in a way that bypasses
-    the Phase 2.0 sandbox-confirmation gate — this must keep failing until Phase 2.3
-    deliberately replaces it against confirmed reference behavior."""
-    with pytest.raises(NotImplementedError):
-        verify_request_signature(authorization_header="x", body=b"y", public_key="z")
+# --- Phase 2.3 Cryptography: real Ed25519/X25519 implementation ---
+
+
+def _build_signed_request(
+    private_key_b64: str, subscriber_id: str, unique_key_id: str, body: bytes
+):
+    created = int(time.time())
+    expires = created + 30
+    digest = compute_blake512_digest(body)
+    signing_string = build_signing_string(created=created, expires=expires, digest_b64=digest)
+    signature = sign_request(signing_string=signing_string, private_key_b64=private_key_b64)
+    header = build_authorization_header(
+        subscriber_id=subscriber_id,
+        unique_key_id=unique_key_id,
+        algorithm="ed25519",
+        created=created,
+        expires=expires,
+        signature_b64=signature,
+    )
+    return header
+
+
+def test_signing_key_pair_is_valid_ed25519_and_round_trips():
+    public_b64, private_b64 = generate_signing_key_pair()
+    body = b'{"hello": "world"}'
+    header = _build_signed_request(private_b64, "sub.example.com", "key-1", body)
+    assert (
+        verify_request_signature(authorization_header=header, body=body, public_key_b64=public_b64)
+        is True
+    )
+
+
+def test_signature_verification_fails_on_tampered_body():
+    public_b64, private_b64 = generate_signing_key_pair()
+    body = b'{"hello": "world"}'
+    header = _build_signed_request(private_b64, "sub.example.com", "key-1", body)
+    tampered_body = b'{"hello": "tampered"}'
+    with pytest.raises(SignatureVerificationError):
+        verify_request_signature(
+            authorization_header=header, body=tampered_body, public_key_b64=public_b64
+        )
+
+
+def test_signature_verification_fails_with_wrong_public_key():
+    public_b64, private_b64 = generate_signing_key_pair()
+    other_public_b64, _ = generate_signing_key_pair()
+    body = b"payload"
+    header = _build_signed_request(private_b64, "sub.example.com", "key-1", body)
+    with pytest.raises(SignatureVerificationError):
+        verify_request_signature(
+            authorization_header=header, body=body, public_key_b64=other_public_b64
+        )
+
+
+def test_signature_verification_fails_on_expired_window():
+    public_b64, private_b64 = generate_signing_key_pair()
+    body = b"payload"
+    created = int(time.time()) - 120
+    expires = created + 30  # expired 90s ago
+    digest = compute_blake512_digest(body)
+    signing_string = build_signing_string(created=created, expires=expires, digest_b64=digest)
+    signature = sign_request(signing_string=signing_string, private_key_b64=private_b64)
+    header = build_authorization_header(
+        subscriber_id="sub.example.com",
+        unique_key_id="key-1",
+        algorithm="ed25519",
+        created=created,
+        expires=expires,
+        signature_b64=signature,
+    )
+    with pytest.raises(SignatureVerificationError, match="expired"):
+        verify_request_signature(authorization_header=header, body=body, public_key_b64=public_b64)
+
+
+def test_malformed_authorization_header_rejected():
+    with pytest.raises(SignatureVerificationError):
+        verify_request_signature(
+            authorization_header="NotASignature", body=b"x", public_key_b64="y"
+        )
+
+
+def test_parse_authorization_header_extracts_key_id_parts():
+    header = build_authorization_header(
+        subscriber_id="sub.example.com",
+        unique_key_id="key-42",
+        algorithm="ed25519",
+        created=1,
+        expires=2,
+        signature_b64="sig",
+    )
+    parsed = parse_authorization_header(header)
+    assert parsed["subscriber_id"] == "sub.example.com"
+    assert parsed["unique_key_id"] == "key-42"
+    assert parsed["key_algorithm"] == "ed25519"
+
+
+def test_encryption_key_pair_round_trips_challenge():
+    """Simulates Registry <-> participant: Registry encrypts using (registry_priv,
+    participant_pub); participant decrypts using (participant_priv, registry_pub) —
+    ECDH must produce the same shared key both directions."""
+    registry_pub, registry_priv = generate_encryption_key_pair()
+    participant_pub, participant_priv = generate_encryption_key_pair()
+
+    challenge = "random-challenge-string-12345"
+    encrypted = encrypt_challenge(
+        challenge=challenge,
+        own_private_key_b64=registry_priv,
+        peer_public_key_b64_der=participant_pub,
+    )
+    decrypted = decrypt_challenge(
+        encrypted_challenge=encrypted,
+        own_private_key_b64=participant_priv,
+        peer_public_key_b64_der=registry_pub,
+    )
+    assert decrypted == challenge
+
+
+def test_challenge_decryption_fails_with_wrong_key():
+    registry_pub, registry_priv = generate_encryption_key_pair()
+    participant_pub, _ = generate_encryption_key_pair()
+    _, wrong_priv = generate_encryption_key_pair()
+
+    encrypted = encrypt_challenge(
+        challenge="secret",
+        own_private_key_b64=registry_priv,
+        peer_public_key_b64_der=participant_pub,
+    )
+    with pytest.raises(ChallengeDecryptionError):
+        decrypt_challenge(
+            encrypted_challenge=encrypted,
+            own_private_key_b64=wrong_priv,
+            peer_public_key_b64_der=registry_pub,
+        )
+
+
+def test_blake512_digest_is_deterministic_and_64_bytes():
+    d1 = compute_blake512_digest(b"same input")
+    d2 = compute_blake512_digest(b"same input")
+    d3 = compute_blake512_digest(b"different input")
+    assert d1 == d2
+    assert d1 != d3
+    import base64 as b64
+
+    assert len(b64.b64decode(d1)) == 64

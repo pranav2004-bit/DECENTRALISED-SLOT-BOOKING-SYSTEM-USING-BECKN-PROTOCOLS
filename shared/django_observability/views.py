@@ -47,13 +47,24 @@ _START_TIME = time.time()
 def metrics_view(request):
     """Prometheus text-exposition format. Real per-route request/latency counters get
     wired in as each project adds real endpoints in Phase 2+ — this establishes the
-    contract and a real, scrapeable metric now (uptime), not a stub returning nothing."""
+    contract and a real, scrapeable metric now (uptime), not a stub returning nothing.
+
+    Project-specific metrics plug in via settings.EXTRA_METRICS_PROVIDERS, a list of
+    dotted paths to zero-arg callables returning a list of Prometheus-format lines —
+    keeps this shared app free of any one project's route names (e.g. Registry's
+    subscribe/lookup counters, per Phase 2.6), while still emitting them all here."""
     uptime_seconds = time.time() - _START_TIME
     service = getattr(settings, "SERVICE_NAME", "unknown")
     lines = [
         "# HELP app_uptime_seconds Seconds since process start",
         "# TYPE app_uptime_seconds counter",
         f'app_uptime_seconds{{service="{service}"}} {uptime_seconds:.3f}',
-        "",
     ]
+    for provider_path in getattr(settings, "EXTRA_METRICS_PROVIDERS", []):
+        try:
+            provider = import_string(provider_path)
+            lines.extend(provider())
+        except Exception:
+            continue
+    lines.append("")
     return HttpResponse("\n".join(lines), content_type="text/plain; version=0.0.4")

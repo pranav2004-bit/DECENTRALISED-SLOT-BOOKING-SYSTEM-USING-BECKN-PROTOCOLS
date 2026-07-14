@@ -4,3 +4,5 @@ psycopg2-binary==2.9.10
 gunicorn==23.0.0
 djangorestframework==3.15.2
 jsonschema==4.23.0
+cryptography==46.0.4
+requests==2.32.5

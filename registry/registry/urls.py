@@ -18,7 +18,11 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 
+from core import views as core_views
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("", include("django_observability.urls")),
+    path("subscribe", core_views.subscribe_view, name="subscribe"),
+    path("lookup", core_views.lookup_view, name="lookup"),
 ]

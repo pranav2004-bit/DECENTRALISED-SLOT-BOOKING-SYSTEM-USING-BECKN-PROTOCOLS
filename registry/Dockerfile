@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 FROM deps AS runtime
 RUN addgroup --system app && adduser --system --ingroup app app
 COPY shared/django_observability ./shared/django_observability
+COPY shared/resilient_http ./shared/resilient_http
 COPY shared/testing/contract_schemas ./shared/testing/contract_schemas
 COPY registry/ ./registry/
 RUN chown -R app:app /app

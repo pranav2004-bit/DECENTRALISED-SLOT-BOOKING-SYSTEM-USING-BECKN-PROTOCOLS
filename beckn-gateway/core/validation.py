@@ -1,10 +1,21 @@
-"""Validation Service — stub for Phase 1 (per beckn_gateway_details_v1.1.md §9).
-Real validators for inbound `search` requests and `on_search` responses against the
-confirmed transaction API context shape (protocol_compliance_notes_v1.1.md §D) land
-in Phase 4.1 (End-to-End Trust Chain Verification) — that's the first point this
-tracker's scope touches real search/on_search traffic. Do not implement business
-payload validation here yet.
-"""
+"""Validation Service — real implementation as of Phase 4.1 (End-to-End Trust Chain
+Verification). Validates only the shared `context` envelope
+(protocol_compliance_notes_v1.1.md §D.3) — the first point this tracker's scope
+touches real search/on_search traffic. Deliberately does NOT validate `message.intent`/
+`message.catalog` business payload shapes — those are business-workflow scope, out of
+this foundation/trust-layer tracker (see module docstring history)."""
+
+REQUIRED_CONTEXT_FIELDS = (
+    "domain",
+    "location",
+    "action",
+    "version",
+    "bap_id",
+    "bap_uri",
+    "transaction_id",
+    "message_id",
+    "timestamp",
+)
 
 
 class PayloadValidationError(Exception):
@@ -17,8 +28,10 @@ class PayloadValidationError(Exception):
 def validate_context(context: dict) -> None:
     """Validates the shared `context` object fields required on every transaction
     API action (protocol_compliance_notes_v1.1.md §D.3): domain, location, action,
-    version, bap_id, bap_uri, transaction_id, message_id, timestamp.
-    NOT YET IMPLEMENTED — Phase 4.1."""
-    raise NotImplementedError(
-        "Real context validation lands in Phase 4.1 — see protocol_compliance_notes_v1.1.md"
-    )
+    version, bap_id, bap_uri, transaction_id, message_id, timestamp. Raises
+    PayloadValidationError naming the first missing/empty field."""
+    if not isinstance(context, dict):
+        raise PayloadValidationError("context must be an object")
+    for field in REQUIRED_CONTEXT_FIELDS:
+        if not context.get(field):
+            raise PayloadValidationError(f"context.{field} is required", field=field)

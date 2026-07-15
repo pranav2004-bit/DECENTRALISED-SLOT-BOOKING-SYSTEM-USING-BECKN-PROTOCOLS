@@ -97,6 +97,8 @@ The BAP communicates with:
 | BAP Backend Server Application ↔ BPP Backend Server Application | HTTP/HTTPS | RESTful APIs | Asynchronous (Request → ACK/NACK → Callback Response) | JSON |
 | BAP Backend Server Application ↔ Payment Gateway | HTTP/HTTPS | RESTful APIs | Synchronous (Request → Response) | JSON |
 
+> **Implementation note:** the Registry also performs domain-ownership verification during Subscribe by issuing a direct, unauthenticated `GET` to the BAP's own `ondc-site-verification.html` (served by the BAP itself, distinct from the JSON `/on_subscribe` callback above) and validating the signed content before accepting the submitted key.
+
 ## 7. Framework / Programming Language
 
 | Item | Technology |

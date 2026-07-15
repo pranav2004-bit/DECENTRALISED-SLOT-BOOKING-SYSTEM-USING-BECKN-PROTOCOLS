@@ -77,9 +77,37 @@ def test_sign_outbound_request_produces_a_proxy_authorization_ready_value():
     )
 
 
-def test_validation_stub_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        validate_context({})
+def test_validate_context_accepts_all_required_fields():
+    validate_context(
+        {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "search",
+            "version": "1.1.0",
+            "bap_id": "bap.example.com",
+            "bap_uri": "https://bap.example.com",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-15T00:00:00Z",
+        }
+    )  # must not raise
+
+
+def test_validate_context_rejects_missing_field():
+    from core.validation import PayloadValidationError
+
+    context = {
+        "domain": "ONDC:RET13",
+        "location": {"country": {"code": "IND"}},
+        "action": "search",
+        "version": "1.1.0",
+        "bap_uri": "https://bap.example.com",
+        "transaction_id": "txn-1",
+        "message_id": "msg-1",
+        "timestamp": "2026-07-15T00:00:00Z",
+    }  # bap_id deliberately omitted
+    with pytest.raises(PayloadValidationError, match="bap_id"):
+        validate_context(context)
 
 
 # --- Phase 3.3 Gateway Onboarding ---
@@ -306,3 +334,122 @@ def test_onboarding_reset_clears_domain_back_to_not_started(onboarding_settings)
     assert entry["status"] == "NOT_STARTED"
     assert entry["approved_for_subscribe"] is False
     assert entry["last_error"] == ""
+
+
+# --- Phase 4.1 End-to-End Trust Chain Verification ---
+
+
+def _build_search_context(*, bap_id="bap.example.com", domain="ONDC:RET13"):
+    return {
+        "context": {
+            "domain": domain,
+            "location": {"country": {"code": "IND"}},
+            "action": "search",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-15T00:00:00Z",
+        },
+        "message": {"intent": {}},
+    }
+
+
+def _lookup_callback(bap_pub, bpp_entries):
+    """Registry Lookup is called twice by route_search: once by trust verification
+    (filtered by subscriber_id) and once for BPP discovery (filtered by domain+type).
+    A single callback keyed on the request body handles both without relying on call
+    order, which `responses` doesn't guarantee."""
+
+    def callback(request):
+        filters = json.loads(request.body)
+        if "subscriber_id" in filters:
+            return (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": filters["subscriber_id"],
+                            "status": "SUBSCRIBED",
+                            "signing_public_key": bap_pub,
+                        }
+                    ]
+                ),
+            )
+        return (200, {}, json.dumps(bpp_entries))
+
+    return callback
+
+
+def test_search_view_routes_to_subscribed_bpps_for_a_validly_signed_request(client):
+    bap_pub, bap_priv = generate_signing_key_pair()
+    payload = _build_search_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body, subscriber_id="bap.example.com", unique_key_id="key-1", signing_private_key_b64=bap_priv
+    )
+    bpp_entries = [{"subscriber_id": "bpp.example.com", "url": "https://bpp.example.com", "status": "SUBSCRIBED"}]
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(bap_pub, bpp_entries)
+        )
+        resp = client.post(
+            reverse("search"), data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"routed_to": [{"subscriber_id": "bpp.example.com", "url": "https://bpp.example.com"}]}
+
+
+def test_search_view_rejects_tampered_signature(client):
+    bap_pub, _ = generate_signing_key_pair()
+    _, attacker_priv = generate_signing_key_pair()
+    payload = _build_search_context()
+    body = json.dumps(payload).encode()
+    forged_header = sign_outbound_request(
+        body=body, subscriber_id="bap.example.com", unique_key_id="key-1", signing_private_key_b64=attacker_priv
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(bap_pub, [])
+        )
+        resp = client.post(
+            reverse("search"), data=body, content_type="application/json", HTTP_AUTHORIZATION=forged_header
+        )
+
+    assert resp.status_code == 401
+
+
+def test_search_view_rejects_bap_id_impersonation(client):
+    """NEG: a validly-signed request whose signer identity doesn't match the claimed
+    context.bap_id must be rejected — a valid signature for participant A can't be used
+    to claim to be participant B."""
+    bap_pub, bap_priv = generate_signing_key_pair()
+    payload = _build_search_context(bap_id="someone-else.example.com")
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body, subscriber_id="bap.example.com", unique_key_id="key-1", signing_private_key_b64=bap_priv
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(bap_pub, [])
+        )
+        resp = client.post(
+            reverse("search"), data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+        )
+
+    assert resp.status_code == 401
+
+
+def test_search_view_rejects_missing_context_field(client):
+    payload = _build_search_context()
+    del payload["context"]["bap_id"]
+    body = json.dumps(payload).encode()
+
+    resp = client.post(reverse("search"), data=body, content_type="application/json", HTTP_AUTHORIZATION="irrelevant")
+    assert resp.status_code == 400

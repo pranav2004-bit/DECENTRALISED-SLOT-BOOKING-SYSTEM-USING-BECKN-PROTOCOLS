@@ -7,7 +7,13 @@ import logging
 import secrets as secrets_module
 from datetime import timedelta
 
-from beckn_crypto import SignatureVerificationError, encrypt_challenge, verify_domain_ownership_file
+from beckn_crypto import (
+    SignatureVerificationError,
+    encrypt_challenge,
+    parse_authorization_header,
+    verify_domain_ownership_file,
+    verify_request_signature,
+)
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from resilient_http import ResilientHttpClient
@@ -17,6 +23,13 @@ from .models import AuditLogEntry, Challenge, Participant
 from .registry_keys import get_registry_encryption_keys
 
 logger = logging.getLogger("registry")
+
+
+class AuthorizationError(Exception):
+    """Raised when a request's Authorization header is missing or fails signature
+    verification (protocol_compliance_notes_v1.1.md §C.4: signing is required on every
+    registry.yaml path, including /lookup — not previously enforced server-side, closed
+    in Phase 4.3)."""
 
 CHALLENGE_TTL_SECONDS = 60
 
@@ -52,6 +65,73 @@ def _log_audit(
         detail=detail,
         correlation_id=correlation_id,
     )
+
+
+def verify_subscribe_authorization(
+    *, payload: dict, authorization_header: str, body: bytes
+) -> None:
+    """Verifies the Authorization header on a Subscribe request. Resolves the
+    first-time-vs-rotation bootstrapping question flagged as unresolved at Phase 3 exit
+    with a defensible, documented design — NOT confirmed from an official ONDC source
+    about exactly how this case is handled, a sound proof-of-possession scheme instead:
+
+    - First-time Subscribe (no existing Participant row for this subscriber_id/domain/
+      type): verify against the NEW signing_public_key submitted in THIS payload —
+      proves the caller controls the private key for the identity they're registering.
+    - Re-Subscribe / key rotation (a row already exists): verify against the CURRENTLY
+      REGISTERED signing_public_key, not the new one being submitted — proves the
+      caller is the legitimate current key holder initiating the rotation, not a third
+      party who could otherwise "steal" an existing subscriber_id by generating their
+      own new key pair and re-Subscribing over it.
+    """
+    if not authorization_header:
+        raise AuthorizationError("Missing Authorization header")
+
+    entity = payload["message"]["entity"]
+    network_participant = payload["message"]["network_participant"][0]
+    existing = Participant.objects.filter(
+        subscriber_id=entity["subscriber_id"],
+        domain=network_participant["domain"],
+        participant_type=network_participant["type"],
+    ).first()
+    verification_key = (
+        existing.signing_public_key if existing else entity["key_pair"]["signing_public_key"]
+    )
+    try:
+        verify_request_signature(
+            authorization_header=authorization_header, body=body, public_key_b64=verification_key
+        )
+    except SignatureVerificationError as exc:
+        raise AuthorizationError(str(exc)) from exc
+
+
+def verify_lookup_authorization(*, authorization_header: str, body: bytes) -> None:
+    """Verifies the Authorization header on a Lookup request against the caller's OWN
+    registered signing_public_key (protocol_compliance_notes_v1.1.md §C.4: every
+    registry.yaml path requires SubscriberAuth, Lookup included) — only a known,
+    registered network participant can enumerate the registry, not an anonymous caller.
+    If a subscriber_id has multiple Participant rows (one per domain), any one is used
+    for verification — in practice a real participant uses the same signing key across
+    its domains, this doesn't attempt to reconcile a case where it doesn't."""
+    if not authorization_header:
+        raise AuthorizationError("Missing Authorization header")
+    try:
+        params = parse_authorization_header(authorization_header)
+    except SignatureVerificationError as exc:
+        raise AuthorizationError(str(exc)) from exc
+
+    participant = Participant.objects.filter(subscriber_id=params["subscriber_id"]).first()
+    if participant is None:
+        raise AuthorizationError(f"Unknown subscriber_id: {params['subscriber_id']!r}")
+
+    try:
+        verify_request_signature(
+            authorization_header=authorization_header,
+            body=body,
+            public_key_b64=participant.signing_public_key,
+        )
+    except SignatureVerificationError as exc:
+        raise AuthorizationError(str(exc)) from exc
 
 
 def handle_subscribe(payload: dict, *, correlation_id: str | None = None) -> dict:

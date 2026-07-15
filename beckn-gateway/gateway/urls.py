@@ -23,4 +23,5 @@ urlpatterns = [
     path("", include("django_observability.urls")),
     path("ondc-site-verification.html", core_views.ondc_site_verification_view, name="ondc-site-verification"),
     path("on_subscribe", core_views.on_subscribe_view, name="on_subscribe"),
+    path("search", core_views.search_view, name="search"),
 ]

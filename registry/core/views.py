@@ -41,6 +41,16 @@ def subscribe_view(request):
             return _json_error("VALIDATION_ERROR", exc.message, 400, field=exc.field)
 
         try:
+            registry_service.verify_subscribe_authorization(
+                payload=payload,
+                authorization_header=request.headers.get("Authorization", ""),
+                body=request.body,
+            )
+        except registry_service.AuthorizationError as exc:
+            metrics.increment("subscribe_errors_total")
+            return _json_error("UNAUTHORIZED", str(exc), 401)
+
+        try:
             result = registry_service.handle_subscribe(
                 payload, correlation_id=correlation_id_var.get()
             )
@@ -67,6 +77,15 @@ def lookup_view(request):
         except json.JSONDecodeError:
             metrics.increment("lookup_errors_total")
             return _json_error("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+        try:
+            registry_service.verify_lookup_authorization(
+                authorization_header=request.headers.get("Authorization", ""),
+                body=request.body,
+            )
+        except registry_service.AuthorizationError as exc:
+            metrics.increment("lookup_errors_total")
+            return _json_error("UNAUTHORIZED", str(exc), 401)
 
         results = registry_service.handle_lookup(filters)
         return JsonResponse(results, safe=False, status=200)

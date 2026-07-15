@@ -4,7 +4,7 @@ from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from . import onboarding_service
+from . import onboarding_service, routing
 
 
 @require_http_methods(["GET"])
@@ -31,5 +31,28 @@ def on_subscribe_view(request):
         result = onboarding_service.handle_on_subscribe(payload)
     except Exception as exc:
         return JsonResponse({"error": f"Challenge decryption failed: {exc}"}, status=400)
+
+    return JsonResponse(result, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def search_view(request):
+    """Phase 4.1 trust-chain plumbing endpoint — see core/routing.py's module docstring.
+    Verifies the caller's signature and returns which SUBSCRIBED BPPs Gateway would
+    route to; does not forward the request or implement /on_search."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    try:
+        result = routing.route_search(
+            payload=payload,
+            authorization_header=request.headers.get("Authorization", ""),
+            body=request.body,
+        )
+    except routing.RoutingError as exc:
+        return JsonResponse({"error": exc.message}, status=exc.status_code)
 
     return JsonResponse(result, status=200)

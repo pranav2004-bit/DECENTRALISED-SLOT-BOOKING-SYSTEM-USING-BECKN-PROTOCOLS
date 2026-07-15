@@ -97,6 +97,8 @@ The Beckn Provider Platform (BPP) communicates directly with the following compo
 | BPP Backend ↔ Beckn Gateway | HTTP/HTTPS | RESTful APIs | Asynchronous (Request → ACK/NACK → Callback Response) | JSON |
 | BPP Backend ↔ BAP Backend | HTTP/HTTPS | RESTful APIs | Asynchronous (Request → ACK/NACK → Callback Response) | JSON |
 
+> **Implementation note:** the Registry also performs domain-ownership verification during Subscribe by issuing a direct, unauthenticated `GET` to the BPP's own `ondc-site-verification.html` (served by the BPP itself, distinct from the JSON `/on_subscribe` callback above) and validating the signed content before accepting the submitted key.
+
 ## 7. Internal Communication Mechanism
 
 | Communication Between | Communication Mechanism |

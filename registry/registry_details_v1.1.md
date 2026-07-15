@@ -21,8 +21,12 @@ The Registry is the trust and identity component of the Beckn ecosystem. It main
    Responsible for registering new participants into the Registry.
 2. **Participant Lifecycle & Identity Management Module**
    Responsible for managing participant identities, participant lifecycle operations (create, update, activate, deactivate), and participant verification & trust validation.
+
+   > **Implementation note:** Subscribe now performs real domain-ownership verification — the Registry issues a direct `GET` to the participant's own `ondc-site-verification.html` and validates the signed content before accepting the submitted key, not just accepting keys at face value. `/subscribe` and `/lookup` also enforce real server-side `Authorization` header verification: first-time Subscribe is checked via proof-of-possession of the newly submitted key, while a re-Subscribe (key rotation) is checked against the CURRENTLY REGISTERED key, not the new one. This asymmetry is a deliberate security design choice for this project, not confirmed from an official ONDC source.
 3. **Cryptographic Key Management Module**
    Responsible for storing, updating, rotating, and managing participants' public keys. This module also supports participant verification by providing the cryptographic keys required for secure authentication and signature validation.
+
+   > **Implementation note:** the Registry also exposes a `GET /identity` endpoint returning its own public keys, so participants can decrypt `on_subscribe` challenges. This is a fourth endpoint beyond the three-endpoint spec noted above — real ONDC publishes registry keys out-of-band, but this project's network needed an in-band mechanism, so this is a pragmatic, non-spec addition specific to this deployment.
 
 ## 4. Who Communicates with the Registry
 The following backend systems communicate directly with the Registry:

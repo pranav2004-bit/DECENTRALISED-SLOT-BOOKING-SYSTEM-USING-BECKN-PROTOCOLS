@@ -7,7 +7,7 @@ import logging
 import secrets as secrets_module
 from datetime import timedelta
 
-from beckn_crypto import encrypt_challenge
+from beckn_crypto import SignatureVerificationError, encrypt_challenge, verify_domain_ownership_file
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from resilient_http import ResilientHttpClient
@@ -21,6 +21,13 @@ logger = logging.getLogger("registry")
 CHALLENGE_TTL_SECONDS = 60
 
 _http_client: ResilientHttpClient | None = None
+
+
+class DomainVerificationError(Exception):
+    """Raised when a participant's ondc-site-verification.html can't be fetched or
+    doesn't validate against their submitted signing_public_key. Distinct from ValueError
+    (payload-shape problems) — this is a real trust-boundary rejection
+    (protocol_compliance_notes_v1.1.md §B.2: 'do not treat as optional')."""
 
 
 def _get_http_client() -> ResilientHttpClient:
@@ -64,6 +71,14 @@ def handle_subscribe(payload: dict, *, correlation_id: str | None = None) -> dic
     subscriber_id = entity["subscriber_id"]
     domain = network_participant["domain"]
 
+    _verify_domain_ownership(
+        subscriber_url=network_participant["subscriber_url"],
+        signing_public_key=entity["key_pair"]["signing_public_key"],
+        request_id=payload["message"]["request_id"],
+        subscriber_id=subscriber_id,
+        correlation_id=correlation_id,
+    )
+
     participant, created = Participant.objects.update_or_create(
         subscriber_id=subscriber_id,
         domain=domain,
@@ -93,6 +108,72 @@ def handle_subscribe(payload: dict, *, correlation_id: str | None = None) -> dic
     _dispatch_on_subscribe_challenge(participant, correlation_id=correlation_id)
 
     return {"status": Participant.Status.UNDER_SUBSCRIPTION.value}
+
+
+def _verify_domain_ownership(
+    *,
+    subscriber_url: str,
+    signing_public_key: str,
+    request_id: str,
+    subscriber_id: str,
+    correlation_id: str | None,
+) -> None:
+    """Fetches and validates ondc-site-verification.html from the participant's own
+    domain (protocol_compliance_notes_v1.1.md §B.2). Raises DomainVerificationError with
+    a clear, distinct reason on any failure — unreachable domain, missing file, or a
+    signature that doesn't match the submitted signing_public_key — so Subscribe is
+    rejected before a participant row is ever created for an unverified domain."""
+    verification_url = subscriber_url.rstrip("/") + "/ondc-site-verification.html"
+    try:
+        response = _get_http_client().get(verification_url)
+    except Exception as exc:
+        _log_audit(
+            participant=None,
+            subscriber_id=subscriber_id,
+            event_type="DOMAIN_VERIFICATION_UNREACHABLE",
+            detail={"url": verification_url, "error": str(exc)},
+            correlation_id=correlation_id,
+        )
+        raise DomainVerificationError(
+            f"Could not fetch domain-ownership verification file at {verification_url}: {exc}"
+        ) from exc
+
+    if response.status_code != 200:
+        _log_audit(
+            participant=None,
+            subscriber_id=subscriber_id,
+            event_type="DOMAIN_VERIFICATION_NOT_FOUND",
+            detail={"url": verification_url, "status_code": response.status_code},
+            correlation_id=correlation_id,
+        )
+        raise DomainVerificationError(
+            f"Domain-ownership verification file at {verification_url} "
+            f"returned status {response.status_code}"
+        )
+
+    try:
+        verify_domain_ownership_file(
+            file_content=response.text,
+            request_id=request_id,
+            signing_public_key_b64=signing_public_key,
+        )
+    except SignatureVerificationError as exc:
+        _log_audit(
+            participant=None,
+            subscriber_id=subscriber_id,
+            event_type="DOMAIN_VERIFICATION_SIGNATURE_INVALID",
+            detail={"url": verification_url, "error": str(exc)},
+            correlation_id=correlation_id,
+        )
+        raise DomainVerificationError(str(exc)) from exc
+
+    _log_audit(
+        participant=None,
+        subscriber_id=subscriber_id,
+        event_type="DOMAIN_VERIFICATION_SUCCEEDED",
+        detail={"url": verification_url},
+        correlation_id=correlation_id,
+    )
 
 
 def _dispatch_on_subscribe_challenge(

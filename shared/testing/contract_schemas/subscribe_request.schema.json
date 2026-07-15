@@ -55,7 +55,7 @@
             "properties": {
               "subscriber_url": { "type": "string" },
               "domain": { "type": "string" },
-              "type": { "type": "string", "enum": ["buyerApp", "sellerApp"] }
+              "type": { "type": "string", "enum": ["buyerApp", "sellerApp", "gateway"] }
             }
           }
         }

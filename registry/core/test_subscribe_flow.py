@@ -9,7 +9,12 @@ import json
 
 import pytest
 import responses
-from beckn_crypto import decrypt_challenge, generate_encryption_key_pair, generate_signing_key_pair
+from beckn_crypto import (
+    build_verification_file_content,
+    decrypt_challenge,
+    generate_encryption_key_pair,
+    generate_signing_key_pair,
+)
 from django.test import Client
 from django.utils import timezone
 
@@ -22,6 +27,21 @@ def client():
     return Client()
 
 
+def _mock_valid_domain_verification(*, subscriber_url, request_id, signing_priv):
+    """Registers a passing GET .../ondc-site-verification.html mock — every subscribe
+    test needs this now that Subscribe fetches+validates it for real
+    (protocol_compliance_notes_v1.1.md §B.2)."""
+    content = build_verification_file_content(
+        request_id=request_id, signing_private_key_b64=signing_priv
+    )
+    responses.add(
+        responses.GET,
+        subscriber_url.rstrip("/") + "/ondc-site-verification.html",
+        body=content,
+        status=200,
+    )
+
+
 def _build_subscribe_payload(
     *,
     subscriber_id,
@@ -31,6 +51,7 @@ def _build_subscribe_payload(
     signing_pub,
     encryption_pub,
     unique_key_id="key-1",
+    request_id="req-1",
 ):
     ops_no = 1 if participant_type == "buyerApp" else 2
     now = timezone.now().isoformat()
@@ -38,7 +59,7 @@ def _build_subscribe_payload(
     return {
         "context": {"operation": {"ops_no": ops_no}},
         "message": {
-            "request_id": "req-1",
+            "request_id": request_id,
             "timestamp": now,
             "entity": {
                 "subscriber_id": subscriber_id,
@@ -65,7 +86,7 @@ def test_subscribe_full_flow_reaches_subscribed_status(client):
     """Full real flow: participant calls /subscribe -> Registry dispatches an encrypted
     challenge to the participant's mocked on_subscribe -> participant (mock) decrypts it
     for real using beckn_crypto -> Registry verifies the answer -> status becomes SUBSCRIBED."""
-    signing_pub, _ = generate_signing_key_pair()
+    signing_pub, signing_priv = generate_signing_key_pair()
     encryption_pub, encryption_priv = generate_encryption_key_pair()
 
     payload = _build_subscribe_payload(
@@ -75,6 +96,9 @@ def test_subscribe_full_flow_reaches_subscribed_status(client):
         participant_type="sellerApp",
         signing_pub=signing_pub,
         encryption_pub=encryption_pub,
+    )
+    _mock_valid_domain_verification(
+        subscriber_url="https://bpp.example.com", request_id="req-1", signing_priv=signing_priv
     )
 
     def on_subscribe_callback(request):
@@ -104,7 +128,7 @@ def test_subscribe_full_flow_reaches_subscribed_status(client):
 @pytest.mark.django_db
 @responses.activate
 def test_subscribe_stays_under_subscription_on_wrong_answer(client):
-    signing_pub, _ = generate_signing_key_pair()
+    signing_pub, signing_priv = generate_signing_key_pair()
     encryption_pub, _ = generate_encryption_key_pair()
     payload = _build_subscribe_payload(
         subscriber_id="bad.example.com",
@@ -113,6 +137,9 @@ def test_subscribe_stays_under_subscription_on_wrong_answer(client):
         participant_type="sellerApp",
         signing_pub=signing_pub,
         encryption_pub=encryption_pub,
+    )
+    _mock_valid_domain_verification(
+        subscriber_url="https://bad.example.com", request_id="req-1", signing_priv=signing_priv
     )
     responses.add(
         responses.POST,
@@ -133,7 +160,7 @@ def test_subscribe_stays_under_subscription_on_wrong_answer(client):
 @pytest.mark.django_db
 @responses.activate
 def test_subscribe_handles_unreachable_participant_gracefully(client):
-    signing_pub, _ = generate_signing_key_pair()
+    signing_pub, signing_priv = generate_signing_key_pair()
     encryption_pub, _ = generate_encryption_key_pair()
     payload = _build_subscribe_payload(
         subscriber_id="unreachable.example.com",
@@ -142,6 +169,11 @@ def test_subscribe_handles_unreachable_participant_gracefully(client):
         participant_type="sellerApp",
         signing_pub=signing_pub,
         encryption_pub=encryption_pub,
+    )
+    _mock_valid_domain_verification(
+        subscriber_url="https://unreachable.example.com",
+        request_id="req-1",
+        signing_priv=signing_priv,
     )
     responses.add(
         responses.POST,
@@ -155,6 +187,64 @@ def test_subscribe_handles_unreachable_participant_gracefully(client):
     participant = Participant.objects.get(subscriber_id="unreachable.example.com")
     assert participant.status == Participant.Status.UNDER_SUBSCRIPTION
     assert AuditLogEntry.objects.filter(event_type="ON_SUBSCRIBE_DISPATCH_FAILED").exists()
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_subscribe_rejects_when_domain_verification_file_missing(client):
+    """NEG: no ondc-site-verification.html hosted at all — Registry must reject Subscribe
+    rather than silently trusting the submitted keys (protocol_compliance_notes_v1.1.md
+    §B.2 — 'do not treat as optional')."""
+    signing_pub, _ = generate_signing_key_pair()
+    encryption_pub, _ = generate_encryption_key_pair()
+    payload = _build_subscribe_payload(
+        subscriber_id="unverified.example.com",
+        subscriber_url="https://unverified.example.com",
+        domain="ONDC:RET13",
+        participant_type="sellerApp",
+        signing_pub=signing_pub,
+        encryption_pub=encryption_pub,
+    )
+    responses.add(
+        responses.GET,
+        "https://unverified.example.com/ondc-site-verification.html",
+        status=404,
+    )
+
+    resp = client.post("/subscribe", data=json.dumps(payload), content_type="application/json")
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "DOMAIN_VERIFICATION_FAILED"
+    assert not Participant.objects.filter(subscriber_id="unverified.example.com").exists()
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_subscribe_rejects_when_domain_verification_signature_is_wrong(client):
+    """NEG: file is hosted but signed with a different key than the one submitted in the
+    Subscribe payload — a spoofing attempt, must be rejected."""
+    signing_pub, _ = generate_signing_key_pair()
+    _, wrong_signing_priv = generate_signing_key_pair()
+    encryption_pub, _ = generate_encryption_key_pair()
+    payload = _build_subscribe_payload(
+        subscriber_id="spoofed.example.com",
+        subscriber_url="https://spoofed.example.com",
+        domain="ONDC:RET13",
+        participant_type="sellerApp",
+        signing_pub=signing_pub,
+        encryption_pub=encryption_pub,
+    )
+    _mock_valid_domain_verification(
+        subscriber_url="https://spoofed.example.com",
+        request_id="req-1",
+        signing_priv=wrong_signing_priv,  # signed with the WRONG key
+    )
+
+    resp = client.post("/subscribe", data=json.dumps(payload), content_type="application/json")
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "DOMAIN_VERIFICATION_FAILED"
+    assert AuditLogEntry.objects.filter(
+        event_type="DOMAIN_VERIFICATION_SIGNATURE_INVALID"
+    ).exists()
 
 
 @pytest.mark.django_db
@@ -189,7 +279,7 @@ def test_subscribe_rejects_malformed_payload(client):
 def test_resubscribe_same_subscriber_is_idempotent_not_duplicated(client):
     """Re-subscribing (e.g. key rotation) updates the existing row, per confirmed
     protocol_compliance_notes_v1.1.md §B.4 — no separate rotation endpoint, no duplicate rows."""
-    signing_pub, _ = generate_signing_key_pair()
+    signing_pub, signing_priv = generate_signing_key_pair()
     encryption_pub, encryption_priv = generate_encryption_key_pair()
     payload = _build_subscribe_payload(
         subscriber_id="rotate.example.com",
@@ -198,6 +288,9 @@ def test_resubscribe_same_subscriber_is_idempotent_not_duplicated(client):
         participant_type="sellerApp",
         signing_pub=signing_pub,
         encryption_pub=encryption_pub,
+    )
+    _mock_valid_domain_verification(
+        subscriber_url="https://rotate.example.com", request_id="req-1", signing_priv=signing_priv
     )
     responses.add(
         responses.POST,
@@ -209,8 +302,14 @@ def test_resubscribe_same_subscriber_is_idempotent_not_duplicated(client):
     client.post("/subscribe", data=json.dumps(payload), content_type="application/json")
     assert Participant.objects.filter(subscriber_id="rotate.example.com").count() == 1
 
-    new_signing_pub, _ = generate_signing_key_pair()
+    new_signing_pub, new_signing_priv = generate_signing_key_pair()
     payload["message"]["entity"]["key_pair"]["signing_public_key"] = new_signing_pub
+    payload["message"]["request_id"] = "req-2"
+    _mock_valid_domain_verification(
+        subscriber_url="https://rotate.example.com",
+        request_id="req-2",
+        signing_priv=new_signing_priv,
+    )
     client.post("/subscribe", data=json.dumps(payload), content_type="application/json")
 
     assert (

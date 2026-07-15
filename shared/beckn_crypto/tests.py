@@ -8,10 +8,14 @@ import base64
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.exceptions import InvalidSignature
 
+import pytest
+
 from beckn_crypto import (
+    SignatureVerificationError,
     build_verification_file_content,
     generate_signing_key_pair,
     sign_domain_verification_request_id,
+    verify_domain_ownership_file,
 )
 
 
@@ -69,3 +73,49 @@ def test_different_request_ids_produce_different_signatures():
         request_id="request-b", signing_private_key_b64=private_b64
     )
     assert sig1 != sig2
+
+
+def test_verify_domain_ownership_file_accepts_a_genuine_file():
+    public_b64, private_b64 = generate_signing_key_pair()
+    content = build_verification_file_content(
+        request_id="req-xyz", signing_private_key_b64=private_b64
+    )
+    assert (
+        verify_domain_ownership_file(
+            file_content=content, request_id="req-xyz", signing_public_key_b64=public_b64
+        )
+        is True
+    )
+
+
+def test_verify_domain_ownership_file_rejects_wrong_request_id():
+    public_b64, private_b64 = generate_signing_key_pair()
+    content = build_verification_file_content(
+        request_id="req-xyz", signing_private_key_b64=private_b64
+    )
+    with pytest.raises(SignatureVerificationError):
+        verify_domain_ownership_file(
+            file_content=content, request_id="a-different-request-id", signing_public_key_b64=public_b64
+        )
+
+
+def test_verify_domain_ownership_file_rejects_wrong_key():
+    _, private_b64 = generate_signing_key_pair()
+    other_public_b64, _ = generate_signing_key_pair()
+    content = build_verification_file_content(
+        request_id="req-xyz", signing_private_key_b64=private_b64
+    )
+    with pytest.raises(SignatureVerificationError):
+        verify_domain_ownership_file(
+            file_content=content, request_id="req-xyz", signing_public_key_b64=other_public_b64
+        )
+
+
+def test_verify_domain_ownership_file_rejects_malformed_content():
+    _, private_b64 = generate_signing_key_pair()
+    with pytest.raises(SignatureVerificationError):
+        verify_domain_ownership_file(
+            file_content="<html>not the right file at all</html>",
+            request_id="req-xyz",
+            signing_public_key_b64="irrelevant",
+        )

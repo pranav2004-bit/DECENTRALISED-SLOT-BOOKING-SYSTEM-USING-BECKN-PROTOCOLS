@@ -13,7 +13,7 @@ from .crypto import (
     sign_request,
     verify_request_signature,
 )
-from .domain_verification import build_verification_file_content
+from .domain_verification import build_verification_file_content, verify_domain_ownership_file
 
 __all__ = [
     "ChallengeDecryptionError",
@@ -29,5 +29,6 @@ __all__ = [
     "parse_authorization_header",
     "sign_domain_verification_request_id",
     "sign_request",
+    "verify_domain_ownership_file",
     "verify_request_signature",
 ]

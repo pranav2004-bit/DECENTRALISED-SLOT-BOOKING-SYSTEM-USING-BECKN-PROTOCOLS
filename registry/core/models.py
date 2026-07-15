@@ -28,6 +28,7 @@ class Participant(models.Model):
     class ParticipantType(models.TextChoices):
         BUYER_APP = "buyerApp", "Buyer App"
         SELLER_APP = "sellerApp", "Seller App"
+        GATEWAY = "gateway", "Gateway"
 
     subscriber_id = models.CharField(max_length=255, db_index=True)
     subscriber_url = models.URLField(max_length=500)

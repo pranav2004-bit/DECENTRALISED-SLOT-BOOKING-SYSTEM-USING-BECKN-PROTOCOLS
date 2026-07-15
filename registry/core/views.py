@@ -7,6 +7,7 @@ from django_observability.context import correlation_id_var
 
 from . import metrics, registry_service
 from .rate_limit import rate_limit
+from .registry_keys import get_registry_encryption_keys, get_registry_signing_keys
 from .validation import PayloadValidationError, validate_against_schema
 
 logger = logging.getLogger("registry")
@@ -46,6 +47,9 @@ def subscribe_view(request):
         except ValueError as exc:
             metrics.increment("subscribe_errors_total")
             return _json_error("VALIDATION_ERROR", str(exc), 400)
+        except registry_service.DomainVerificationError as exc:
+            metrics.increment("subscribe_errors_total")
+            return _json_error("DOMAIN_VERIFICATION_FAILED", str(exc), 422)
 
         return JsonResponse(result, status=200)
 
@@ -66,3 +70,16 @@ def lookup_view(request):
 
         results = registry_service.handle_lookup(filters)
         return JsonResponse(results, safe=False, status=200)
+
+
+@require_http_methods(["GET"])
+def identity_view(request):
+    """Exposes the Registry's own public keys. Real ONDC publishes its registry public
+    keys out-of-band (via the Network Participant Portal / onboarding docs), not through
+    Subscribe/Lookup — those APIs are for participants, not the registry itself. Our
+    network needs *some* real mechanism for participants to fetch the registry's
+    encryption public key to decrypt on_subscribe challenges, so this endpoint fills that
+    role for this implementation (protocol_compliance_notes_v1.1.md §A.5)."""
+    signing_pub, _ = get_registry_signing_keys()
+    encryption_pub, _ = get_registry_encryption_keys()
+    return JsonResponse({"signing_public_key": signing_pub, "encryption_public_key": encryption_pub})

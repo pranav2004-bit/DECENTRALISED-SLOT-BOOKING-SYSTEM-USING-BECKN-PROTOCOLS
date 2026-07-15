@@ -29,6 +29,22 @@ REGISTRY_BASE_URL = env("REGISTRY_BASE_URL")
 REGISTRY_LOOKUP_TIMEOUT_MS = env.int("REGISTRY_LOOKUP_TIMEOUT_MS", default=3000)
 CACHE_ENABLED = env.bool("CACHE_ENABLED", default=False)
 
+# --- Gateway's own network identity (Phase 3.3 onboarding) ---
+SUBSCRIBER_ID = env("SUBSCRIBER_ID", default="")
+UNIQUE_KEY_ID = env("UNIQUE_KEY_ID", default="")
+SUBSCRIBER_URL = env("SUBSCRIBER_URL", default="")
+SIGNING_PRIVATE_KEY_PATH = env("GATEWAY_SIGNING_PRIVATE_KEY_PATH")
+ENCRYPTION_PRIVATE_KEY_PATH = env("GATEWAY_ENCRYPTION_PRIVATE_KEY_PATH")
+ON_SUBSCRIBE_CALLBACK_PATH = env("ON_SUBSCRIBE_CALLBACK_PATH", default="/on_subscribe")
+# File-backed onboarding progress — Gateway has no DB (see module docstrings in
+# core/onboarding_state.py for why this can't be a Django model like BAP/BPP's).
+ONBOARDING_STATE_PATH = env("ONBOARDING_STATE_PATH", default="/app/data/onboarding_state.json")
+
+# Django's test runner forces DEBUG=False regardless of .env — TESTING is the correct
+# signal for "is this a local/test run" checks that must hold true even though DEBUG is
+# off, matching registry/registry/settings.py's established fix for the same issue.
+TESTING = "pytest" in sys.modules
+
 SERVICE_NAME = "beckn-gateway"
 
 INSTALLED_APPS = [

@@ -269,3 +269,34 @@ def test_blake512_digest_is_deterministic_and_64_bytes():
     import base64 as b64
 
     assert len(b64.b64decode(d1)) == 64
+
+
+def test_ephemeral_registry_keys_are_consistent_across_worker_processes(tmp_path, monkeypatch):
+    """Found for real during Phase 3 end-to-end onboarding: Registry runs multiple
+    gunicorn workers, each its own process with its own @lru_cache. A pure in-memory
+    ephemeral key meant one worker could encrypt a challenge with a key another worker
+    (answering GET /identity) didn't share, breaking decryption unpredictably. Simulates
+    two separate worker processes via monkeypatched file paths + separate lru_caches."""
+    from core import registry_keys
+
+    signing_path = tmp_path / "signing.json"
+    monkeypatch.setattr(registry_keys, "_EPHEMERAL_SIGNING_KEY_PATH", signing_path)
+
+    # Simulate "worker A": cache is empty, generates and persists.
+    registry_keys.get_registry_signing_keys.cache_clear()
+    worker_a_pub, worker_a_priv = registry_keys.get_registry_signing_keys()
+
+    # Simulate "worker B": separate process, its own empty cache, but the same file exists.
+    registry_keys.get_registry_signing_keys.cache_clear()
+    worker_b_pub, worker_b_priv = registry_keys.get_registry_signing_keys()
+
+    assert (worker_a_pub, worker_a_priv) == (worker_b_pub, worker_b_priv)
+    registry_keys.get_registry_signing_keys.cache_clear()
+
+
+def test_identity_view_returns_registry_public_keys(client):
+    resp = client.get("/identity")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "signing_public_key" in body
+    assert "encryption_public_key" in body

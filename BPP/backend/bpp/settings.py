@@ -28,6 +28,11 @@ LOG_LEVEL = env("LOG_LEVEL", default="INFO")
 REGISTRY_BASE_URL = env("REGISTRY_BASE_URL")
 GATEWAY_BASE_URL = env("GATEWAY_BASE_URL")
 SUBSCRIBER_ID = env("SUBSCRIBER_ID", default="")
+UNIQUE_KEY_ID = env("UNIQUE_KEY_ID", default="")
+SUBSCRIBER_URL = env("SUBSCRIBER_URL", default="")
+SIGNING_PRIVATE_KEY_PATH = env("BPP_SIGNING_PRIVATE_KEY_PATH")
+ENCRYPTION_PRIVATE_KEY_PATH = env("BPP_ENCRYPTION_PRIVATE_KEY_PATH")
+ON_SUBSCRIBE_CALLBACK_PATH = env("ON_SUBSCRIBE_CALLBACK_PATH", default="/on_subscribe")
 EVENT_BUS_URL = env("EVENT_BUS_URL", default=REDIS_URL)
 EVENT_BUS_QUEUE_NAME = "bpp-internal-events"
 EVENT_BUS_DLQ_NAME = env("EVENT_BUS_DLQ_NAME", default="bpp-internal-dlq")
@@ -41,6 +46,11 @@ HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD = env.int("HTTP_CLIENT_CIRCUIT_BREAKER_THR
 DOMAIN_HEALTHCARE = env("DOMAIN_HEALTHCARE", default="CONFIRM_BEFORE_USE")
 DOMAIN_AUTOMOTIVE = env("DOMAIN_AUTOMOTIVE", default="CONFIRM_BEFORE_USE")
 DOMAIN_BEAUTY = env("DOMAIN_BEAUTY", default="ONDC:RET13")
+
+# Django's test runner forces DEBUG=False regardless of .env — TESTING is the correct
+# signal for "is this a local/test run" checks that must hold true even though DEBUG is
+# off, matching registry/registry/settings.py's established fix for the same issue.
+TESTING = "pytest" in sys.modules
 
 SERVICE_NAME = "bpp-backend"
 

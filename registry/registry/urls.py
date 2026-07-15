@@ -25,4 +25,5 @@ urlpatterns = [
     path("", include("django_observability.urls")),
     path("subscribe", core_views.subscribe_view, name="subscribe"),
     path("lookup", core_views.lookup_view, name="lookup"),
+    path("identity", core_views.identity_view, name="registry-identity"),
 ]

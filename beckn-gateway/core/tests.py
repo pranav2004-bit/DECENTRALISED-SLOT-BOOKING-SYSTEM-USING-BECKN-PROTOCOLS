@@ -4,7 +4,7 @@ import pytest
 from django.test import Client
 from django.urls import reverse
 
-from core.crypto import sign_outbound_request
+from core.crypto import generate_signing_key_pair, sign_outbound_request
 from core.registry_client import lookup
 from core.validation import validate_context
 
@@ -51,9 +51,27 @@ def test_unhandled_exception_maps_to_standardized_error_schema(client, settings)
     assert body["error"]["message"] == "Internal server error"
 
 
-def test_crypto_stub_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        sign_outbound_request(body=b"x", private_key_path="/run/secrets/gateway_signing_key")
+def test_sign_outbound_request_produces_a_proxy_authorization_ready_value():
+    """Confirms real signing works and the header VALUE round-trips through
+    verify_request_signature (the value format is identical to Authorization's — the
+    caller is responsible for setting it under the Proxy-Authorization header name,
+    per protocol_compliance_notes_v1.1.md §C.3; not this function's job to name it)."""
+    from beckn_crypto import verify_request_signature
+
+    public_b64, private_b64 = generate_signing_key_pair()
+    body = b'{"hello": "world"}'
+    header_value = sign_outbound_request(
+        body=body,
+        subscriber_id="beckn-gateway.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=private_b64,
+    )
+    assert (
+        verify_request_signature(
+            authorization_header=header_value, body=body, public_key_b64=public_b64
+        )
+        is True
+    )
 
 
 def test_registry_client_stub_raises_not_implemented():

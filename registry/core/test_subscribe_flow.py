@@ -9,10 +9,10 @@ import json
 
 import pytest
 import responses
+from beckn_crypto import decrypt_challenge, generate_encryption_key_pair, generate_signing_key_pair
 from django.test import Client
 from django.utils import timezone
 
-from core.crypto import decrypt_challenge, generate_encryption_key_pair, generate_signing_key_pair
 from core.models import AuditLogEntry, Challenge, Participant
 from core.registry_keys import get_registry_encryption_keys
 
@@ -64,7 +64,7 @@ def _build_subscribe_payload(
 def test_subscribe_full_flow_reaches_subscribed_status(client):
     """Full real flow: participant calls /subscribe -> Registry dispatches an encrypted
     challenge to the participant's mocked on_subscribe -> participant (mock) decrypts it
-    for real using core.crypto -> Registry verifies the answer -> status becomes SUBSCRIBED."""
+    for real using beckn_crypto -> Registry verifies the answer -> status becomes SUBSCRIBED."""
     signing_pub, _ = generate_signing_key_pair()
     encryption_pub, encryption_priv = generate_encryption_key_pair()
 

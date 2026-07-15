@@ -1,19 +1,20 @@
-"""Cryptography Service — real implementation for Phase 2.2/2.3, per the confirmed
-scheme in protocol_compliance_notes_v1.1.md §A.4/§C:
-  - Signing: Ed25519, body digest via BLAKE-512 (BLAKE2b-512), signing string
-    `(created): {v}\n(expires): {v}\ndigest: BLAKE-512={digest}`, delivered via
-    `Authorization: Signature keyId="{subscriber_id}|{unique_key_id}|{algorithm}",...`
-  - Encryption (on_subscribe challenge): X25519 key exchange.
+"""Shared Beckn/ONDC cryptography — Ed25519 signing, X25519 challenge encryption,
+BLAKE-512 digests, and domain-ownership verification, per the confirmed scheme in
+protocol_compliance_notes_v1.1.md §A.4/§B/§C.
+
+Moved here from registry/core/crypto.py during the Phase 3 pre-work gap-closure pass:
+Registry, BAP, BPP, and Gateway all need the identical signing/encryption capability
+(they're all Beckn participants with their own key pairs), so this lives once in
+shared/, not duplicated four times.
 
 IMPORTANT — one detail genuinely NOT confirmed from official sources (see
 protocol_compliance_notes_v1.1.md "Remaining Open Items"): the exact KDF/cipher used
 to turn the X25519 shared secret into a symmetric key for challenge encryption. This
 module uses a standard, secure construction (HKDF-SHA256 -> AES-256-GCM) that is
-internally consistent (Registry can encrypt a challenge and a participant using this
-same module can decrypt it, and vice versa) and is what the Phase 2.0 live-sandbox
-spike against ONDC staging exists to confirm or correct before this is used against
-the real network — do not assume interop with ONDC's real registry without that
-confirmation step.
+internally consistent (any two participants using this same module can encrypt/decrypt
+for each other) and is what the Phase 2.0 live-sandbox spike against ONDC staging
+exists to confirm or correct before this is used against the real network — do not
+assume interop with ONDC's real registry without that confirmation step.
 """
 
 import base64
@@ -23,8 +24,14 @@ import time
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey,
+    X25519PublicKey,
+)
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
@@ -52,7 +59,10 @@ def generate_signing_key_pair() -> tuple[str, str]:
     public_bytes = public_key.public_bytes(
         encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
     )
-    return (base64.b64encode(public_bytes).decode(), base64.b64encode(private_bytes).decode())
+    return (
+        base64.b64encode(public_bytes).decode(),
+        base64.b64encode(private_bytes).decode(),
+    )
 
 
 def generate_encryption_key_pair() -> tuple[str, str]:
@@ -67,9 +77,13 @@ def generate_encryption_key_pair() -> tuple[str, str]:
         encryption_algorithm=serialization.NoEncryption(),
     )
     public_der = public_key.public_bytes(
-        encoding=serialization.Encoding.DER, format=serialization.PublicFormat.SubjectPublicKeyInfo
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
-    return (base64.b64encode(public_der).decode(), base64.b64encode(private_bytes).decode())
+    return (
+        base64.b64encode(public_der).decode(),
+        base64.b64encode(private_bytes).decode(),
+    )
 
 
 # --- Digest & signing string ---
@@ -183,7 +197,10 @@ def _derive_shared_key(own_private_key_b64: str, peer_public_key_b64_der: str) -
         raise ChallengeDecryptionError("Peer public key is not a valid X25519 key")
     shared_secret = own_private.exchange(peer_public)
     return HKDF(
-        algorithm=hashes.SHA256(), length=32, salt=None, info=b"beckn-on_subscribe-challenge"
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"beckn-on_subscribe-challenge",
     ).derive(shared_secret)
 
 
@@ -215,3 +232,18 @@ def decrypt_challenge(
     except Exception as exc:
         raise ChallengeDecryptionError("Failed to decrypt challenge") from exc
     return plaintext.decode()
+
+
+# --- Domain-ownership verification (protocol_compliance_notes_v1.1.md §B.2) ---
+
+
+def sign_domain_verification_request_id(*, request_id: str, signing_private_key_b64: str) -> str:
+    """Signs a request_id for ONDC domain-ownership verification. Per the confirmed
+    spec this is Ed25519 over the RAW request_id string, UNHASHED — deliberately not
+    routed through compute_blake512_digest/build_signing_string, which are for request
+    signing, a different operation. Returns base64 signature, ready to place in
+    ondc-site-verification.html (see beckn_crypto.domain_verification)."""
+    private_bytes = base64.b64decode(signing_private_key_b64)
+    private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
+    signature = private_key.sign(request_id.encode())
+    return base64.b64encode(signature).decode()

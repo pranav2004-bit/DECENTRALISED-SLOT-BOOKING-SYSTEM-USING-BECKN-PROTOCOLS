@@ -7,9 +7,8 @@ explicit log warning so this is never silently mistaken for a real persistent id
 import logging
 from functools import lru_cache
 
+from beckn_crypto import generate_encryption_key_pair, generate_signing_key_pair
 from django.conf import settings
-
-from .crypto import generate_encryption_key_pair, generate_signing_key_pair
 
 logger = logging.getLogger("registry")
 

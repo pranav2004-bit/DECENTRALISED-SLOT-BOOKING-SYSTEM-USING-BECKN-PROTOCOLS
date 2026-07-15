@@ -5,7 +5,11 @@ from django.test import Client
 from django.urls import reverse
 
 from core.auth import authenticate_provider_session, authorize_provider_action
-from core.crypto import generate_signing_key_pair
+from core.crypto import (
+    generate_encryption_key_pair,
+    generate_signing_key_pair,
+    sign_outbound_request,
+)
 from core.events import get_event_bus
 from core.registry_client import subscribe
 
@@ -72,9 +76,32 @@ def test_event_bus_dlq_receives_failed_event():
     bus._redis.delete(bus.queue_name, bus.dlq_name)
 
 
-def test_crypto_stub_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        generate_signing_key_pair()
+def test_generate_signing_key_pair_produces_real_ed25519_keys():
+    public_b64, private_b64 = generate_signing_key_pair()
+    assert public_b64 and private_b64
+    assert public_b64 != private_b64
+
+
+def test_generate_encryption_key_pair_produces_real_x25519_keys():
+    public_b64, private_b64 = generate_encryption_key_pair()
+    assert public_b64 and private_b64
+
+
+def test_sign_outbound_request_produces_a_verifiable_signature():
+    from beckn_crypto import verify_request_signature
+
+    public_b64, private_b64 = generate_signing_key_pair()
+    body = b'{"hello": "world"}'
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bpp.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=private_b64,
+    )
+    assert (
+        verify_request_signature(authorization_header=header, body=body, public_key_b64=public_b64)
+        is True
+    )
 
 
 def test_registry_client_stub_raises_not_implemented():

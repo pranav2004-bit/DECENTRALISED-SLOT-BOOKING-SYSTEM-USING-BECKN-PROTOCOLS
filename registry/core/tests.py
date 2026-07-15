@@ -6,10 +6,7 @@ verified on every future change instead of relying on a one-time manual check.
 import time
 
 import pytest
-from django.test import Client
-from django.urls import reverse
-
-from core.crypto import (
+from beckn_crypto import (
     ChallengeDecryptionError,
     SignatureVerificationError,
     build_authorization_header,
@@ -23,6 +20,9 @@ from core.crypto import (
     sign_request,
     verify_request_signature,
 )
+from django.test import Client
+from django.urls import reverse
+
 from core.validation import PayloadValidationError, validate_against_schema
 
 

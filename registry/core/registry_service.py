@@ -7,12 +7,12 @@ import logging
 import secrets as secrets_module
 from datetime import timedelta
 
+from beckn_crypto import encrypt_challenge
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from resilient_http import ResilientHttpClient
 
 from . import metrics
-from .crypto import encrypt_challenge
 from .models import AuditLogEntry, Challenge, Participant
 from .registry_keys import get_registry_encryption_keys
 

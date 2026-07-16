@@ -1,11 +1,13 @@
 """Registry Client Service — wraps the shared ResilientHttpClient, per
 BPP_details_v1.1.md §10. Real Subscribe/on_subscribe integration landed in Phase 3.2
 (BPP Onboarding). See BAP/backend/core/registry_client.py for the full docstring on the
-signing convention and the documented server-side-verification gap this carries forward.
+signing convention, real server-side Authorization enforcement (Phase 4.3), and the
+Redis-backed circuit breaker (Phase 4.2 follow-up) this mirrors exactly.
 """
 
 import json
 
+import redis
 from core.crypto import sign_outbound_request
 from core.participant_keys import get_signing_keys
 from django.conf import settings
@@ -21,6 +23,8 @@ def get_client() -> ResilientHttpClient:
             timeout_seconds=settings.HTTP_CLIENT_TIMEOUT_MS / 1000,
             max_retries=settings.HTTP_CLIENT_MAX_RETRIES,
             circuit_breaker_threshold=settings.HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD,
+            redis_client=redis.Redis.from_url(settings.REDIS_URL),
+            circuit_breaker_key="bpp-registry-client",
         )
     return _client
 

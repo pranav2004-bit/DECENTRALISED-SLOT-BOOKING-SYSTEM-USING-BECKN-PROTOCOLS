@@ -1,11 +1,23 @@
+import os
 import time
 
 import pytest
 import requests
 import responses
 
-from .circuit_breaker import CircuitBreaker, CircuitOpenError
+from .circuit_breaker import CircuitBreaker, CircuitOpenError, RedisCircuitBreaker
 from .client import ResilientHttpClient
+
+TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://localhost:6390/0")
+
+
+@pytest.fixture
+def redis_client():
+    redis = pytest.importorskip("redis")
+    client = redis.Redis.from_url(TEST_REDIS_URL)
+    client.flushdb()
+    yield client
+    client.flushdb()
 
 
 def test_circuit_stays_closed_under_threshold():
@@ -88,3 +100,103 @@ def test_client_retries_on_5xx_before_returning():
     resp = client.get("http://x.test/flaky")
     assert resp.status_code == 200
     assert len(responses.calls) == 3
+
+
+# --- RedisCircuitBreaker: same semantics as CircuitBreaker, shared across instances ---
+
+
+def test_redis_circuit_stays_closed_under_threshold(redis_client):
+    cb = RedisCircuitBreaker(
+        redis_client=redis_client, key_prefix="test-cb-1", failure_threshold=3, reset_timeout_seconds=10
+    )
+    cb.record_failure()
+    cb.record_failure()
+    assert cb.state == RedisCircuitBreaker.CLOSED
+    cb.before_call()  # must not raise
+
+
+def test_redis_circuit_opens_at_threshold_and_fails_fast(redis_client):
+    cb = RedisCircuitBreaker(
+        redis_client=redis_client, key_prefix="test-cb-2", failure_threshold=3, reset_timeout_seconds=10
+    )
+    cb.record_failure()
+    cb.record_failure()
+    cb.record_failure()
+    assert cb.state == RedisCircuitBreaker.OPEN
+    with pytest.raises(CircuitOpenError):
+        cb.before_call()
+
+
+def test_redis_circuit_transitions_to_half_open_after_cooldown(redis_client):
+    cb = RedisCircuitBreaker(
+        redis_client=redis_client, key_prefix="test-cb-3", failure_threshold=1, reset_timeout_seconds=0.1
+    )
+    cb.record_failure()
+    assert cb.state == RedisCircuitBreaker.OPEN
+    time.sleep(0.15)
+    assert cb.state == RedisCircuitBreaker.HALF_OPEN
+    cb.before_call()  # half-open must allow a trial call through
+
+
+def test_redis_circuit_reopens_on_failure_during_half_open(redis_client):
+    cb = RedisCircuitBreaker(
+        redis_client=redis_client, key_prefix="test-cb-4", failure_threshold=1, reset_timeout_seconds=0.1
+    )
+    cb.record_failure()
+    time.sleep(0.15)
+    assert cb.state == RedisCircuitBreaker.HALF_OPEN
+    cb.record_failure()
+    assert cb.state == RedisCircuitBreaker.OPEN
+
+
+def test_redis_circuit_closes_on_success(redis_client):
+    cb = RedisCircuitBreaker(
+        redis_client=redis_client, key_prefix="test-cb-5", failure_threshold=3, reset_timeout_seconds=10
+    )
+    cb.record_failure()
+    cb.record_failure()
+    cb.record_success()
+    assert cb.state == RedisCircuitBreaker.CLOSED
+
+
+def test_redis_circuit_state_is_shared_across_separate_instances(redis_client):
+    """The actual bug this exists to fix: two independent RedisCircuitBreaker
+    instances (standing in for two gunicorn worker processes) pointed at the same
+    key_prefix must see each other's failures — unlike the in-memory CircuitBreaker,
+    where each process's breaker is completely blind to the others'."""
+    worker_a = RedisCircuitBreaker(
+        redis_client=redis_client, key_prefix="test-cb-shared", failure_threshold=3, reset_timeout_seconds=10
+    )
+    worker_b = RedisCircuitBreaker(
+        redis_client=redis_client, key_prefix="test-cb-shared", failure_threshold=3, reset_timeout_seconds=10
+    )
+    worker_a.record_failure()
+    worker_b.record_failure()
+    worker_a.record_failure()  # 3rd failure total, split across two "processes"
+    assert worker_a.state == RedisCircuitBreaker.OPEN
+    assert worker_b.state == RedisCircuitBreaker.OPEN  # worker_b sees worker_a's failures
+    with pytest.raises(CircuitOpenError):
+        worker_b.before_call()
+
+
+@responses.activate
+def test_client_with_redis_backend_shares_state_across_client_instances(redis_client):
+    """Same real bug, exercised through the actual ResilientHttpClient a
+    registry_client.py would construct — two client instances (one per simulated
+    worker process) sharing a circuit breaker via redis_client."""
+    responses.add(responses.GET, "http://x.test/fail", json={"error": "boom"}, status=500)
+    client_a = ResilientHttpClient(
+        timeout_seconds=1, max_retries=0, circuit_breaker_threshold=2,
+        redis_client=redis_client, circuit_breaker_key="test-shared-client",
+    )
+    client_b = ResilientHttpClient(
+        timeout_seconds=1, max_retries=0, circuit_breaker_threshold=2,
+        redis_client=redis_client, circuit_breaker_key="test-shared-client",
+    )
+    with pytest.raises(requests.exceptions.RequestException):
+        client_a.get("http://x.test/fail")
+    with pytest.raises(requests.exceptions.RequestException):
+        client_b.get("http://x.test/fail")  # 2nd failure, different instance -> trips it
+    assert client_a.circuit_state == RedisCircuitBreaker.OPEN
+    with pytest.raises(CircuitOpenError):
+        client_a.get("http://x.test/fail")  # fails fast, no real request attempted

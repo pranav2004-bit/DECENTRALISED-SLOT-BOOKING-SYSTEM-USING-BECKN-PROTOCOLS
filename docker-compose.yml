@@ -66,7 +66,10 @@ services:
 
   gateway-cache:
     image: redis:7-alpine
-    profiles: ["with-gateway-cache"]  # optional per beckn_gateway_details_v1.1.md §4 — not started by default
+    profiles: ["with-gateway-cache"]  # optional per beckn_gateway_details_v1.1.md §4 — not started by
+    # default. When enabled (CACHE_ENABLED=true), also backs the shared circuit-breaker state fix
+    # (livetracker1.md Phase 4.2) — without it, Gateway's circuit breaker falls back to in-memory,
+    # per-worker state and won't fail fast across gunicorn's workers during a Registry outage.
 
   # --- Applications ---
   # registry, beckn-gateway, bap-backend, bpp-backend build from the repo root (context: .)

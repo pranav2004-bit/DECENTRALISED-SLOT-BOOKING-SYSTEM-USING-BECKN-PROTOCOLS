@@ -9,6 +9,13 @@ registry.yaml paths where Gateway acts as an onboarding participant itself, not 
 forwarding someone else's request — and §C.4 confirms "every path in registry.yaml ...
 requires SubscriberAuth via a signed Authorization header", the same rule BAP/BPP follow.
 Proxy-Authorization is for Phase 4's actual search-routing work, not this.
+
+The circuit breaker is Redis-backed (Phase 4.2 follow-up) only when CACHE_ENABLED —
+unlike BAP/BPP, Gateway's Redis (gateway-cache) is an optional [BETA] service, not
+started by default (see docker-compose.yml's `with-gateway-cache` profile). Without it,
+this falls back to the in-memory CircuitBreaker exactly as before — the real
+cross-worker-consistency bug confirmed live in Phase 4.2 (a stopped Registry took ~19s
+to fail on every request, never failing fast) is only fixed when the cache is enabled.
 """
 
 import json
@@ -24,8 +31,15 @@ _client: ResilientHttpClient | None = None
 def get_client() -> ResilientHttpClient:
     global _client
     if _client is None:
+        redis_client = None
+        if settings.CACHE_ENABLED and settings.REDIS_URL:
+            import redis
+
+            redis_client = redis.Redis.from_url(settings.REDIS_URL)
         _client = ResilientHttpClient(
             timeout_seconds=settings.REGISTRY_LOOKUP_TIMEOUT_MS / 1000,
+            redis_client=redis_client,
+            circuit_breaker_key="gateway-registry-client",
         )
     return _client
 

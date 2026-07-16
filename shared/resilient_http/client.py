@@ -7,7 +7,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
-from .circuit_breaker import CircuitBreaker, CircuitOpenError
+from .circuit_breaker import CircuitBreaker, CircuitOpenError, RedisCircuitBreaker
 
 __all__ = ["ResilientHttpClient", "CircuitOpenError"]
 
@@ -21,12 +21,29 @@ class ResilientHttpClient:
         backoff_factor: float = 0.5,
         circuit_breaker_threshold: int = 5,
         circuit_breaker_reset_seconds: float = 30.0,
+        redis_client=None,
+        circuit_breaker_key: str = "resilient_http",
     ):
+        """redis_client (optional): a raw redis-py client. When provided, the
+        circuit breaker's state is shared across processes via Redis instead of
+        held in this process's memory — needed for correctness under gunicorn's
+        multiple workers (see circuit_breaker.RedisCircuitBreaker docstring for
+        the real bug this fixes). circuit_breaker_key scopes the shared state to
+        this client's target (e.g. "registry") so unrelated clients in the same
+        Redis don't share a breaker."""
         self.timeout_seconds = timeout_seconds
-        self._circuit_breaker = CircuitBreaker(
-            failure_threshold=circuit_breaker_threshold,
-            reset_timeout_seconds=circuit_breaker_reset_seconds,
-        )
+        if redis_client is not None:
+            self._circuit_breaker = RedisCircuitBreaker(
+                redis_client=redis_client,
+                key_prefix=circuit_breaker_key,
+                failure_threshold=circuit_breaker_threshold,
+                reset_timeout_seconds=circuit_breaker_reset_seconds,
+            )
+        else:
+            self._circuit_breaker = CircuitBreaker(
+                failure_threshold=circuit_breaker_threshold,
+                reset_timeout_seconds=circuit_breaker_reset_seconds,
+            )
         self._session = requests.Session()
         retry = Retry(
             total=max_retries,

@@ -5,16 +5,21 @@ on_subscribe integration landed in Phase 3.1 (BAP Onboarding).
 
 Every call signs a real Authorization header (protocol_compliance_notes_v1.1.md §C.4:
 "signing is not optional on any endpoint, including /lookup") using BAP's own signing
-key. NOTE — a genuine, documented gap carried into Phase 4 security-hardening, not
-silently assumed complete: Registry's /subscribe and /lookup endpoints do not yet verify
-this header server-side (see livetracker1.md Phase 3 notes). For /subscribe specifically
-this is a real bootstrapping question — a first-time participant has no key registered
-with Registry yet for it to verify against — that a future pass needs to resolve, not
-guess at here.
+key. Registry verifies this header server-side as of Phase 4.3 — see
+registry/core/registry_service.py's verify_subscribe_authorization/
+verify_lookup_authorization docstrings for the first-time-vs-rotation verification
+design.
+
+The HTTP client is Redis-backed for circuit-breaker state (Phase 4.2 follow-up): with
+gunicorn running multiple worker processes, a purely in-memory circuit breaker never
+tripped network-wide — confirmed live when a stopped Registry still took ~19s to fail on
+every single request, because each worker held its own independent failure count. BAP's
+Redis (bap-cache) is a required service, always available, so this has no fallback path.
 """
 
 import json
 
+import redis
 from core.crypto import sign_outbound_request
 from core.participant_keys import get_signing_keys
 from django.conf import settings
@@ -30,6 +35,8 @@ def get_client() -> ResilientHttpClient:
             timeout_seconds=settings.HTTP_CLIENT_TIMEOUT_MS / 1000,
             max_retries=settings.HTTP_CLIENT_MAX_RETRIES,
             circuit_breaker_threshold=settings.HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD,
+            redis_client=redis.Redis.from_url(settings.REDIS_URL),
+            circuit_breaker_key="bap-registry-client",
         )
     return _client
 

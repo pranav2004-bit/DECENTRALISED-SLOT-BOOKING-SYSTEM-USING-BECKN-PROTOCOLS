@@ -42,6 +42,8 @@ The Gateway may maintain trusted locally cached Registry information (such as pa
 
 > **Implementation note:** participant onboarding/subscription progress is persisted to a local file, not a Django DB model — this preserves the "Database: Not Required" characterization above, since it's operational bootstrap state, not business data.
 
+> **Implementation note:** when enabled (`CACHE_ENABLED=true`), this optional cache also backs a shared circuit-breaker state fix (livetracker1.md Phase 4.2) — without it, a downstream Registry outage takes ~19s to fail on every single request across all gunicorn workers instead of failing fast after the first few. Purely a resilience concern, not required for correctness.
+
 ## 5. Who Communicates with the Gateway
 - BAP Backend
 - BPP Backend

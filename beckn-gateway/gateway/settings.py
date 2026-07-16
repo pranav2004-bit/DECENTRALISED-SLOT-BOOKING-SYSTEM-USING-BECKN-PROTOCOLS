@@ -28,6 +28,9 @@ LOG_LEVEL = env("LOG_LEVEL", default="INFO")
 REGISTRY_BASE_URL = env("REGISTRY_BASE_URL")
 REGISTRY_LOOKUP_TIMEOUT_MS = env.int("REGISTRY_LOOKUP_TIMEOUT_MS", default=3000)
 CACHE_ENABLED = env.bool("CACHE_ENABLED", default=False)
+# Only meaningful when CACHE_ENABLED — see core/registry_client.py for why the
+# Redis-backed circuit breaker fix is opt-in here but not for BAP/BPP.
+REDIS_URL = env("REDIS_URL", default="")
 
 # --- Gateway's own network identity (Phase 3.3 onboarding) ---
 SUBSCRIBER_ID = env("SUBSCRIBER_ID", default="")

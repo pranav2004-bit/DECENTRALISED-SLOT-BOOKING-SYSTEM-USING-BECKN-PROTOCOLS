@@ -16,7 +16,8 @@ A decentralized, Beckn-protocol-compliant slot booking platform spanning healthc
 ## Key Documents
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — system-level architectural decisions
-- [livetracker1.md](livetracker1.md) — phased implementation tracker (start here to see current progress)
+- [livetracker1.md](livetracker1.md) — foundation & trust layer phased implementation tracker (start here to see current progress)
+- [livetracker2.md](livetracker2.md) — business workflow & inventory tracker (search/select/init/confirm, real-time inventory), builds on livetracker1.md
 - [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) — verified Beckn/ONDC protocol facts, sourced from official specs
 - [SECURITY.md](SECURITY.md) · [API_CONVENTIONS.md](API_CONVENTIONS.md) · [ENVIRONMENTS.md](ENVIRONMENTS.md) · [OBSERVABILITY.md](OBSERVABILITY.md) · [TESTING.md](TESTING.md) · [INFRASTRUCTURE.md](INFRASTRUCTURE.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md) — branching, commit, and PR conventions

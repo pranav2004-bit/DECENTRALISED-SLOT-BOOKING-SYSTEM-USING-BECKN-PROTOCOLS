@@ -36,7 +36,7 @@ Every provisioned cloud resource (once `infra/` is filled in) must carry these t
 | Dev | `docker-compose.yml`, possibly a shared always-on host later — no cloud cost yet |
 | Staging | First real cloud footprint — minimal single-instance-per-app, scheduled teardown |
 | Pre-Production | Mirrors Production topology at smaller scale, for final validation |
-| Production | Full topology, sized per real traffic once Pramaan certification (protocol_compliance_notes_v1.1.md §E.1) clears it for Go-Live |
+| Production | Full topology, sized per real traffic once the production-promotion gates in [ENVIRONMENTS.md](ENVIRONMENTS.md) (general-good-practice data-handling review — not real-ONDC Pramaan certification, which is `[N/A]` for this private network per `livetracker1.md`'s scope declaration) clear it for Go-Live |
 
 ## `infra/` Structure (skeleton)
 

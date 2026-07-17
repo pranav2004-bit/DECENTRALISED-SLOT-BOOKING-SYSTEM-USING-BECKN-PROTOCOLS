@@ -21,7 +21,7 @@ Body (optional) explains *why*, not *what* — the diff already shows what chang
 
 Use [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md). A PR must:
 - Pass the full CI pipeline (lint, unit tests, SCA, SAST, container scan)
-- Reference the relevant [livetracker1.md](livetracker1.md) phase/task it advances
+- Reference the relevant [livetracker1.md](livetracker1.md) (trust layer) or [livetracker2.md](livetracker2.md) (business workflow) phase/task it advances
 - Not touch `project_details.md` or the original client-provided content in any `*_details_v1.1.md` file — those are frozen; extend only via additive "Implementation note" callouts, per the convention already established in those files
 
 ## Code Style

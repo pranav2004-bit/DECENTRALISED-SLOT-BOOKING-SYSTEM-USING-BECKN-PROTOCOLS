@@ -159,7 +159,18 @@ jobs:
         # which is why this step failed unconditionally the first time CI ever actually ran.
         run: |
           tag=$(echo "beckn/${{ matrix.service }}:ci" | tr '[:upper:]' '[:lower:]')
-          docker build -t "$tag" -f ${{ matrix.service }}/Dockerfile ${{ matrix.service }}
+          # Context differs by service type, matching docker-compose.yml exactly:
+          # backend apps (registry, beckn-gateway, BAP/backend, BPP/backend) build from the repo
+          # root because they copy shared/ as a sibling of their own dir (each Dockerfile's own
+          # "BUILD CONTEXT MUST BE THE REPO ROOT" comment confirms this). The web apps (BAP/web,
+          # BPP/web) are self-contained Next.js projects with no shared/ dependency and build
+          # from their own subdirectory instead — confirmed against their real Dockerfiles' COPY
+          # paths and docker-compose.yml's `build: ./BAP/web` / `./BPP/web` shorthand.
+          case "${{ matrix.service }}" in
+            */web) context="${{ matrix.service }}" ;;
+            *) context="." ;;
+          esac
+          docker build -t "$tag" -f ${{ matrix.service }}/Dockerfile "$context"
 
   container-scan:
     name: Container Image Scan (Trivy)
@@ -177,7 +188,18 @@ jobs:
         # not a mixed-case name that was never actually built.
         run: |
           tag=$(echo "beckn/${{ matrix.service }}:ci" | tr '[:upper:]' '[:lower:]')
-          docker build -t "$tag" -f ${{ matrix.service }}/Dockerfile ${{ matrix.service }}
+          # Context differs by service type, matching docker-compose.yml exactly:
+          # backend apps (registry, beckn-gateway, BAP/backend, BPP/backend) build from the repo
+          # root because they copy shared/ as a sibling of their own dir (each Dockerfile's own
+          # "BUILD CONTEXT MUST BE THE REPO ROOT" comment confirms this). The web apps (BAP/web,
+          # BPP/web) are self-contained Next.js projects with no shared/ dependency and build
+          # from their own subdirectory instead — confirmed against their real Dockerfiles' COPY
+          # paths and docker-compose.yml's `build: ./BAP/web` / `./BPP/web` shorthand.
+          case "${{ matrix.service }}" in
+            */web) context="${{ matrix.service }}" ;;
+            *) context="." ;;
+          esac
+          docker build -t "$tag" -f ${{ matrix.service }}/Dockerfile "$context"
           echo "IMAGE_TAG=$tag" >> "$GITHUB_ENV"
       - name: Trivy scan
         uses: aquasecurity/trivy-action@0.24.0

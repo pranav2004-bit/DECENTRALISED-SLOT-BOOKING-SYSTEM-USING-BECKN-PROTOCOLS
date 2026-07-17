@@ -55,6 +55,45 @@ jobs:
     strategy:
       matrix:
         app: [registry, beckn-gateway, BAP/backend, BPP/backend]
+    # Django's test runner creates a real ephemeral test database per TESTING.md — it needs an
+    # actual Postgres to connect to, not a mock. Redis is required (no default) by BAP/BPP's
+    # settings.py. Credentials/versions match docker-compose.yml exactly, CI-only, not real secrets.
+    services:
+      postgres:
+        image: postgres:16-alpine # pragma: allowlist secret
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci # pragma: allowlist secret
+          POSTGRES_DB: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Required (no default) by every app's settings.py — dummy, CI-only values. Real network
+      # calls are mocked at the HTTP boundary per TESTING.md, so URLs/paths only need to be
+      # present, not reachable/real. Extra vars unused by a given matrix.app are harmless.
+      DJANGO_SECRET_KEY: ci-test-only-not-a-real-secret # pragma: allowlist secret
+      DATABASE_URL: postgres://ci:ci@localhost:5432/ci # pragma: allowlist secret
+      REDIS_URL: redis://localhost:6379/0
+      REGISTRY_BASE_URL: http://localhost:9999
+      GATEWAY_BASE_URL: http://localhost:9998
+      GATEWAY_SIGNING_PRIVATE_KEY_PATH: /tmp/ci-fake-gateway-signing-key
+      GATEWAY_ENCRYPTION_PRIVATE_KEY_PATH: /tmp/ci-fake-gateway-encryption-key
+      BAP_SIGNING_PRIVATE_KEY_PATH: /tmp/ci-fake-bap-signing-key
+      BAP_ENCRYPTION_PRIVATE_KEY_PATH: /tmp/ci-fake-bap-encryption-key
+      BPP_SIGNING_PRIVATE_KEY_PATH: /tmp/ci-fake-bpp-signing-key
+      BPP_ENCRYPTION_PRIVATE_KEY_PATH: /tmp/ci-fake-bpp-encryption-key
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

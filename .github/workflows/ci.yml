@@ -202,7 +202,10 @@ jobs:
           docker build -t "$tag" -f ${{ matrix.service }}/Dockerfile "$context"
           echo "IMAGE_TAG=$tag" >> "$GITHUB_ENV"
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@0.24.0
+        # A fourth latent bug: @0.24.0 was never a real published tag (confirmed against the
+        # action's actual release list — real tags carry a "v" prefix, e.g. v0.36.0, the current
+        # latest stable release used here).
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_TAG }}
           severity: CRITICAL,HIGH

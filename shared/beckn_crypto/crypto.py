@@ -7,23 +7,29 @@ Registry, BAP, BPP, and Gateway all need the identical signing/encryption capabi
 (they're all Beckn participants with their own key pairs), so this lives once in
 shared/, not duplicated four times.
 
-IMPORTANT — one detail genuinely NOT confirmed from official sources (see
-protocol_compliance_notes_v1.1.md "Remaining Open Items"): the exact KDF/cipher used
-to turn the X25519 shared secret into a symmetric key for challenge encryption. This
-module uses a standard, secure construction (HKDF-SHA256 -> AES-256-GCM) that is
-internally consistent (any two participants using this same module can encrypt/decrypt
-for each other) and is what the Phase 2.0 live-sandbox spike against ONDC staging
-exists to confirm or correct before this is used against the real network — do not
-assume interop with ONDC's real registry without that confirmation step.
+CONFIRMED (2026-07-17) against ONDC's own reference implementation —
+`cryptic_utils.py` in ONDC-Official/reference-implementations
+(utilities/signing_and_verification/python/cryptic_utils.py) — after this was
+previously flagged as unconfirmed: the challenge-encryption scheme is the RAW X25519
+shared secret used directly as an AES-256 key (no KDF/HKDF step at all), with
+**AES-ECB mode** and PKCS7 padding — not AES-GCM. This module previously used
+HKDF-SHA256 -> AES-256-GCM, a more modern and more secure construction, but one that
+is NOT what the real network speaks — a participant using the old scheme here could
+not decrypt a real Registry's on_subscribe challenge, or vice versa. Now matches
+ONDC's real scheme exactly. ECB is a genuinely weaker mode (deterministic per block,
+leaks plaintext-equality patterns) — noted honestly, not silently upgraded, because
+matching the real, confirmed protocol takes priority over a locally-preferred
+"more secure" alternative the network doesn't actually use. The practical exposure is
+limited here (challenge values are single-use random strings, not repeated
+structured data), but this is a real security tradeoff, not a non-issue.
 """
 
 import base64
 import hashlib
-import os
 import time
 
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import padding, serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
@@ -32,8 +38,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PrivateKey,
     X25519PublicKey,
 )
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 
 class SignatureVerificationError(Exception):
@@ -191,44 +196,46 @@ def verify_request_signature(
 
 
 def _derive_shared_key(own_private_key_b64: str, peer_public_key_b64_der: str) -> bytes:
+    """Returns the RAW X25519 shared secret, used directly as the AES-256 key — no
+    KDF step, confirmed against ONDC's own reference implementation (see module
+    docstring). The function name/shape is kept for callers, but there is no
+    "derivation" beyond the ECDH exchange itself."""
     own_private = X25519PrivateKey.from_private_bytes(base64.b64decode(own_private_key_b64))
     peer_public = serialization.load_der_public_key(base64.b64decode(peer_public_key_b64_der))
     if not isinstance(peer_public, X25519PublicKey):
         raise ChallengeDecryptionError("Peer public key is not a valid X25519 key")
-    shared_secret = own_private.exchange(peer_public)
-    return HKDF(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=None,
-        info=b"beckn-on_subscribe-challenge",
-    ).derive(shared_secret)
+    return own_private.exchange(peer_public)
 
 
 def encrypt_challenge(
     *, challenge: str, own_private_key_b64: str, peer_public_key_b64_der: str
 ) -> str:
-    """Encrypts a challenge string using a key derived from X25519(own_private, peer_public).
-    Returns base64(nonce || ciphertext). See module docstring re: KDF/cipher confirmation status.
-    """
+    """Encrypts a challenge string with AES-256-ECB (PKCS7-padded) using the raw
+    X25519(own_private, peer_public) shared secret as the key directly — confirmed
+    against ONDC's own reference implementation (see module docstring). Returns
+    base64(ciphertext); ECB has no IV/nonce to prepend."""
     key = _derive_shared_key(own_private_key_b64, peer_public_key_b64_der)
-    aesgcm = AESGCM(key)
-    nonce = os.urandom(12)
-    ciphertext = aesgcm.encrypt(nonce, challenge.encode(), None)
-    return base64.b64encode(nonce + ciphertext).decode()
+    padder = padding.PKCS7(algorithms.AES.block_size).padder()
+    padded = padder.update(challenge.encode()) + padder.finalize()
+    encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+    ciphertext = encryptor.update(padded) + encryptor.finalize()
+    return base64.b64encode(ciphertext).decode()
 
 
 def decrypt_challenge(
     *, encrypted_challenge: str, own_private_key_b64: str, peer_public_key_b64_der: str
 ) -> str:
-    """Decrypt an on_subscribe challenge using the shared key derived from this
+    """Decrypt an on_subscribe challenge using the raw shared secret derived from this
     participant's encryption private key and the peer's public key
-    (protocol_compliance_notes_v1.1.md §A.1/§B.5)."""
+    (protocol_compliance_notes_v1.1.md §A.1/§B.5) — AES-256-ECB, PKCS7-padded,
+    confirmed against ONDC's own reference implementation (see module docstring)."""
     key = _derive_shared_key(own_private_key_b64, peer_public_key_b64_der)
-    aesgcm = AESGCM(key)
-    raw = base64.b64decode(encrypted_challenge)
-    nonce, ciphertext = raw[:12], raw[12:]
     try:
-        plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+        ciphertext = base64.b64decode(encrypted_challenge)
+        decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
+        padded = decryptor.update(ciphertext) + decryptor.finalize()
+        unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+        plaintext = unpadder.update(padded) + unpadder.finalize()
     except Exception as exc:
         raise ChallengeDecryptionError("Failed to decrypt challenge") from exc
     return plaintext.decode()

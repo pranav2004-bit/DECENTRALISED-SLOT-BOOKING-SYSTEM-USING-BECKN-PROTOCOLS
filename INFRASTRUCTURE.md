@@ -6,7 +6,7 @@
 
 ## Current Status — Deliberately Minimal, Not an Oversight
 
-Local and Dev environments run entirely via `docker-compose.yml` — no cloud infrastructure is needed for either. The first genuine infrastructure need arises at **Staging**, because ONDC onboarding (per [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) §B.2) requires a real, publicly reachable HTTPS domain with a valid SSL certificate for OCSP validation — something `docker compose` on a laptop cannot provide.
+Local and Dev environments run entirely via `docker-compose.yml` — no cloud infrastructure is needed for either. The first genuine infrastructure need arises at **Staging**, because domain-ownership verification for this project's own Registry (per [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) §B.2, whose OCSP-validation approach this project follows as a design reference — see [livetracker1.md](livetracker1.md)'s scope declaration) requires a real, publicly reachable HTTPS domain with a valid SSL certificate — something `docker compose` on a laptop cannot provide.
 
 Building out full Terraform modules against a cloud provider with no account yet chosen and no Staging-onboarding-ready application code (Phase 1–3 not yet complete) would be premature — provisioning real cloud spend for infrastructure nothing uses yet is the over-engineering this project explicitly avoids. `infra/` is scaffolded with the *convention* (structure, tagging, variables) now, and gets filled in with real provider resources when Phase 3 (Participant Onboarding) needs a real Staging endpoint to onboard against.
 

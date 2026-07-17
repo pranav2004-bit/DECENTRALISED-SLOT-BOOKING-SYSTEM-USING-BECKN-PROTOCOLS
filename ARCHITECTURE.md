@@ -6,7 +6,7 @@ System-level index for the BECKN project. Component-level detail lives in each `
 
 ## System Overview
 
-Four independent applications form a Beckn-compliant, ONDC-targeted decentralized slot booking network:
+Four independent applications form a Beckn-compliant, private decentralized slot booking network, built to Beckn-ONDC Implementation Guidelines but not connected to the real ONDC network (see [livetracker1.md](livetracker1.md)'s scope declaration):
 
 - **Registry** — trust & identity (PKI). Stateless of business data; Python/Django; PostgreSQL.
 - **Beckn Gateway** — discovery routing (search → on_search) between BAP and BPP. Stateless; Python/Django; no database, optional cache.
@@ -31,7 +31,7 @@ All four communicate over signed HTTP/JSON per the Beckn protocol (see [protocol
 
 ## Environment Promotion
 
-Local → Dev → Staging → Production, matching the three independently-whitelisted ONDC registry environments described in [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) §B.1. See [ENVIRONMENTS.md](ENVIRONMENTS.md) for parity rules and [INFRASTRUCTURE.md](INFRASTRUCTURE.md) for how each environment is provisioned.
+Local → Dev → Staging → Production, all pointing at **this project's own Registry** deployed to progressively more real infrastructure — not the real ONDC registries. The naming/staging pattern is modeled on the three independently-whitelisted ONDC registry environments described in [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) §B.1 (a reasonable pattern to copy for a private network too), but no environment here connects to an actual ONDC endpoint. See [ENVIRONMENTS.md](ENVIRONMENTS.md) for parity rules and [INFRASTRUCTURE.md](INFRASTRUCTURE.md) for how each environment is provisioned.
 
 ## Architectural Decisions Log
 

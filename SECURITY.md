@@ -34,4 +34,4 @@ CI runs SCA (dependency vulnerability scan) and container image scanning on ever
 
 ## Compliance
 
-See [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) §E for the full compliance/certification layer (Pramaan certification, ONDC Network Participant Agreement, IGM/GRO designation, DPDP Act obligations) — tracked as explicit gates in [livetracker1.md](livetracker1.md) Phase 4.4, not assumed complete by reaching `SUBSCRIBED` status.
+This project is a private, self-contained Beckn network (see [livetracker1.md](livetracker1.md)'s scope declaration) and does not pursue real-ONDC certification. [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) §E documents the full real-ONDC compliance/certification layer (Pramaan certification, ONDC Network Participant Agreement, IGM/GRO designation) as reference facts about the real network only — these are marked `[N/A]` in [livetracker1.md](livetracker1.md) Phase 4.4 and would only become relevant if real ONDC integration is pursued later. DPDP Act obligations around customer personal data are the one item in that checklist kept as general good practice, independent of ONDC.

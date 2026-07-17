@@ -1,6 +1,8 @@
 # BECKN — Decentralized Slot Booking System
 
-A decentralized, ONDC-targeted, Beckn-protocol-compliant slot booking platform spanning healthcare, automotive, and beauty service categories. See [project_details.md](project_details.md) for the full brief.
+A decentralized, Beckn-protocol-compliant slot booking platform spanning healthcare, automotive, and beauty service categories. See [project_details.md](project_details.md) for the full brief.
+
+**Scope:** this is a **private, self-contained Beckn network** — our own Registry, Gateway, BAP, and BPP — built strictly to the Beckn Protocol Specification and Beckn-ONDC Implementation Guidelines for correctness and interop-readiness. It does **not** connect to, register with, or integrate with the real, live ONDC network — see [livetracker1.md](livetracker1.md)'s top-of-file scope declaration for the full reasoning against `project_details.md`.
 
 ## Components
 

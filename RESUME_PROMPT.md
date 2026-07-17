@@ -1,4 +1,4 @@
-I'm resuming work on the BECKN project at C:\Users\pranavnath\OneDrive\Desktop\BECKN — a decentralized, ONDC-based, Beckn-protocol-compliant slot booking platform (Registry, Beckn Gateway, BAP, BPP), currently in the foundation & trust-layer build stage.
+I'm resuming work on the BECKN project at C:\Users\pranavnath\OneDrive\Desktop\BECKN — a decentralized, Beckn-protocol-compliant slot booking platform (Registry, Beckn Gateway, BAP, BPP), currently in the foundation & trust-layer build stage. **Scope (see livetracker1.md's top-of-file declaration): this is a private, self-contained Beckn network built strictly to the Beckn-ONDC Implementation Guidelines — it does not connect to, register with, or integrate with the real, live ONDC network.**
 
 Before doing anything else, read these files in this order:
 1. project_details.md — overall project brief (client-provided, never modify)

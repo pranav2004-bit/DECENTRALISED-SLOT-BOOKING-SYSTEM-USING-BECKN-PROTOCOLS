@@ -19,7 +19,7 @@ Django's test runner creates an isolated, ephemeral `test_<dbname>` per test run
 
 ## Mocking / Stubbing for Integration Tests
 
-Inter-service calls (BAP/BPP → Registry, → Gateway, → each other) are mocked at the HTTP boundary using `responses` (Python) in unit/integration tests — real network calls are never made in the standard test suite. A separate, explicitly-labeled contract/E2E suite (see below) is the only place real calls to the ONDC staging sandbox happen, and only when deliberately run (not part of the default CI gate), consistent with the Phase 2.0 sandbox spike already defined in [livetracker1.md](livetracker1.md).
+Inter-service calls (BAP/BPP → Registry, → Gateway, → each other) are mocked at the HTTP boundary using `responses` (Python) in unit/integration tests — real network calls are never made in the standard test suite. A separate, explicitly-labeled contract/E2E suite (see below) makes real calls only against this project's own deployed services (never the real ONDC network — see [livetracker1.md](livetracker1.md)'s scope declaration), and only when deliberately run (not part of the default CI gate).
 
 ## Contract Testing
 

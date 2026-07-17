@@ -3,10 +3,9 @@
 # environment promotion. Jobs are structured per-app via matrix so one failing app doesn't block
 # unrelated apps' status reporting.
 #
-# STATUS NOTE: Python/Node steps below assume each app has its Phase 1 project files
-# (requirements.txt / package.json). Until Phase 1 lands, `continue-on-error` on the
-# app-specific steps prevents this pipeline from permanently red-blocking Phase 0 work;
-# remove continue-on-error once each app's real source exists (tracked in livetracker1.md).
+# Real app source has existed for every app since Phase 1 of livetracker1.md (long closed) —
+# lint/test steps are hard-blocking, no continue-on-error. A failing check here genuinely
+# blocks a PR from merging, enforced by master's branch protection rule.
 
 name: CI
 
@@ -33,7 +32,6 @@ jobs:
       - name: Ruff check
         working-directory: ${{ matrix.app }}
         run: ruff check . || test ! -f requirements.txt
-        continue-on-error: true
 
   lint-node:
     name: Lint (Node — ${{ matrix.app }})
@@ -50,7 +48,6 @@ jobs:
         working-directory: ${{ matrix.app }}
         run: |
           if [ -f package.json ]; then npm ci && npm run lint; else echo "no package.json yet — Phase 1 pending"; fi
-        continue-on-error: true
 
   test-python:
     name: Unit Tests (Python — ${{ matrix.app }})
@@ -72,7 +69,6 @@ jobs:
           else
             echo "no requirements.txt yet — Phase 1 pending"
           fi
-        continue-on-error: true
 
   test-node:
     name: Unit Tests (Node — ${{ matrix.app }})
@@ -89,7 +85,6 @@ jobs:
         working-directory: ${{ matrix.app }}
         run: |
           if [ -f package.json ]; then npm ci && npm test; else echo "no package.json yet — Phase 1 pending"; fi
-        continue-on-error: true
 
   sca-dependency-scan:
     name: SCA — Dependency Vulnerability Scan

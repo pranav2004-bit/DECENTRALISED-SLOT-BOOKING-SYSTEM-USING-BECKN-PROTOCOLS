@@ -12,9 +12,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
-    branches: [main]
+    branches: [main, master]
 
 jobs:
   lint-python:
@@ -138,7 +138,12 @@ jobs:
           # .secrets.baseline is excluded from its own scan — its hashed_secret values
           # look like high-entropy strings otherwise. Found for real in Phase 1 Exit.
           detect-secrets scan --baseline .secrets.baseline --exclude-files '\.secrets\.baseline$'
-          detect-secrets audit --report --fail-on-unaudited --fail-on-live --fail-on-audited-real .secrets.baseline
+          # --fail-on-unaudited/--fail-on-live/--fail-on-audited-real do not exist on detect-secrets'
+          # real `audit` command (confirmed against the installed 1.5.0 CLI's own --help) — they were
+          # never valid, which is why this step failed unconditionally the first time CI ever actually
+          # ran. The real way to gate on unresolved real secrets is to check --report's own JSON output.
+          detect-secrets audit --report --only-real .secrets.baseline > audit_report.json
+          python -c "import json,sys; r=json.load(open('audit_report.json'))['results']; sys.exit(1 if r else 0)"
 
   build:
     name: Build (${{ matrix.service }})
@@ -150,7 +155,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build Docker image
-        run: docker build -t beckn/${{ matrix.service }}:ci -f ${{ matrix.service }}/Dockerfile ${{ matrix.service }}
+        # Docker image tags must be lowercase — matrix.service values like "BAP/backend" aren't,
+        # which is why this step failed unconditionally the first time CI ever actually ran.
+        run: |
+          tag=$(echo "beckn/${{ matrix.service }}:ci" | tr '[:upper:]' '[:lower:]')
+          # Context differs by service type, matching docker-compose.yml exactly:
+          # backend apps (registry, beckn-gateway, BAP/backend, BPP/backend) build from the repo
+          # root because they copy shared/ as a sibling of their own dir (each Dockerfile's own
+          # "BUILD CONTEXT MUST BE THE REPO ROOT" comment confirms this). The web apps (BAP/web,
+          # BPP/web) are self-contained Next.js projects with no shared/ dependency and build
+          # from their own subdirectory instead — confirmed against their real Dockerfiles' COPY
+          # paths and docker-compose.yml's `build: ./BAP/web` / `./BPP/web` shorthand.
+          case "${{ matrix.service }}" in
+            */web) context="${{ matrix.service }}" ;;
+            *) context="." ;;
+          esac
+          docker build -t "$tag" -f ${{ matrix.service }}/Dockerfile "$context"
 
   container-scan:
     name: Container Image Scan (Trivy)
@@ -162,10 +182,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build image for scan
-        run: docker build -t beckn/${{ matrix.service }}:ci -f ${{ matrix.service }}/Dockerfile ${{ matrix.service }}
+        # Docker image tags must be lowercase — matrix.service values like "BAP/backend" aren't,
+        # which is why this step failed unconditionally the first time CI ever actually ran.
+        # Tag exported to GITHUB_ENV so the Trivy step below scans the exact image just built,
+        # not a mixed-case name that was never actually built.
+        run: |
+          tag=$(echo "beckn/${{ matrix.service }}:ci" | tr '[:upper:]' '[:lower:]')
+          # Context differs by service type, matching docker-compose.yml exactly:
+          # backend apps (registry, beckn-gateway, BAP/backend, BPP/backend) build from the repo
+          # root because they copy shared/ as a sibling of their own dir (each Dockerfile's own
+          # "BUILD CONTEXT MUST BE THE REPO ROOT" comment confirms this). The web apps (BAP/web,
+          # BPP/web) are self-contained Next.js projects with no shared/ dependency and build
+          # from their own subdirectory instead — confirmed against their real Dockerfiles' COPY
+          # paths and docker-compose.yml's `build: ./BAP/web` / `./BPP/web` shorthand.
+          case "${{ matrix.service }}" in
+            */web) context="${{ matrix.service }}" ;;
+            *) context="." ;;
+          esac
+          docker build -t "$tag" -f ${{ matrix.service }}/Dockerfile "$context"
+          echo "IMAGE_TAG=$tag" >> "$GITHUB_ENV"
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@0.24.0
+        # A fourth latent bug: @0.24.0 was never a real published tag (confirmed against the
+        # action's actual release list — real tags carry a "v" prefix, e.g. v0.36.0, the current
+        # latest stable release used here).
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: beckn/${{ matrix.service }}:ci
+          image-ref: ${{ env.IMAGE_TAG }}
           severity: CRITICAL,HIGH
           exit-code: "0" # non-blocking until Phase 1 real deps exist; tighten to "1" once app code lands

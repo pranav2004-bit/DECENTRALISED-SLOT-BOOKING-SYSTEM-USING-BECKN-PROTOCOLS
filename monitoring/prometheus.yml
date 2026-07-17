@@ -1,0 +1,35 @@
+# Prometheus scrape config for the local Beckn stack — Phase 4.4 follow-up
+# (livetracker1.md: "monitoring dashboards + alert thresholds" was previously
+# documented as blocked on real cloud infrastructure that doesn't exist yet.
+# It wasn't actually blocked — a local Prometheus/Grafana pair can scrape the
+# four apps' already-real /metrics endpoints entirely within docker-compose,
+# no cloud required. This is that.
+#
+# Scrapes by Docker service name/port, not the host-published ports — Prometheus
+# runs inside the same compose network as the four apps.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # No extra "service" label here on purpose — each app's own /metrics output already
+  # emits a `service="..."` label on app_uptime_seconds (shared/django_observability),
+  # and adding a duplicate scrape-config-level label of the same name causes Prometheus
+  # to rename the app's own label to `exported_service` to avoid the collision. `job`
+  # already groups per-app; found this the hard way checking the query output for real.
+  - job_name: registry
+    static_configs:
+      - targets: ["registry:8000"]
+
+  - job_name: beckn-gateway
+    static_configs:
+      - targets: ["beckn-gateway:8000"]
+
+  - job_name: bap-backend
+    static_configs:
+      - targets: ["bap-backend:8000"]
+
+  - job_name: bpp-backend
+    static_configs:
+      - targets: ["bpp-backend:8000"]

@@ -1,5 +1,6 @@
-from core import onboarding_service, participant_keys
 from django.core.management.base import BaseCommand, CommandError
+
+from core import onboarding_service, participant_keys
 
 
 class Command(BaseCommand):
@@ -16,12 +17,16 @@ class Command(BaseCommand):
         old_signing_pub, _ = participant_keys.get_signing_keys()
         new_signing_pub, _ = participant_keys.rotate_signing_key()
         new_encryption_pub, _ = participant_keys.rotate_encryption_key()
-        self.stdout.write(f"Rotated signing key: {old_signing_pub[:12]}... -> {new_signing_pub[:12]}...")
+        self.stdout.write(
+            f"Rotated signing key: {old_signing_pub[:12]}... -> {new_signing_pub[:12]}..."
+        )
 
         try:
             entry = onboarding_service.submit_subscribe(options["domain"])
         except onboarding_service.OnboardingError as exc:
             raise CommandError(f"Re-Subscribe with rotated keys failed: {exc}") from exc
         self.stdout.write(
-            self.style.SUCCESS(f"Re-Subscribed {options['domain']} with rotated keys: {entry['status']}")
+            self.style.SUCCESS(
+                f"Re-Subscribed {options['domain']} with rotated keys: {entry['status']}"
+            )
         )

@@ -1,5 +1,6 @@
-from core import onboarding_service
 from django.core.management.base import BaseCommand
+
+from core import onboarding_service
 
 
 class Command(BaseCommand):

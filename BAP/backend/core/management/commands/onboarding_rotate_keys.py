@@ -1,5 +1,6 @@
-from core import onboarding_service, participant_keys
 from django.core.management.base import BaseCommand, CommandError
+
+from core import onboarding_service, participant_keys
 
 
 class Command(BaseCommand):
@@ -16,7 +17,9 @@ class Command(BaseCommand):
         old_signing_pub, _ = participant_keys.get_signing_keys()
         new_signing_pub, _ = participant_keys.rotate_signing_key()
         new_encryption_pub, _ = participant_keys.rotate_encryption_key()
-        self.stdout.write(f"Rotated signing key: {old_signing_pub[:12]}... -> {new_signing_pub[:12]}...")
+        self.stdout.write(
+            f"Rotated signing key: {old_signing_pub[:12]}... -> {new_signing_pub[:12]}..."
+        )
 
         try:
             status = onboarding_service.submit_subscribe(options["domain"])

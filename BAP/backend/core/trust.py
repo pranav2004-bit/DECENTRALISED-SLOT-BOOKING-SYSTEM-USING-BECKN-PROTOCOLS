@@ -10,7 +10,11 @@ known limitation (no PKI chain of trust for the Registry's identity itself), not
 assumed equivalent to participant-to-participant verification.
 """
 
-from beckn_crypto import SignatureVerificationError, parse_authorization_header, verify_request_signature
+from beckn_crypto import (
+    SignatureVerificationError,
+    parse_authorization_header,
+    verify_request_signature,
+)
 
 from . import registry_client
 

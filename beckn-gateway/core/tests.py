@@ -172,6 +172,7 @@ def test_onboarding_approve_then_verification_file_matches_subscribe_request_id(
     onboarding_settings,
 ):
     from beckn_crypto import verify_domain_ownership_file
+
     from core import onboarding_service, participant_keys
 
     onboarding_service.approve("ONDC:RET13")
@@ -226,6 +227,7 @@ def test_onboarding_subscribe_marks_failed_on_registry_rejection(onboarding_sett
 
 def test_on_subscribe_view_decrypts_challenge_and_marks_subscribed(onboarding_settings, client):
     from beckn_crypto import encrypt_challenge, generate_encryption_key_pair
+
     from core import onboarding_state, participant_keys
 
     onboarding_state.set_status("ONDC:RET13", "UNDER_SUBSCRIPTION")
@@ -242,7 +244,10 @@ def test_on_subscribe_view_decrypts_challenge_and_marks_subscribed(onboarding_se
         rsps.add(
             responses.GET,
             "http://registry:8000/identity",
-            json={"signing_public_key": "irrelevant", "encryption_public_key": registry_encryption_pub},
+            json={
+                "signing_public_key": "irrelevant",
+                "encryption_public_key": registry_encryption_pub,
+            },
             status=200,
         )
         resp = client.post(
@@ -287,14 +292,23 @@ def test_verify_participant_signature_accepts_a_genuine_subscribed_participant(
     peer_pub, peer_priv = generate_signing_key_pair()
     body = b'{"hello": "world"}'
     header = sign_outbound_request(
-        body=body, subscriber_id="peer.example.com", unique_key_id="key-1", signing_private_key_b64=peer_priv
+        body=body,
+        subscriber_id="peer.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=peer_priv,
     )
 
     with responses.RequestsMock() as rsps:
         rsps.add(
             responses.POST,
             "http://registry:8000/lookup",
-            json=[{"subscriber_id": "peer.example.com", "status": "SUBSCRIBED", "signing_public_key": peer_pub}],
+            json=[
+                {
+                    "subscriber_id": "peer.example.com",
+                    "status": "SUBSCRIBED",
+                    "signing_public_key": peer_pub,
+                }
+            ],
             status=200,
         )
         assert trust.verify_participant_signature(authorization_header=header, body=body) is True
@@ -308,14 +322,23 @@ def test_verify_participant_signature_rejects_a_forged_signature(onboarding_sett
     _, attacker_priv = generate_signing_key_pair()
     body = b'{"hello": "world"}'
     forged_header = sign_outbound_request(
-        body=body, subscriber_id="peer.example.com", unique_key_id="key-1", signing_private_key_b64=attacker_priv
+        body=body,
+        subscriber_id="peer.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=attacker_priv,
     )
 
     with responses.RequestsMock() as rsps:
         rsps.add(
             responses.POST,
             "http://registry:8000/lookup",
-            json=[{"subscriber_id": "peer.example.com", "status": "SUBSCRIBED", "signing_public_key": real_pub}],
+            json=[
+                {
+                    "subscriber_id": "peer.example.com",
+                    "status": "SUBSCRIBED",
+                    "signing_public_key": real_pub,
+                }
+            ],
             status=200,
         )
         with pytest.raises(trust.TrustEstablishmentError):
@@ -388,20 +411,33 @@ def test_search_view_routes_to_subscribed_bpps_for_a_validly_signed_request(clie
     payload = _build_search_context()
     body = json.dumps(payload).encode()
     header = sign_outbound_request(
-        body=body, subscriber_id="bap.example.com", unique_key_id="key-1", signing_private_key_b64=bap_priv
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
     )
-    bpp_entries = [{"subscriber_id": "bpp.example.com", "url": "https://bpp.example.com", "status": "SUBSCRIBED"}]
+    bpp_entries = [
+        {
+            "subscriber_id": "bpp.example.com",
+            "url": "https://bpp.example.com",
+            "status": "SUBSCRIBED",
+        }
+    ]
 
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
-            responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(bap_pub, bpp_entries)
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=_lookup_callback(bap_pub, bpp_entries),
         )
         resp = client.post(
             reverse("search"), data=body, content_type="application/json", HTTP_AUTHORIZATION=header
         )
 
     assert resp.status_code == 200
-    assert resp.json() == {"routed_to": [{"subscriber_id": "bpp.example.com", "url": "https://bpp.example.com"}]}
+    assert resp.json() == {
+        "routed_to": [{"subscriber_id": "bpp.example.com", "url": "https://bpp.example.com"}]
+    }
 
 
 def test_search_view_rejects_tampered_signature(client):
@@ -410,7 +446,10 @@ def test_search_view_rejects_tampered_signature(client):
     payload = _build_search_context()
     body = json.dumps(payload).encode()
     forged_header = sign_outbound_request(
-        body=body, subscriber_id="bap.example.com", unique_key_id="key-1", signing_private_key_b64=attacker_priv
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=attacker_priv,
     )
 
     with responses.RequestsMock() as rsps:
@@ -418,7 +457,10 @@ def test_search_view_rejects_tampered_signature(client):
             responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(bap_pub, [])
         )
         resp = client.post(
-            reverse("search"), data=body, content_type="application/json", HTTP_AUTHORIZATION=forged_header
+            reverse("search"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=forged_header,
         )
 
     assert resp.status_code == 401
@@ -432,7 +474,10 @@ def test_search_view_rejects_bap_id_impersonation(client):
     payload = _build_search_context(bap_id="someone-else.example.com")
     body = json.dumps(payload).encode()
     header = sign_outbound_request(
-        body=body, subscriber_id="bap.example.com", unique_key_id="key-1", signing_private_key_b64=bap_priv
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
     )
 
     with responses.RequestsMock() as rsps:
@@ -451,5 +496,10 @@ def test_search_view_rejects_missing_context_field(client):
     del payload["context"]["bap_id"]
     body = json.dumps(payload).encode()
 
-    resp = client.post(reverse("search"), data=body, content_type="application/json", HTTP_AUTHORIZATION="irrelevant")
+    resp = client.post(
+        reverse("search"),
+        data=body,
+        content_type="application/json",
+        HTTP_AUTHORIZATION="irrelevant",
+    )
     assert resp.status_code == 400

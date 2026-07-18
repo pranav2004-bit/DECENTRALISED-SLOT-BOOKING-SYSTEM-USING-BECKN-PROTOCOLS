@@ -43,7 +43,9 @@ def _load_or_generate(path_str: str, generate_fn, label: str) -> tuple[str, str]
 @lru_cache(maxsize=1)
 def get_signing_keys() -> tuple[str, str]:
     """Returns (public_key_b64, private_key_b64)."""
-    return _load_or_generate(settings.SIGNING_PRIVATE_KEY_PATH, generate_signing_key_pair, "signing")
+    return _load_or_generate(
+        settings.SIGNING_PRIVATE_KEY_PATH, generate_signing_key_pair, "signing"
+    )
 
 
 @lru_cache(maxsize=1)

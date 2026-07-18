@@ -29,8 +29,8 @@ logger = logging.getLogger("registry")
 # is only ever a throwaway dev/test ephemeral key that the DEBUG/TESTING guard below
 # refuses to run with in production, never a real credential. Fixing this with proper
 # secure-tempfile semantics isn't warranted for key material with zero production value.
-_EPHEMERAL_SIGNING_KEY_PATH = Path("/tmp/registry_ephemeral_signing_key.json")  # nosec B108
-_EPHEMERAL_ENCRYPTION_KEY_PATH = Path("/tmp/registry_ephemeral_encryption_key.json")  # nosec B108
+_EPHEMERAL_SIGNING_KEY_PATH = Path("/tmp/registry_ephemeral_signing_key.json")  # nosec B108 # noqa: S108
+_EPHEMERAL_ENCRYPTION_KEY_PATH = Path("/tmp/registry_ephemeral_encryption_key.json")  # nosec B108 # noqa: S108
 
 
 def _read_key_file(path: Path) -> tuple[str, str]:

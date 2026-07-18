@@ -1,7 +1,11 @@
 """Cross-participant trust establishment (Phase 3.4) — see
 BAP/backend/core/trust.py for the full design rationale (identical here)."""
 
-from beckn_crypto import SignatureVerificationError, parse_authorization_header, verify_request_signature
+from beckn_crypto import (
+    SignatureVerificationError,
+    parse_authorization_header,
+    verify_request_signature,
+)
 
 from . import registry_client
 

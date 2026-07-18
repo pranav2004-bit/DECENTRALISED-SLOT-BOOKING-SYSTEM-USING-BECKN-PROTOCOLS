@@ -33,7 +33,9 @@ def client():
     return Client()
 
 
-def _sign_body(*, body: bytes, subscriber_id: str, signing_priv: str, unique_key_id: str = "key-1") -> str:
+def _sign_body(
+    *, body: bytes, subscriber_id: str, signing_priv: str, unique_key_id: str = "key-1"
+) -> str:
     """Same helper as test_subscribe_flow.py — Phase 4.3 requires a real signed caller
     for /lookup now."""
     created = int(time.time())
@@ -91,7 +93,9 @@ def test_lookup_rate_limit_is_much_higher_than_subscribe(client):
     body = json.dumps({}).encode()
     header = _sign_body(body=body, subscriber_id=subscriber_id, signing_priv=signing_priv)
     for _ in range(50):
-        resp = client.post("/lookup", data=body, content_type="application/json", HTTP_AUTHORIZATION=header)
+        resp = client.post(
+            "/lookup", data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+        )
         assert resp.status_code == 200  # far below both the 10/min and 7600/min ceilings
 
 
@@ -130,7 +134,9 @@ def test_sql_injection_like_input_in_lookup_is_handled_safely(client):
     subscriber_id, signing_priv = _create_registered_caller()
     body = json.dumps({"subscriber_id": "'; DROP TABLE core_participant; --"}).encode()
     header = _sign_body(body=body, subscriber_id=subscriber_id, signing_priv=signing_priv)
-    resp = client.post("/lookup", data=body, content_type="application/json", HTTP_AUTHORIZATION=header)
+    resp = client.post(
+        "/lookup", data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+    )
     assert resp.status_code == 200
     assert resp.json() == []
 

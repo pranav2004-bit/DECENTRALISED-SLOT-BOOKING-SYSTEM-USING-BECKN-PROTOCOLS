@@ -101,4 +101,6 @@ def identity_view(request):
     role for this implementation (protocol_compliance_notes_v1.1.md §A.5)."""
     signing_pub, _ = get_registry_signing_keys()
     encryption_pub, _ = get_registry_encryption_keys()
-    return JsonResponse({"signing_public_key": signing_pub, "encryption_public_key": encryption_pub})
+    return JsonResponse(
+        {"signing_public_key": signing_pub, "encryption_public_key": encryption_pub}
+    )

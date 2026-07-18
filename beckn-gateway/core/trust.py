@@ -2,7 +2,11 @@
 is literally "Gateway can fetch and validate BAP's and BPP's public keys" via Registry
 Lookup. See BAP/backend/core/trust.py for the full design rationale (identical here)."""
 
-from beckn_crypto import SignatureVerificationError, parse_authorization_header, verify_request_signature
+from beckn_crypto import (
+    SignatureVerificationError,
+    parse_authorization_header,
+    verify_request_signature,
+)
 
 from . import registry_client
 

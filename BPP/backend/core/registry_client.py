@@ -8,10 +8,11 @@ Redis-backed circuit breaker (Phase 4.2 follow-up) this mirrors exactly.
 import json
 
 import redis
-from core.crypto import sign_outbound_request
-from core.participant_keys import get_signing_keys
 from django.conf import settings
 from resilient_http import ResilientHttpClient
+
+from core.crypto import sign_outbound_request
+from core.participant_keys import get_signing_keys
 
 _client: ResilientHttpClient | None = None
 

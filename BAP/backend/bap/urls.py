@@ -23,6 +23,10 @@ from core import views as core_views
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("", include("django_observability.urls")),
-    path("ondc-site-verification.html", core_views.ondc_site_verification_view, name="ondc-site-verification"),
+    path(
+        "ondc-site-verification.html",
+        core_views.ondc_site_verification_view,
+        name="ondc-site-verification",
+    ),
     path("on_subscribe", core_views.on_subscribe_view, name="on_subscribe"),
 ]

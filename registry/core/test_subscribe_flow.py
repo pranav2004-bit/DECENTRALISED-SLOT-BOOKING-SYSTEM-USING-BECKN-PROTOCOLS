@@ -47,7 +47,9 @@ def client():
     return Client()
 
 
-def _sign_body(*, body: bytes, subscriber_id: str, signing_priv: str, unique_key_id: str = "key-1") -> str:
+def _sign_body(
+    *, body: bytes, subscriber_id: str, signing_priv: str, unique_key_id: str = "key-1"
+) -> str:
     """Builds a real Authorization header value for a test request — mirrors
     BAP/BPP/Gateway's core/crypto.py::sign_outbound_request, needed here only because
     Registry's own tests must now simulate a signed inbound caller (Phase 4.3)."""
@@ -127,7 +129,9 @@ def _post_subscribe(client, payload, *, signing_priv, unique_key_id="key-1"):
         signing_priv=signing_priv,
         unique_key_id=unique_key_id,
     )
-    return client.post("/subscribe", data=body, content_type="application/json", HTTP_AUTHORIZATION=header)
+    return client.post(
+        "/subscribe", data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+    )
 
 
 @pytest.mark.django_db
@@ -430,7 +434,9 @@ def test_resubscribe_signed_with_new_key_instead_of_old_is_rejected(client):
         encryption_pub=encryption_pub,
     )
     _mock_valid_domain_verification(
-        subscriber_url="https://protected.example.com", request_id="req-1", signing_priv=signing_priv
+        subscriber_url="https://protected.example.com",
+        request_id="req-1",
+        signing_priv=signing_priv,
     )
     responses.add(
         responses.POST,
@@ -439,7 +445,8 @@ def test_resubscribe_signed_with_new_key_instead_of_old_is_rejected(client):
         status=200,
     )
     _post_subscribe(client, payload, signing_priv=signing_priv)
-    assert Participant.objects.get(subscriber_id="protected.example.com").signing_public_key == signing_pub
+    participant = Participant.objects.get(subscriber_id="protected.example.com")
+    assert participant.signing_public_key == signing_pub
 
     attacker_new_pub, attacker_new_priv = generate_signing_key_pair()
     payload["message"]["entity"]["key_pair"]["signing_public_key"] = attacker_new_pub
@@ -533,7 +540,9 @@ def test_lookup_returns_matching_participants(client):
 
     body = json.dumps({"domain": "ONDC:RET13"}).encode()
     header = _sign_body(body=body, subscriber_id="lookup-me.example.com", signing_priv=signing_priv)
-    resp = client.post("/lookup", data=body, content_type="application/json", HTTP_AUTHORIZATION=header)
+    resp = client.post(
+        "/lookup", data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+    )
 
     assert resp.status_code == 200
     results = resp.json()
@@ -550,7 +559,9 @@ def test_lookup_with_no_matches_returns_empty_array(client):
 
     body = json.dumps({"subscriber_id": "nobody.example.com"}).encode()
     header = _sign_body(body=body, subscriber_id="caller.example.com", signing_priv=caller_priv)
-    resp = client.post("/lookup", data=body, content_type="application/json", HTTP_AUTHORIZATION=header)
+    resp = client.post(
+        "/lookup", data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+    )
 
     assert resp.status_code == 200
     assert resp.json() == []
@@ -576,7 +587,9 @@ def test_lookup_rejects_unknown_subscriber(client):
     _, ghost_priv = generate_signing_key_pair()
     body = json.dumps({"domain": "ONDC:RET13"}).encode()
     header = _sign_body(body=body, subscriber_id="ghost.example.com", signing_priv=ghost_priv)
-    resp = client.post("/lookup", data=body, content_type="application/json", HTTP_AUTHORIZATION=header)
+    resp = client.post(
+        "/lookup", data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+    )
     assert resp.status_code == 401
     assert resp.json()["error"]["code"] == "UNAUTHORIZED"
 
@@ -589,6 +602,8 @@ def test_lookup_rejects_forged_signature(client):
     _, attacker_priv = generate_signing_key_pair()
     body = json.dumps({"domain": "ONDC:RET13"}).encode()
     header = _sign_body(body=body, subscriber_id="real.example.com", signing_priv=attacker_priv)
-    resp = client.post("/lookup", data=body, content_type="application/json", HTTP_AUTHORIZATION=header)
+    resp = client.post(
+        "/lookup", data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+    )
     assert resp.status_code == 401
     assert resp.json()["error"]["code"] == "UNAUTHORIZED"

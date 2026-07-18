@@ -115,9 +115,16 @@ SECURE_BROWSER_XSS_FILTER = True
 SECURE_REFERRER_POLICY = "no-referrer"
 # HTTPS-only headers are gated on DEBUG so local/dev over plain HTTP keeps working;
 # real deployments terminate TLS in front of gunicorn and must set DJANGO_DEBUG=false.
-SECURE_SSL_REDIRECT = not DEBUG
-SESSION_COOKIE_SECURE = not DEBUG
-CSRF_COOKIE_SECURE = not DEBUG
+# Also gated on TESTING: the Django test client always speaks plain http://testserver
+# by design, and DEBUG alone isn't a reliable signal here — this module-level DEBUG is
+# read once at import time, before pytest-django's setup_test_environment() forces
+# settings.DEBUG=False later, so a CI run with no .env (DEBUG defaults False at import)
+# would otherwise force a 301 redirect on every test request. Same class of bug as
+# registry_keys.py's DEBUG-gated ephemeral-key fallback (Phase 2.1) — TESTING is the
+# correct signal for "is this a local/test run" regardless of the DEBUG env var.
+SECURE_SSL_REDIRECT = not DEBUG and not TESTING
+SESSION_COOKIE_SECURE = not DEBUG and not TESTING
+CSRF_COOKIE_SECURE = not DEBUG and not TESTING
 
 # --- Observability (per OBSERVABILITY.md) ---
 OBSERVABILITY_READINESS_CHECKS = [

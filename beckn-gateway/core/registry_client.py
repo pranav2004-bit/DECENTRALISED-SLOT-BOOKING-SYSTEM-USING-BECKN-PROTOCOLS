@@ -20,10 +20,11 @@ to fail on every request, never failing fast) is only fixed when the cache is en
 
 import json
 
-from core.crypto import sign_outbound_request
-from core.participant_keys import get_signing_keys
 from django.conf import settings
 from resilient_http import ResilientHttpClient
+
+from core.crypto import sign_outbound_request
+from core.participant_keys import get_signing_keys
 
 _client: ResilientHttpClient | None = None
 

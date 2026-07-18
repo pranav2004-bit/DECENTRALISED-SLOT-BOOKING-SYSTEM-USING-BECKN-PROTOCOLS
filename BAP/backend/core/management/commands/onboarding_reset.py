@@ -1,5 +1,6 @@
-from core.models import OnboardingStatus
 from django.core.management.base import BaseCommand, CommandError
+
+from core.models import OnboardingStatus
 
 
 class Command(BaseCommand):
@@ -18,7 +19,9 @@ class Command(BaseCommand):
         try:
             status = OnboardingStatus.objects.get(domain=options["domain"])
         except OnboardingStatus.DoesNotExist as exc:
-            raise CommandError(f"No onboarding state exists for domain {options['domain']!r}") from exc
+            raise CommandError(
+                f"No onboarding state exists for domain {options['domain']!r}"
+            ) from exc
 
         status.approved_for_subscribe = False
         status.status = OnboardingStatus.Status.NOT_STARTED

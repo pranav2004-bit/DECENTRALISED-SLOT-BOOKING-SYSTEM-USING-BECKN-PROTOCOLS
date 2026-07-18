@@ -14,6 +14,7 @@ shared/event_bus.
 """
 
 import uuid
+from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 
 from django.core.exceptions import ValidationError
@@ -49,6 +50,49 @@ class Resource(models.Model):
         return f"Resource({self.name})"
 
 
+class SlotManager(models.Manager):
+    def try_reserve(self, slot_id, *, quantity: int = 1) -> bool:
+        """Atomic, race-safe capacity decrement at the database level (livetracker2.md §1.2) —
+        a single conditional `UPDATE ... SET capacity_remaining = capacity_remaining - %s WHERE
+        id = %s AND capacity_remaining >= %s`, not a check-then-write (`SELECT` then separate
+        `UPDATE`). Postgres serializes concurrent `UPDATE`s to the same row, so under N
+        concurrent callers against a capacity-1 slot, exactly one `UPDATE` matches the `WHERE`
+        clause and succeeds; every other caller's `WHERE` no longer matches by the time its
+        `UPDATE` runs and it affects zero rows — no separate lock needed for this single-field
+        case. Returns `True` if the reservation succeeded, `False` if there wasn't enough
+        capacity (or the slot doesn't exist) — never raises for the ordinary "not enough
+        capacity" outcome.
+
+        This is deliberately *not* the same thing as `lock_for_mutation` below: this method
+        only ever touches `capacity_remaining` in one statement. A caller that needs to change
+        multiple related fields (or rows) consistently around one slot mutation should use
+        `lock_for_mutation` instead.
+        """
+        updated = self.filter(pk=slot_id, capacity_remaining__gte=quantity).update(
+            capacity_remaining=models.F("capacity_remaining") - quantity
+        )
+        return updated == 1
+
+    @contextmanager
+    def lock_for_mutation(self, slot_id):
+        """Short-lived technical lock during slot mutation (livetracker2.md §1.2) — a real
+        `SELECT ... FOR UPDATE` row lock, held only for the lifetime of this `with` block, so a
+        caller can safely read-then-write more than one field on a single `Slot` as one
+        consistent unit (e.g. Phase 1.3's booking creation touching both `capacity_remaining`
+        and `status` together), where `try_reserve`'s single-statement conditional `UPDATE`
+        isn't expressive enough on its own.
+
+        Deliberately distinct from the business-level reservation/`HELD` state (§1.3): that's a
+        customer-facing hold that persists across requests (Redis-backed, TTL'd); this is a
+        purely internal, sub-second DB mutual-exclusion primitive that never outlives one
+        request's transaction. Must be called inside `transaction.atomic()` — Django raises if
+        `select_for_update()` is used outside one, which is the correct behavior here too: a
+        lock held outside a transaction isn't "short-lived," it's a bug.
+        """
+        slot = self.select_for_update().get(pk=slot_id)
+        yield slot
+
+
 class Slot(models.Model):
     """A bookable time window on a `Resource`. Has no direct protocol-schema counterpart — the
     real protocol only models availability at the Time/Schedule level and leaves per-slot
@@ -80,6 +124,8 @@ class Slot(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    objects = SlotManager()
+
     class Meta:
         indexes = [
             # Serves the "resource + time-range lookup" query path (1.1's own stated requirement).
@@ -97,6 +143,15 @@ class Slot(models.Model):
             models.CheckConstraint(
                 condition=models.Q(capacity_remaining__lte=models.F("capacity_total")),
                 name="slot_capacity_remaining_lte_total",
+            ),
+            # Defense-in-depth for §1.2's atomicity guarantee: `PositiveIntegerField` only
+            # validates at the Python/`full_clean()` level, not at the database level, so a raw
+            # `UPDATE` that bypassed `try_reserve`'s own `WHERE capacity_remaining >= quantity`
+            # guard could otherwise drive this negative. A real `CHECK` closes that gap for good,
+            # not just for the one code path that's careful about it today.
+            models.CheckConstraint(
+                condition=models.Q(capacity_remaining__gte=0),
+                name="slot_capacity_remaining_gte_zero",
             ),
         ]
 

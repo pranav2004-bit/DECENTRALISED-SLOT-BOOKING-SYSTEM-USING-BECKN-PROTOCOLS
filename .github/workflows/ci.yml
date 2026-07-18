@@ -86,7 +86,11 @@ jobs:
       DJANGO_SECRET_KEY: ci-test-only-not-a-real-secret # pragma: allowlist secret
       DATABASE_URL: postgres://ci:ci@localhost:5432/ci # pragma: allowlist secret
       REDIS_URL: redis://localhost:6379/0
-      REGISTRY_BASE_URL: http://localhost:9999
+      # NOT an arbitrary placeholder — every app's test suite hardcodes "http://registry:8000"
+      # as the exact URL its `responses` mocks intercept (confirmed by grepping all 3 apps'
+      # tests.py), matching docker-compose.yml's real service DNS name. A different value here
+      # doesn't fail to connect, it fails to match any mock, which looks like a connection error.
+      REGISTRY_BASE_URL: http://registry:8000
       GATEWAY_BASE_URL: http://localhost:9998
       GATEWAY_SIGNING_PRIVATE_KEY_PATH: /tmp/ci-fake-gateway-signing-key
       GATEWAY_ENCRYPTION_PRIVATE_KEY_PATH: /tmp/ci-fake-gateway-encryption-key

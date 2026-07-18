@@ -15,6 +15,20 @@ Four independent applications form a Beckn-compliant, private decentralized slot
 
 All four communicate over signed HTTP/JSON per the Beckn protocol (see [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) for the verified wire contracts). No participant trusts another directly — trust is mediated through the Registry.
 
+## Shared Libraries (`shared/`)
+
+Framework/business logic reused across apps rather than duplicated per-app, imported via each consuming app's `sys.path` insertion of `shared/` (see e.g. `BPP/backend/bpp/settings.py`). Plain-Python libraries are importable standalone by any app with zero framework dependency; Django-app libraries are installed into a consuming app's own `INSTALLED_APPS` and own their own migrations.
+
+| Library | Kind | Used by | Purpose |
+|---|---|---|---|
+| `beckn_crypto` | Plain Python | Registry, Gateway, BAP, BPP | Ed25519/X25519 signing, verification, encryption, domain-ownership verification (`livetracker1.md` Phase 1) |
+| `event_bus` | Plain Python | BAP, BPP | Redis-backed internal EDA bus with a Dead Letter Queue (`livetracker1.md` Phase 1) |
+| `resilient_http` | Plain Python | BAP, BPP, Gateway | HTTP client resilience: retries, timeouts, circuit breaker (`livetracker1.md` Phase 4.2) |
+| `django_observability` | Django app | Registry, Gateway, BAP, BPP | Correlation IDs, structured JSON logging, `/health`/`/ready`/`/metrics`, standardized error responses |
+| `observability` | Plain Python | all | Shared logging/metrics reference conventions |
+| `testing` | Plain Python | all | Shared contract-schema test fixtures (`shared/testing/contract_schemas/`) |
+| `inventory_core` | Django app | BPP (Phase 2.2) | Generic, domain-agnostic `Resource`/`Slot`/`AvailabilityCalendar` booking core, built once and shared across Beauty/Healthcare/Automotive (`livetracker2.md` Phase 1, ADR-0003) |
+
 ## Repository Strategy
 
 **Decision: monorepo.** One repository containing all four applications (`registry/`, `beckn-gateway/`, `BAP/`, `BPP/`) plus shared root-level tooling (CI, docs, Docker Compose).

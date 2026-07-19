@@ -159,6 +159,100 @@ class Slot(models.Model):
         return f"Slot({self.resource_id}, {self.start_time.isoformat()})"
 
 
+class Booking(models.Model):
+    """A customer's hold/booking of capacity on a `Slot` — two separate state machines on one
+    row, not one combined enum, per livetracker2.md §1.3's explicit instruction (the real
+    protocol keeps `Order` and `Fulfillment` as genuinely separate concepts, and this mirrors
+    that split rather than inventing a single conflated status).
+
+    `status` mirrors the confirmed real `Order.status` enum exactly (`ACTIVE`/`COMPLETE`/
+    `CANCELLED`), plus a pre-commit `HELD` state for the reservation window before an order
+    becomes `ACTIVE` (protocol_compliance_notes_v1.1.md has no real schema for this pre-order
+    hold — it's this project's own addition, same "project-defined" territory as `Slot` itself).
+
+    `fulfillment_status` is this project's own network-policy-defined codes, since the real
+    protocol leaves `Fulfillment.state` free-text — not claimed as an ONDC-confirmed value.
+
+    `holder_ref` is an opaque reference to whichever customer/account record is doing the
+    holding, not a foreign key — Phase 1 has no customer model yet (BAP's real customer accounts
+    land in Phase 2.1); same decoupling pattern as `Resource.owner_ref`.
+    """
+
+    class Status(models.TextChoices):
+        HELD = "HELD", "Held"
+        ACTIVE = "ACTIVE", "Active"
+        COMPLETE = "COMPLETE", "Complete"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    class FulfillmentStatus(models.TextChoices):
+        SCHEDULED = "SCHEDULED", "Scheduled"
+        IN_PROGRESS = "IN_PROGRESS", "In Progress"
+        COMPLETED = "COMPLETED", "Completed"
+        NO_SHOW = "NO_SHOW", "No Show"
+
+    # Valid edges only — anything not listed here (e.g. CANCELLED -> ACTIVE, the tracker's own
+    # named invalid-transition example) is rejected by `transition_status`.
+    _STATUS_TRANSITIONS = {
+        Status.HELD: {Status.ACTIVE, Status.CANCELLED},
+        Status.ACTIVE: {Status.COMPLETE, Status.CANCELLED},
+        Status.COMPLETE: set(),
+        Status.CANCELLED: set(),
+    }
+    _FULFILLMENT_TRANSITIONS = {
+        FulfillmentStatus.SCHEDULED: {FulfillmentStatus.IN_PROGRESS, FulfillmentStatus.NO_SHOW},
+        FulfillmentStatus.IN_PROGRESS: {FulfillmentStatus.COMPLETED},
+        FulfillmentStatus.COMPLETED: set(),
+        FulfillmentStatus.NO_SHOW: set(),
+    }
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    slot = models.ForeignKey(Slot, on_delete=models.CASCADE, related_name="bookings")
+    holder_ref = models.CharField(max_length=255, db_index=True)
+    quantity = models.PositiveIntegerField(default=1)
+
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.HELD)
+    fulfillment_status = models.CharField(
+        max_length=20, choices=FulfillmentStatus.choices, default=FulfillmentStatus.SCHEDULED
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(quantity__gt=0), name="booking_quantity_gt_zero"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Booking({self.id}, {self.status})"
+
+    def transition_status(self, new_status: str) -> None:
+        """Raises `ValidationError` on any edge not in `_STATUS_TRANSITIONS` — e.g.
+        `CANCELLED` -> `ACTIVE` — instead of silently allowing it. Persists on success."""
+        allowed = self._STATUS_TRANSITIONS.get(self.status, set())
+        if new_status not in allowed:
+            raise ValidationError(
+                f"invalid Booking status transition: {self.status!r} -> {new_status!r}. "
+                f"Allowed from {self.status!r}: {sorted(allowed) or 'none (terminal state)'}."
+            )
+        self.status = new_status
+        self.save(update_fields=["status", "updated_at"])
+
+    def transition_fulfillment_status(self, new_status: str) -> None:
+        """Same contract as `transition_status`, for the separate fulfillment machine."""
+        allowed = self._FULFILLMENT_TRANSITIONS.get(self.fulfillment_status, set())
+        if new_status not in allowed:
+            raise ValidationError(
+                f"invalid fulfillment status transition: {self.fulfillment_status!r} -> "
+                f"{new_status!r}. Allowed from {self.fulfillment_status!r}: "
+                f"{sorted(allowed) or 'none (terminal state)'}."
+            )
+        self.fulfillment_status = new_status
+        self.save(update_fields=["fulfillment_status", "updated_at"])
+
+
 class AvailabilityCalendar(models.Model):
     """A recurring schedule + exceptions/holidays that generates real `Slot` rows for a
     `Resource`. Field shapes are the confirmed real `Time`/`Schedule` schemas

@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Beauty Catalog (internal representation)",
+  "description": "Derived from protocol_compliance_notes_v1.1.md §F/§G — confirmed real Catalog/Provider/Item/Descriptor field shapes from beckn/protocol-specifications schema/Catalog.yaml, Provider.yaml, Item.yaml, Descriptor.yaml. livetracker2.md §2.3: BPP's internal Beauty catalog representation, not yet wired to search/on_search.",
+  "type": "object",
+  "required": ["descriptor", "providers"],
+  "properties": {
+    "descriptor": { "$ref": "#/definitions/descriptor" },
+    "providers": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/provider" }
+    }
+  },
+  "definitions": {
+    "descriptor": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "code": { "type": "string" },
+        "short_desc": { "type": "string" },
+        "long_desc": { "type": "string" }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "required": ["id", "descriptor", "category_id", "items"],
+      "properties": {
+        "id": { "type": "string" },
+        "descriptor": { "$ref": "#/definitions/descriptor" },
+        "category_id": { "type": "string" },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/item" }
+        }
+      }
+    },
+    "item": {
+      "type": "object",
+      "required": ["id", "descriptor", "category_ids", "rateable"],
+      "properties": {
+        "id": { "type": "string" },
+        "descriptor": { "$ref": "#/definitions/descriptor" },
+        "category_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "rateable": { "type": "boolean" }
+      }
+    }
+  }
+}

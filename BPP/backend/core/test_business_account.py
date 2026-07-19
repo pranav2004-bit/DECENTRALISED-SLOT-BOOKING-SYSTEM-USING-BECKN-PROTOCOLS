@@ -22,8 +22,8 @@ from core.beauty_adapter import create_combo_booking
 
 BusinessAccount = get_user_model()
 
-# pragma: allowlist secret — test fixture, not a real credential
-TEST_PASSWORD = "a-strong-passw0rd!"
+# Test fixture value, not a real credential.
+TEST_PASSWORD = "a-strong-passw0rd!"  # pragma: allowlist secret
 
 
 @pytest.fixture

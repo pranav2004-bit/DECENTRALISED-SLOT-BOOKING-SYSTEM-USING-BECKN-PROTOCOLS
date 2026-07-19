@@ -1,7 +1,8 @@
 # BPP Backend — Django backend. Multi-stage build, non-root runtime user.
 # BUILD CONTEXT MUST BE THE REPO ROOT — this app imports shared/django_observability,
-# shared/resilient_http, and shared/event_bus as siblings of BPP/backend/, matching
-# local dev's sys.path setup in BPP/backend/bpp/settings.py.
+# shared/resilient_http, shared/event_bus, shared/beckn_crypto, and shared/inventory_core
+# as siblings of BPP/backend/, matching local dev's sys.path setup in
+# BPP/backend/bpp/settings.py.
 
 FROM python:3.12-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -20,6 +21,7 @@ COPY shared/django_observability ./shared/django_observability
 COPY shared/resilient_http ./shared/resilient_http
 COPY shared/event_bus ./shared/event_bus
 COPY shared/beckn_crypto ./shared/beckn_crypto
+COPY shared/inventory_core ./shared/inventory_core
 COPY BPP/backend/ ./BPP/backend/
 RUN chown -R app:app /app
 USER app

@@ -109,6 +109,24 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
+AUTH_USER_MODEL = "core.Customer"
+
+# Argon2 first (livetracker2.md §2.1: "argon2/bcrypt via Django's built-in password hashers") —
+# Django's own default (PBKDF2) is not what was asked for here. The rest are fallback-only, so
+# existing hashes using them still verify; new hashes always use Argon2.
+PASSWORD_HASHERS = [
+    "django.contrib.auth.hashers.Argon2PasswordHasher",
+    "django.contrib.auth.hashers.PBKDF2PasswordHasher",
+    "django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher",
+    "django.contrib.auth.hashers.BCryptSHA256PasswordHasher",
+]
+
+# Customer sessions live in Redis, not the DB (livetracker2.md §2.1, project_details.md's
+# explicit "Redis for caching and session management" prerequisite) — "cache" (not
+# "cached_db") is a pure-Redis backend with no DB fallback/table at all.
+SESSION_ENGINE = "django.contrib.sessions.backends.cache"
+SESSION_CACHE_ALIAS = "default"
+
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
 USE_I18N = True

@@ -4,7 +4,68 @@ Healthcare/Automotive/Beauty onboards into each domain separately — see
 onboarding_service.py for why one Subscribe call per domain, not a combined array).
 """
 
+import uuid
+
+from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
+from django.contrib.auth.models import PermissionsMixin
 from django.db import models
+
+
+class CustomerManager(BaseUserManager):
+    """Standard Django custom-user-model manager — `create_user`/`create_superuser` are
+    the two entry points Django's own auth machinery (admin, `createsuperuser`) expects."""
+
+    def create_user(self, contact: str, name: str, password: str | None = None, **extra_fields):
+        if not contact:
+            raise ValueError("Customers must have a contact (email or phone).")
+        customer = self.model(contact=contact, name=name, **extra_fields)
+        customer.set_password(password)
+        customer.save(using=self._db)
+        return customer
+
+    def create_superuser(
+        self, contact: str, name: str, password: str | None = None, **extra_fields
+    ):
+        extra_fields.setdefault("is_staff", True)
+        extra_fields.setdefault("is_superuser", True)
+        return self.create_user(contact, name, password, **extra_fields)
+
+
+class Customer(AbstractBaseUser, PermissionsMixin):
+    """Minimal customer identity (livetracker2.md §2.1) — an ordinary web-app auth layer,
+    entirely separate from the Ed25519/Registry participant-level trust in `livetracker1.md`.
+    A custom user model (`AbstractBaseUser`, not `AbstractUser`) because the login identifier
+    is `contact` (email or phone), not Django's default `username`.
+
+    **Buyer Lifecycle Management** (`ACTIVE`/`INACTIVE`) is deliberately just Django's own
+    `is_active` flag, not a separate custom enum: Django's `authenticate()` already refuses to
+    return a user where `is_active=False`, which is exactly the "a deactivated account cannot
+    log in" behavior this phase's Test Gate requires — reusing that battle-tested gate instead
+    of adding a second, potentially-drifting field for the same concept. Toggled via Django
+    admin (`core/admin.py`), the standard real mechanism for this, not a bespoke command.
+
+    **Buyer Configuration Management** (basic notification preference) is `notify_by_email`.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    contact = models.CharField(max_length=255, unique=True)
+    name = models.CharField(max_length=255)
+
+    notify_by_email = models.BooleanField(default=True)
+
+    is_active = models.BooleanField(default=True)
+    is_staff = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = CustomerManager()
+
+    USERNAME_FIELD = "contact"
+    REQUIRED_FIELDS = ["name"]
+
+    def __str__(self) -> str:
+        return f"Customer({self.contact})"
 
 
 class OnboardingStatus(models.Model):

@@ -40,7 +40,7 @@ docker compose up
 
 Each app exposes `/health` and `/ready` once running (see [OBSERVABILITY.md](OBSERVABILITY.md)).
 
-> **Status note:** as of Phase 0, application source code doesn't exist yet — Dockerfiles and `docker-compose.yml` are scaffolded ahead of Phase 1 (Application Foundation), which adds the actual Django/Next.js project code each Dockerfile expects. `docker compose up` will not yet produce healthy containers until Phase 1 lands; this is expected sequencing, not a bug. See [livetracker1.md](livetracker1.md) Phase 0 vs Phase 1.
+> **Status note (updated 2026-07-19):** `livetracker1.md` (foundation & trust layer) and `livetracker2.md` Phase 1 (generic inventory core) are both closed — all four apps are real, `docker compose up` produces genuinely healthy containers, and `/health` responds on each. `livetracker2.md` Phase 2 onward (the actual Beauty booking workflow) is still in progress; see that tracker for current status.
 
 ## Contributing
 

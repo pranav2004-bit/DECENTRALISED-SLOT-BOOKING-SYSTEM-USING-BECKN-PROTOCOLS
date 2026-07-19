@@ -23,6 +23,7 @@ of this module already does on the hot path.
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
+from .events import BookingEvent, SlotEvent, publish_event
 from .models import Booking, Slot
 
 
@@ -47,12 +48,21 @@ class ReservationHold:
 
 
 def hold_slot(
-    slot_id, *, holder_ref: str, redis_client, quantity: int = 1, ttl_seconds: float
+    slot_id,
+    *,
+    holder_ref: str,
+    redis_client,
+    quantity: int = 1,
+    ttl_seconds: float,
+    event_bus=None,
 ) -> Booking | None:
     """Atomically holds `quantity` capacity on `slot_id` for `holder_ref` and starts the
     Redis-backed TTL reservation window. Returns the new `Booking` (status `HELD`) on success,
     or `None` if the slot doesn't have enough capacity — never raises for that ordinary outcome,
     matching `Slot.objects.try_reserve`'s own contract (§1.2).
+
+    `event_bus` is optional (`None` by default) — pass a real `EventBus` to also publish a
+    `SlotEvent.RESERVED` (§1.4) on success.
     """
     with transaction.atomic():
         with Slot.objects.lock_for_mutation(slot_id) as slot:
@@ -67,15 +77,29 @@ def hold_slot(
             booking = Booking.objects.create(slot=slot, holder_ref=holder_ref, quantity=quantity)
 
     ReservationHold(redis_client=redis_client).start(booking.id, ttl_seconds=ttl_seconds)
+
+    if event_bus is not None:
+        publish_event(
+            event_bus,
+            SlotEvent.RESERVED,
+            slot_id=str(slot_id),
+            booking_id=str(booking.id),
+            holder_ref=holder_ref,
+            quantity=quantity,
+        )
+
     return booking
 
 
-def release_expired_hold(booking_id, *, redis_client) -> bool:
+def release_expired_hold(booking_id, *, redis_client, event_bus=None) -> bool:
     """If `booking_id`'s Redis TTL hold has expired (or was never active) and the `Booking` is
     still `HELD`, atomically cancels the `Booking` and restores the `Slot`'s held capacity —
     the "HELD slot with an expired TTL auto-returns to AVAILABLE" behavior §1.3's Test Gate asks
     for. Returns `True` if it performed a release, `False` if the hold is still active or the
     booking was already resolved (never raises for either ordinary outcome).
+
+    `event_bus` is optional (`None` by default) — pass a real `EventBus` to also publish
+    `SlotEvent.RELEASED` + `BookingEvent.CANCELLED` (§1.4) when a release actually happens.
     """
     try:
         booking = Booking.objects.select_related("slot").get(pk=booking_id)
@@ -97,15 +121,23 @@ def release_expired_hold(booking_id, *, redis_client) -> bool:
             if slot.status == Slot.Status.HELD and slot.capacity_remaining > 0:
                 slot.status = Slot.Status.AVAILABLE
             slot.save(update_fields=["capacity_remaining", "status", "updated_at"])
+
+    if event_bus is not None:
+        publish_event(event_bus, SlotEvent.RELEASED, slot_id=str(booking.slot_id))
+        publish_event(event_bus, BookingEvent.CANCELLED, booking_id=str(booking_id))
+
     return True
 
 
-def confirm_hold(booking_id, *, redis_client) -> Booking:
+def confirm_hold(booking_id, *, redis_client, event_bus=None) -> Booking:
     """Transitions a `HELD` booking to `ACTIVE` (the real confirm business-flow itself is
     Phase 3's job — this is just the state-machine + Redis-cleanup half of it) and clears its
     Redis TTL key, since an `ACTIVE` booking is no longer time-limited. Raises `ValidationError`
     via `transition_status` if the booking isn't currently `HELD` (e.g. its hold already
     expired) — never silently confirms a booking that shouldn't be confirmable anymore.
+
+    `event_bus` is optional (`None` by default) — pass a real `EventBus` to also publish
+    `SlotEvent.CONFIRMED` + `BookingEvent.CONFIRMED` (§1.4) on success.
     """
     booking = Booking.objects.get(pk=booking_id)
     if not ReservationHold(redis_client=redis_client).is_active(booking_id):
@@ -114,4 +146,9 @@ def confirm_hold(booking_id, *, redis_client) -> Booking:
         )
     booking.transition_status(Booking.Status.ACTIVE)
     ReservationHold(redis_client=redis_client).clear(booking_id)
+
+    if event_bus is not None:
+        publish_event(event_bus, SlotEvent.CONFIRMED, slot_id=str(booking.slot_id))
+        publish_event(event_bus, BookingEvent.CONFIRMED, booking_id=str(booking_id))
+
     return booking

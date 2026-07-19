@@ -159,6 +159,24 @@ class Slot(models.Model):
         return f"Slot({self.resource_id}, {self.start_time.isoformat()})"
 
 
+class ProcessedEvent(models.Model):
+    """Idempotency ledger for `events.process_event` (livetracker2.md §1.4) — one row per
+    `event_id` a consumer in this app has successfully processed. At-Least-Once delivery is the
+    only realistic guarantee `shared/event_bus` provides (no visibility-timeout/ack — a poisoned
+    event only stops retrying once routed to the DLQ), so duplicate delivery *will* happen; this
+    is what makes re-processing a safe no-op rather than a double business effect. Lives here,
+    not in `events.py`, because Django's migration autodiscovery only scans an app's `models.py`
+    — a model defined anywhere else silently never gets a migration.
+    """
+
+    event_id = models.UUIDField(primary_key=True)
+    event_type = models.CharField(max_length=100)
+    processed_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return f"ProcessedEvent({self.event_type}, {self.event_id})"
+
+
 class Booking(models.Model):
     """A customer's hold/booking of capacity on a `Slot` — two separate state machines on one
     row, not one combined enum, per livetracker2.md §1.3's explicit instruction (the real
@@ -351,11 +369,17 @@ class AvailabilityCalendar(models.Model):
         except (TypeError, ValueError):
             return None
 
-    def generate_slots(self) -> list[Slot]:
+    def generate_slots(self, *, event_bus=None) -> list[Slot]:
         """Materializes concrete `Slot` rows for this calendar's recurring rule, honoring the
         `days` weekday filter and skipping `holidays`. Raises `ValidationError` on a malformed
         rule instead of silently miscalculating (1.1's EDGE test-gate requirement) — validation
         runs first, before any slot is built.
+
+        `event_bus` is optional and `None` by default (existing 1.1/1.2/1.3 callers are
+        unaffected) — pass a real `shared.event_bus.EventBus` to also publish a `SlotEvent.
+        CREATED` event per generated slot (§1.4). Kept as an explicit parameter, not an
+        app-config lookup, so this shared library never depends on any one consuming app's
+        settings — same decoupling already used for `redis_client` in `reservation.py`.
         """
         self.clean()
 
@@ -395,4 +419,23 @@ class AvailabilityCalendar(models.Model):
                     )
             current += self.frequency
 
-        return Slot.objects.bulk_create(slots)
+        created = Slot.objects.bulk_create(slots)
+
+        if event_bus is not None:
+            # Local import: `.events` imports `ProcessedEvent` from this module, so a top-level
+            # import here would be circular. `models.py` is always loaded first (Django's app
+            # registry requires it), so importing `.events` lazily, only when actually needed,
+            # is the correct break in the cycle, not a workaround for one.
+            from .events import SlotEvent, publish_event
+
+            for slot in created:
+                publish_event(
+                    event_bus,
+                    SlotEvent.CREATED,
+                    slot_id=str(slot.id),
+                    resource_id=str(slot.resource_id),
+                    start_time=slot.start_time.isoformat(),
+                    end_time=slot.end_time.isoformat(),
+                )
+
+        return created

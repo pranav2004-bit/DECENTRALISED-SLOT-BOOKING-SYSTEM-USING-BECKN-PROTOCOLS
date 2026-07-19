@@ -29,4 +29,15 @@ urlpatterns = [
         name="ondc-site-verification",
     ),
     path("on_subscribe", core_views.on_subscribe_view, name="on_subscribe"),
+    path("api/v1/auth/signup", core_views.business_signup_view, name="business-signup"),
+    path("api/v1/auth/login", core_views.business_login_view, name="business-login"),
+    path("api/v1/auth/logout", core_views.business_logout_view, name="business-logout"),
+    path("api/v1/auth/me", core_views.business_me_view, name="business-me"),
+    path("api/v1/resources", core_views.resource_create_view, name="resource-create"),
+    path(
+        "api/v1/resources/<uuid:resource_id>/availability",
+        core_views.resource_availability_create_view,
+        name="resource-availability-create",
+    ),
+    path("api/v1/catalog/resources", core_views.resources_list_view, name="resources-list"),
 ]

@@ -3,7 +3,69 @@
 (healthcare/automotive/beauty — see BPP_details_v1.1.md, DOMAIN_* settings).
 """
 
+import uuid
+
+from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
+from django.contrib.auth.models import PermissionsMixin
 from django.db import models
+
+
+class BusinessAccountManager(BaseUserManager):
+    """Standard Django custom-user-model manager, mirroring BAP's `CustomerManager`."""
+
+    def create_user(
+        self, contact: str, business_name: str, password: str | None = None, **extra_fields
+    ):
+        if not contact:
+            raise ValueError("Business accounts must have a contact (email or phone).")
+        account = self.model(contact=contact, business_name=business_name, **extra_fields)
+        account.set_password(password)
+        account.save(using=self._db)
+        return account
+
+    def create_superuser(
+        self, contact: str, business_name: str, password: str | None = None, **extra_fields
+    ):
+        extra_fields.setdefault("is_staff", True)
+        extra_fields.setdefault("is_superuser", True)
+        return self.create_user(contact, business_name, password, **extra_fields)
+
+
+class BusinessAccount(AbstractBaseUser, PermissionsMixin):
+    """One business-account login (salon owner/admin) — livetracker2.md §2.2. Deliberately
+    **not** individual staff logins (deferred to Phase 4, tagged `[PILOT]` there): one
+    account per business, not one per employee.
+
+    **Provider Lifecycle Management** (`ACTIVE`/`INACTIVE`) reuses Django's own `is_active`
+    flag, same reasoning as BAP's `Customer.is_active` (§2.1) — `authenticate()` already
+    refuses an inactive account, and `visible_resources()` in `catalog.py` filters a
+    deactivated business's `Resource`s out of what "search" can see, satisfying this
+    phase's other Test Gate requirement with the same real flag, not a second one.
+
+    **Provider Configuration Management** (the Provider Management Module's other named
+    peer) is satisfied by the `AvailabilityCalendar` itself (§1.1/§2.2) — a business's
+    operating-hours/schedule configuration *is* its configuration management here, not a
+    separate settings screen. Documented explicitly as the mapping, not silently
+    unaddressed.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    contact = models.CharField(max_length=255, unique=True)
+    business_name = models.CharField(max_length=255)
+
+    is_active = models.BooleanField(default=True)
+    is_staff = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = BusinessAccountManager()
+
+    USERNAME_FIELD = "contact"
+    REQUIRED_FIELDS = ["business_name"]
+
+    def __str__(self) -> str:
+        return f"BusinessAccount({self.contact})"
 
 
 class OnboardingStatus(models.Model):

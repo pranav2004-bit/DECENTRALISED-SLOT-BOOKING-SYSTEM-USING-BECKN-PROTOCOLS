@@ -8,7 +8,6 @@ import responses
 from django.test import Client
 from django.urls import reverse
 
-from core.auth import authenticate_buyer_session
 from core.crypto import (
     generate_encryption_key_pair,
     generate_signing_key_pair,
@@ -110,11 +109,6 @@ def test_sign_outbound_request_produces_a_verifiable_signature():
         verify_request_signature(authorization_header=header, body=body, public_key_b64=public_b64)
         is True
     )
-
-
-def test_auth_stub_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        authenticate_buyer_session(session_token="fake-token-for-test")
 
 
 # --- Phase 3.1 BAP Onboarding ---

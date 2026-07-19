@@ -43,6 +43,12 @@ class Resource(models.Model):
     category_id = models.CharField(max_length=100, blank=True)
     rateable = models.BooleanField(default=True)
 
+    # The generic, no-fork extension point (livetracker2.md §1.5, ADR-0003): domain-specific
+    # fields (e.g. Beauty's consultation type) live here, validated by that domain's own
+    # `DomainAdapter` (`domain_adapter.py`) — never as bespoke columns bolted onto this model
+    # per domain.
+    domain_data = models.JSONField(default=dict, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -227,6 +233,11 @@ class Booking(models.Model):
     slot = models.ForeignKey(Slot, on_delete=models.CASCADE, related_name="bookings")
     holder_ref = models.CharField(max_length=255, db_index=True)
     quantity = models.PositiveIntegerField(default=1)
+
+    # Same generic no-fork extension point as `Resource.domain_data` (§1.5) — e.g. Beauty's
+    # combo-service steps or a multi-resource requirement, validated by the active domain's
+    # `DomainAdapter`, never a bespoke column added to this model per domain.
+    domain_data = models.JSONField(default=dict, blank=True)
 
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.HELD)
     fulfillment_status = models.CharField(

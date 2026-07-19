@@ -27,7 +27,7 @@ Framework/business logic reused across apps rather than duplicated per-app, impo
 | `django_observability` | Django app | Registry, Gateway, BAP, BPP | Correlation IDs, structured JSON logging, `/health`/`/ready`/`/metrics`, standardized error responses |
 | `observability` | Plain Python | all | Shared logging/metrics reference conventions |
 | `testing` | Plain Python | all | Shared contract-schema test fixtures (`shared/testing/contract_schemas/`) |
-| `inventory_core` | Django app | BPP (Phase 2.2) | Generic, domain-agnostic `Resource`/`Slot`/`AvailabilityCalendar` booking core, built once and shared across Beauty/Healthcare/Automotive (`livetracker2.md` Phase 1, ADR-0003) |
+| `inventory_core` | Django app | BPP (Phase 2.2) | Generic, domain-agnostic `Resource`/`Slot`/`Booking`/`AvailabilityCalendar` booking core — concurrency-safe capacity, a two-machine Booking/Fulfillment state model, a Redis-backed TTL hold window, event-bus wiring, and a Domain Adapter extension point — built once and shared across Beauty/Healthcare/Automotive (`livetracker2.md` Phase 1, ADR-0003) |
 
 ## Repository Strategy
 

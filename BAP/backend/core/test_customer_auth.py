@@ -16,13 +16,16 @@ from django_redis import get_redis_connection
 
 Customer = get_user_model()
 
+# Test fixture value, not a real credential.
+TEST_PASSWORD = "a-strong-passw0rd!"  # pragma: allowlist secret
+
 
 @pytest.fixture
 def client():
     return Client()
 
 
-def _signup(client, *, name="Jane Doe", contact="jane@example.com", password="a-strong-passw0rd!"):
+def _signup(client, *, name="Jane Doe", contact="jane@example.com", password=TEST_PASSWORD):
     return client.post(
         reverse("signup"),
         data={"name": name, "contact": contact, "password": password},
@@ -30,7 +33,7 @@ def _signup(client, *, name="Jane Doe", contact="jane@example.com", password="a-
     )
 
 
-def _login(client, *, contact="jane@example.com", password="a-strong-passw0rd!"):
+def _login(client, *, contact="jane@example.com", password=TEST_PASSWORD):
     return client.post(
         reverse("login"),
         data={"contact": contact, "password": password},
@@ -62,7 +65,7 @@ def test_signup_rejects_duplicate_contact(client):
 @pytest.mark.django_db
 @pytest.mark.parametrize("missing_field", ["name", "contact", "password"])
 def test_signup_rejects_missing_required_fields(client, missing_field):
-    payload = {"name": "Jane Doe", "contact": "jane@example.com", "password": "a-strong-passw0rd!"}
+    payload = {"name": "Jane Doe", "contact": "jane@example.com", "password": TEST_PASSWORD}
     payload[missing_field] = ""
 
     resp = client.post(reverse("signup"), data=payload, content_type="application/json")
@@ -90,8 +93,8 @@ def test_password_hash_uses_argon2_and_is_not_the_plaintext(client):
     customer = Customer.objects.get(contact="jane@example.com")
 
     assert customer.password.startswith("argon2$")
-    assert "a-strong-passw0rd!" not in customer.password
-    assert customer.check_password("a-strong-passw0rd!") is True
+    assert TEST_PASSWORD not in customer.password
+    assert customer.check_password(TEST_PASSWORD) is True
     assert customer.check_password("wrong-password") is False
 
 

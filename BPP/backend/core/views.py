@@ -1,10 +1,19 @@
+import datetime as dt
 import json
 
+from django.conf import settings
+from django.contrib.auth import authenticate, get_user_model, login, logout, password_validation
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpResponse, JsonResponse
+from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
+from django_observability.errors import error_response
+from inventory_core.domain_adapter import get_adapter
+from inventory_core.models import AvailabilityCalendar, Resource
 
 from . import onboarding_service
+from .catalog import visible_resources
 
 
 @require_http_methods(["GET"])
@@ -33,3 +42,182 @@ def on_subscribe_view(request):
         return JsonResponse({"error": f"Challenge decryption failed: {exc}"}, status=400)
 
     return JsonResponse(result, status=200)
+
+
+def _business_account_json(account) -> dict:
+    return {
+        "id": str(account.id),
+        "business_name": account.business_name,
+        "contact": account.contact,
+    }
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def business_signup_view(request):
+    """One business-account login (livetracker2.md §2.2) — same shape as BAP's customer
+    signup (§2.1), for the same reasons (see BAP/backend/core/views.py's `signup_view`)."""
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    business_name = (payload.get("business_name") or "").strip()
+    contact = (payload.get("contact") or "").strip()
+    password = payload.get("password") or ""
+
+    if not business_name:
+        return error_response(
+            "VALIDATION_ERROR", "business_name is required", 400, field="business_name"
+        )
+    if not contact:
+        return error_response("VALIDATION_ERROR", "contact is required", 400, field="contact")
+    if not password:
+        return error_response("VALIDATION_ERROR", "password is required", 400, field="password")
+
+    BusinessAccount = get_user_model()
+    if BusinessAccount.objects.filter(contact=contact).exists():
+        return error_response(
+            "VALIDATION_ERROR", "an account with this contact already exists", 409, field="contact"
+        )
+
+    try:
+        password_validation.validate_password(password)
+    except DjangoValidationError as exc:
+        return error_response("VALIDATION_ERROR", " ".join(exc.messages), 400, field="password")
+
+    account = BusinessAccount.objects.create_user(
+        contact=contact, business_name=business_name, password=password
+    )
+    return JsonResponse(_business_account_json(account), status=201)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def business_login_view(request):
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    contact = (payload.get("contact") or "").strip()
+    password = payload.get("password") or ""
+
+    account = authenticate(request, username=contact, password=password)
+    if account is None:
+        return error_response("UNAUTHORIZED", "invalid contact or password", 401)
+
+    login(request, account)
+    return JsonResponse(_business_account_json(account), status=200)
+
+
+@require_http_methods(["POST"])
+def business_logout_view(request):
+    logout(request)
+    return JsonResponse({"status": "ok"}, status=200)
+
+
+@require_http_methods(["GET"])
+def business_me_view(request):
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+    return JsonResponse(_business_account_json(request.user), status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def resource_create_view(request):
+    """The logged-in business account creates a real `Resource` it owns (§2.2) —
+    `owner_ref` is always the authenticated account's own id, never client-supplied, so a
+    business can only ever create resources under itself."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return error_response("VALIDATION_ERROR", "name is required", 400, field="name")
+
+    domain_data = payload.get("domain_data") or {}
+    adapter = get_adapter(settings.DOMAIN_BEAUTY)
+    try:
+        adapter.validate_resource_domain_data(domain_data)
+    except DjangoValidationError as exc:
+        return error_response(
+            "VALIDATION_ERROR", " ".join(exc.messages), 400, field="domain_data"
+        )
+
+    resource = Resource.objects.create(
+        owner_ref=str(request.user.id),
+        name=name,
+        code=payload.get("code", ""),
+        short_desc=payload.get("short_desc", ""),
+        long_desc=payload.get("long_desc", ""),
+        domain_data=domain_data,
+    )
+    return JsonResponse({"id": str(resource.id), "name": resource.name}, status=201)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def resource_availability_create_view(request, resource_id):
+    """Creates a real `AvailabilityCalendar` for one of the logged-in business's own
+    `Resource`s and generates real `Slot` rows from it (§2.2's own Test Gate wording)."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+
+    try:
+        resource = Resource.objects.get(id=resource_id, owner_ref=str(request.user.id))
+    except Resource.DoesNotExist:
+        return error_response("NOT_FOUND", "no such resource for this business account", 404)
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    # `parse_datetime` explicitly, rather than passing the raw JSON strings straight to
+    # `.create()`: a DateTimeField only auto-converts a string to `datetime` at DB-storage
+    # time (`get_prep_value`) or on a fresh fetch — the in-memory object `.create()` returns
+    # still holds the raw string, which `generate_slots()` (called immediately after, before
+    # any DB round-trip) would then crash on calling `.date()` against a `str`.
+    range_start = parse_datetime(payload.get("range_start", ""))
+    range_end = parse_datetime(payload.get("range_end", ""))
+    if range_start is None or range_end is None:
+        return error_response(
+            "VALIDATION_ERROR", "range_start/range_end must be valid ISO 8601 datetimes", 400
+        )
+
+    try:
+        calendar = AvailabilityCalendar.objects.create(
+            resource=resource,
+            frequency=dt.timedelta(days=payload.get("frequency_days", 1)),
+            range_start=range_start,
+            range_end=range_end,
+            days=payload.get("days", ""),
+            times=payload.get("times", []),
+            holidays=payload.get("holidays", []),
+            slot_duration=dt.timedelta(minutes=payload.get("slot_duration_minutes", 30)),
+            slot_capacity=payload.get("slot_capacity", 1),
+        )
+        slots = calendar.generate_slots()
+    except DjangoValidationError as exc:
+        return error_response("VALIDATION_ERROR", str(exc), 400)
+
+    return JsonResponse(
+        {"calendar_id": str(calendar.id), "slots_created": len(slots)}, status=201
+    )
+
+
+@require_http_methods(["GET"])
+def resources_list_view(request):
+    """Lists currently-visible `Resource`s — the set any future real search/catalog
+    surface should draw from. A deactivated business's resources are excluded (§2.2's own
+    Test Gate wording: "a deactivated business account's inventory stops appearing in
+    search"). Not the real Beckn `search`/`on_search` wiring — that's Phase 3 (§2.3)."""
+    resources = visible_resources().values("id", "name", "owner_ref")
+    return JsonResponse({"resources": list(resources)}, status=200)

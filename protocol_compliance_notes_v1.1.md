@@ -197,6 +197,14 @@ Pulled directly from `beckn/protocol-specifications` `schema/*.yaml` (raw files,
 
 **Net effect on Phase 1.1:** `Resource` (the bookable person/thing) takes its descriptive fields from `Descriptor.yaml`'s real shape (`name`/`code`/`short_desc`/`long_desc`) plus `rateable`/`tags` from `Provider`/`Item`, rather than inventing arbitrary field names. `AvailabilityCalendar` takes `frequency`/`holidays`/`times` directly from the real `Schedule.yaml`, and the recurring-window/exception fields from `Time.yaml`'s `range`/`days`. `Slot` itself (a generated, concrete bookable window) has no direct protocol-schema counterpart — the real protocol only models availability at the `Time`/`Schedule` level and leaves per-slot generation to the provider's own inventory system, so `Slot`'s shape (`start_time`, `end_time`, `capacity_remaining`, `status`) is this project's own design, not a borrowed schema, consistent with `Fulfillment.state` already being confirmed project-defined territory.
 
+## G. Business Layer Schema Facts — `Catalog` (`livetracker2.md` Phase 2.3)
+
+`livetracker2.md`'s top-of-file protocol-grounding list named `Catalog` among the schemas "already-pulled," but that claim was about the core transaction schema generally (§D above lists `Catalog` only implicitly, via `/on_search`'s `message.catalog` field) — `Catalog.yaml`'s own field-by-field shape was never independently confirmed and recorded here before Phase 2.3 needed it. Confirmed now, from `beckn/protocol-specifications` `schema/Catalog.yaml` (raw file, 2026-07-19):
+
+- **`Catalog.yaml`** — `descriptor` ($ref `Descriptor.yaml`), `fulfillments` (array of `Fulfillment.yaml`), `payments` (array of `Payment.yaml`), `offers` (array of `Offer.yaml`), `providers` (array of `Provider.yaml`), `exp` (date-time), `ttl` (string — the real schema does not constrain this field's format the same way `Provider.ttl`/`Item.ttl` do, despite the shared name).
+
+**Net effect on Phase 2.3:** BPP's internal Beauty catalog representation (`BPP/backend/core/catalog.py`'s `build_beauty_catalog()`) is a real `Catalog` object — `descriptor` + `providers[]` (each a real `Provider` shape: `id`/`descriptor`/`category_id`/`items[]`), each `Item` built from a real `Resource` using the confirmed `Descriptor`/`Item` field names from §F. `fulfillments`/`payments`/`offers` are correctly omitted at this stage (no fulfillment/payment/offer data exists to populate them yet — Phase 3's job), not silently guessed at.
+
 ## Remaining Open Items (genuinely unresolved, none blocking)
 
 - Exact field-level `Intent`/`Catalog`/`Order` schemas for `/search` through `/support` — irrelevant to this tracker's scope (business workflows, not foundation/trust layer); defer to the future business-capability tracker.
@@ -241,6 +249,7 @@ Because §A–D above are now sourced from the actual OpenAPI spec files, this i
 - https://raw.githubusercontent.com/beckn/protocol-specifications/master/schema/Descriptor.yaml
 - https://raw.githubusercontent.com/beckn/protocol-specifications/master/schema/Provider.yaml
 - https://raw.githubusercontent.com/beckn/protocol-specifications/master/schema/Item.yaml
+- https://raw.githubusercontent.com/beckn/protocol-specifications/master/schema/Catalog.yaml
 - https://gist.github.com/Ajcode69/4f9064ceac713c4f42677b0d619fe3ba
 - https://pramaan.ondc.org/
 - https://github.com/ONDC-Official/pramaan

@@ -29,6 +29,18 @@ Beckn/ONDC JSON payload shapes are confirmed in [protocol_compliance_notes_v1.1.
 
 Schemas live as JSON Schema documents derived directly from the confirmed shapes in `protocol_compliance_notes_v1.1.md`, kept in sync by hand until/unless the project adopts the official Beckn OpenAPI specs as a generation source. See [shared/testing/contract_schemas/](shared/testing/contract_schemas/) and the reference test in [shared/testing/test_contract_reference.py](shared/testing/test_contract_reference.py).
 
+## Concurrency & Race-Condition Testing
+
+Introduced in `livetracker2.md` Phase 1.2 for `shared/inventory_core`'s atomic capacity decrement, and reused in Phase 1.3 for the Redis-backed TTL reservation window — the real pattern, not a theoretical description:
+
+- **Real concurrent writes, not a single-threaded simulation.** `pytest.mark.django_db(transaction=True)` (not the default `django_db` marker) — the default wraps a test in pytest-django's own outer transaction, which serializes everything through one connection and would hide the exact race being tested. `transaction=True` gives each thread a genuine, independently-committing Postgres connection.
+- **`concurrent.futures.ThreadPoolExecutor`**, one worker per attempt, all racing the same DB row (e.g. a capacity-1 `Slot`). Django's connection handling is thread-local, so each thread lazily opens its own real connection on first use — no manual connection-pool wiring needed, but each thread function must call `django.db.connection.close()` when done to avoid leaking connections across the test run.
+- **Assert the aggregate outcome, not a single call.** For an atomic conditional `UPDATE` (`shared/inventory_core.models.SlotManager.try_reserve`), assert exactly one success and N-1 clean rejections against a capacity-1 row — a corrupted/over-counted result is the actual bug this test exists to catch, not just "did it run without an exception."
+- **Real timing for TTL behavior**, not a mocked clock: Phase 1.3's expiry tests use a short (1-second) real Redis TTL and a real `time.sleep()` past it, then assert the reconciliation function (`release_expired_hold`) does the right thing — genuinely exercises Redis's own eviction, not an assumption about how TTLs behave.
+- **Re-run before trusting.** Both the concurrent-write and TTL-timing tests were re-run multiple times (5x and 3x respectively) during development specifically to rule out flakiness before being counted as passing — a single green run of a timing/concurrency test is weaker evidence than for ordinary deterministic tests, and treated that way.
+
+See `BPP/backend/core/test_inventory_core_concurrency.py` and `test_inventory_core_booking.py` for the reference implementation of this pattern.
+
 ## Load Testing
 
 **Tool: k6.** Scriptable, lightweight, good fit for HTTP API load testing without a heavyweight setup. Scaffolded now (`[MVP]`), not exercised at real scale until Phase 4.2 (Network Resilience & Failure Injection) and beyond — running load tests against nothing but empty Phase 0 scaffolding would produce meaningless numbers.

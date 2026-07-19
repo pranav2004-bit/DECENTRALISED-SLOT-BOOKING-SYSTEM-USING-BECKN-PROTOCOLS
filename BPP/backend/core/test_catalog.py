@@ -17,6 +17,9 @@ from core.catalog import build_beauty_catalog
 
 BusinessAccount = get_user_model()
 
+# Test fixture value, not a real credential.
+TEST_PASSWORD = "unused-in-this-test"  # pragma: allowlist secret
+
 SCHEMA_PATH = (
     Path(__file__).resolve().parents[3]
     / "shared"
@@ -41,7 +44,7 @@ def test_empty_catalog_matches_the_confirmed_schema():
 @pytest.mark.django_db
 def test_catalog_round_trips_real_business_and_resource_data():
     business = BusinessAccount.objects.create_user(
-        contact="salon@example.com", business_name="Glow Salon", password="unused-in-this-test"
+        contact="salon@example.com", business_name="Glow Salon", password=TEST_PASSWORD
     )
     Resource.objects.create(
         owner_ref=str(business.id),
@@ -71,7 +74,7 @@ def test_catalog_round_trips_real_business_and_resource_data():
 @pytest.mark.django_db
 def test_inactive_business_is_excluded_from_the_catalog():
     business = BusinessAccount.objects.create_user(
-        contact="salon@example.com", business_name="Glow Salon", password="unused-in-this-test"
+        contact="salon@example.com", business_name="Glow Salon", password=TEST_PASSWORD
     )
     Resource.objects.create(owner_ref=str(business.id), name="Stylist A")
     BusinessAccount.objects.filter(id=business.id).update(is_active=False)
@@ -84,7 +87,7 @@ def test_inactive_business_is_excluded_from_the_catalog():
 @pytest.mark.django_db
 def test_business_with_no_resources_is_excluded_from_the_catalog():
     BusinessAccount.objects.create_user(
-        contact="salon@example.com", business_name="Glow Salon", password="unused-in-this-test"
+        contact="salon@example.com", business_name="Glow Salon", password=TEST_PASSWORD
     )
 
     catalog = build_beauty_catalog()

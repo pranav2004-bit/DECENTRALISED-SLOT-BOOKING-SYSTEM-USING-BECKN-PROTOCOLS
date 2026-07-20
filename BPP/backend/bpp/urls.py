@@ -43,4 +43,5 @@ urlpatterns = [
     path("search", core_views.search_view, name="search"),
     path("select", core_views.select_view, name="select"),
     path("init", core_views.init_view, name="init"),
+    path("confirm", core_views.confirm_view, name="confirm"),
 ]

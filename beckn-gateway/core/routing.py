@@ -584,3 +584,171 @@ def relay_on_init_in_background(*, payload: dict, authorization_header: str) -> 
         daemon=True,
     )
     thread.start()
+
+
+# --- confirm / on_confirm (livetracker2.md Phase 3.4) -------------------------------------
+
+
+def validate_and_ack_confirm(
+    *, payload: dict, authorization_header: str, body: bytes
+) -> tuple[dict, int]:
+    """Synchronous half of /confirm: validates and verifies the calling BAP,
+    returns the real ACK/NACK envelope. Does NOT forward to the BPP — that's
+    dispatch_confirm's job, meant to run after this returns."""
+    try:
+        context = payload["context"]
+    except KeyError as exc:
+        raise RoutingError("Missing context", status_code=400) from exc
+
+    try:
+        _verify_caller(
+            context=context,
+            authorization_header=authorization_header,
+            body=body,
+            expected_id_field="bap_id",
+        )
+    except RoutingError as exc:
+        return (
+            build_nack_response(
+                context=context, error={"code": "ROUTING_ERROR", "message": exc.message}
+            ),
+            exc.status_code,
+        )
+
+    return build_ack_response(context=context), 200
+
+
+def validate_and_ack_on_confirm(
+    *, payload: dict, authorization_header: str, body: bytes
+) -> tuple[dict, int]:
+    """Synchronous half of /on_confirm: validates and verifies the calling BPP (its
+    identity must match context.bpp_id). Does NOT relay to the BAP — that's
+    relay_on_confirm's job."""
+    try:
+        context = payload["context"]
+    except KeyError as exc:
+        raise RoutingError("Missing context", status_code=400) from exc
+
+    try:
+        _verify_caller(
+            context=context,
+            authorization_header=authorization_header,
+            body=body,
+            expected_id_field="bpp_id",
+        )
+    except RoutingError as exc:
+        return (
+            build_nack_response(
+                context=context, error={"code": "ROUTING_ERROR", "message": exc.message}
+            ),
+            exc.status_code,
+        )
+
+    return build_ack_response(context=context), 200
+
+
+def dispatch_confirm(*, payload: dict, authorization_header: str) -> None:
+    """Forwards a customer's confirmation to the ONE specific BPP already chosen at
+    Selection — same targeted-forward pattern as dispatch_init, not a broadcast.
+
+    Re-checks that BPP's SUBSCRIBED status via a fresh Registry lookup before
+    forwarding — the same staleness risk dispatch_init already closed between
+    select and init applies equally between init and confirm. Same fire-and-forget/
+    log-don't-raise discipline as dispatch_init."""
+    context = payload["context"]
+    body = json.dumps(payload).encode()
+
+    bpp_id = context.get("bpp_id")
+    bpp_uri = context.get("bpp_uri")
+    if not bpp_id or not bpp_uri:
+        logger.error("dispatch_confirm: context missing bpp_id/bpp_uri, cannot forward")
+        return
+
+    try:
+        results = registry_client.lookup({"subscriber_id": bpp_id})
+    except Exception:
+        logger.exception("dispatch_confirm: Registry lookup failed for bpp_id %s", bpp_id)
+        return
+
+    if not results or results[0].get("status") != "SUBSCRIBED":
+        logger.info(
+            "dispatch_confirm: bpp_id %s is no longer SUBSCRIBED, refusing to forward", bpp_id
+        )
+        return
+
+    _, signing_priv = get_signing_keys()
+    gateway_signature = sign_outbound_request(
+        body=body,
+        subscriber_id=settings.SUBSCRIBER_ID,
+        unique_key_id=settings.UNIQUE_KEY_ID,
+        signing_private_key_b64=signing_priv,
+    )
+
+    bpp_confirm_url = bpp_uri.rstrip("/") + "/confirm"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": authorization_header,
+        "X-Gateway-Authorization": gateway_signature,
+    }
+    try:
+        client = registry_client.get_client()
+        response = client.post(bpp_confirm_url, data=body, headers=headers)
+        response.raise_for_status()
+    except Exception:
+        logger.exception("dispatch_confirm: forwarding to %s failed", bpp_confirm_url)
+
+
+def dispatch_confirm_in_background(*, payload: dict, authorization_header: str) -> None:
+    """Fires dispatch_confirm on a daemon thread — same fire-and-forget entry point
+    pattern as dispatch_init_in_background."""
+    thread = threading.Thread(
+        target=dispatch_confirm,
+        kwargs={"payload": payload, "authorization_header": authorization_header},
+        daemon=True,
+    )
+    thread.start()
+
+
+def relay_on_confirm(*, payload: dict, authorization_header: str) -> None:
+    """Forwards a BPP's /on_confirm callback on to the originating BAP — on_confirm
+    routes back through Gateway, same as on_init. Same fire-and-forget/log-don't-
+    raise discipline as relay_on_init."""
+    context = payload["context"]
+    body = json.dumps(payload).encode()
+
+    bap_uri = context.get("bap_uri")
+    if not bap_uri:
+        logger.error("relay_on_confirm: context missing bap_uri, cannot relay callback")
+        return
+
+    _, signing_priv = get_signing_keys()
+    gateway_signature = sign_outbound_request(
+        body=body,
+        subscriber_id=settings.SUBSCRIBER_ID,
+        unique_key_id=settings.UNIQUE_KEY_ID,
+        signing_private_key_b64=signing_priv,
+    )
+
+    bap_on_confirm_url = bap_uri.rstrip("/") + "/on_confirm"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": authorization_header,
+        "X-Gateway-Authorization": gateway_signature,
+    }
+    try:
+        client = registry_client.get_client()
+        response = client.post(bap_on_confirm_url, data=body, headers=headers)
+        response.raise_for_status()
+    except Exception:
+        logger.exception("relay_on_confirm: forwarding to %s failed", bap_on_confirm_url)
+
+
+def relay_on_confirm_in_background(*, payload: dict, authorization_header: str) -> None:
+    """Fires relay_on_confirm on a daemon thread — same fire-and-forget entry
+    point pattern as relay_on_init_in_background."""
+    thread = threading.Thread(
+        target=relay_on_confirm,
+        kwargs={"payload": payload, "authorization_header": authorization_header},
+        daemon=True,
+    )
+    thread.start()

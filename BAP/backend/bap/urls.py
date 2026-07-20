@@ -54,4 +54,11 @@ urlpatterns = [
         name="init-result",
     ),
     path("on_init", core_views.on_init_view, name="on_init"),
+    path("api/v1/confirm", core_views.confirm_trigger_view, name="confirm-trigger"),
+    path(
+        "api/v1/confirm/<str:transaction_id>",
+        core_views.confirm_result_view,
+        name="confirm-result",
+    ),
+    path("on_confirm", core_views.on_confirm_view, name="on_confirm"),
 ]

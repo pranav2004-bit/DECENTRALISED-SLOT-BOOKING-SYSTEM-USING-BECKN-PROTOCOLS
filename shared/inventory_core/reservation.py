@@ -179,18 +179,34 @@ def confirm_hold(booking_id, *, redis_client, event_bus=None) -> Booking:
     """Transitions a `HELD` booking to `ACTIVE` (the real confirm business-flow itself is
     Phase 3's job — this is just the state-machine + Redis-cleanup half of it) and clears its
     Redis TTL key, since an `ACTIVE` booking is no longer time-limited. Raises `ValidationError`
-    via `transition_status` if the booking isn't currently `HELD` (e.g. its hold already
-    expired) — never silently confirms a booking that shouldn't be confirmable anymore.
+    if the booking isn't currently `HELD` and isn't already `ACTIVE` either (e.g. its hold
+    already expired, or it was cancelled) — never silently confirms a booking that shouldn't be
+    confirmable anymore. An already-`ACTIVE` booking is a real, idempotent no-op (see below), not
+    an error.
+
+    Idempotent and race-safe by design (livetracker2.md §3.4, `protocol_compliance_notes_v1.1.md`
+    §K): the read+check+transition happens under a real `select_for_update()` row lock, and an
+    already-`ACTIVE` booking short-circuits to a no-op return instead of re-running the
+    transition. Two genuinely concurrent callers confirming the *same* booking (a real
+    double-submit/flaky-retry scenario) would otherwise both pass the "is this HELD" check
+    before either committed, and each independently fire a fresh `BookingConfirmed` event —
+    Phase 1.4's event-idempotency layer dedupes by `event_id` (per publish call), not by
+    business key, so it would NOT catch two independently-published confirmations of the same
+    booking as duplicates. The second (blocked, then unblocked) caller here instead observes
+    the already-`ACTIVE` state and returns without re-transitioning or re-publishing.
 
     `event_bus` is optional (`None` by default) — pass a real `EventBus` to also publish
-    `SlotEvent.CONFIRMED` + `BookingEvent.CONFIRMED` (§1.4) on success.
+    `SlotEvent.CONFIRMED` + `BookingEvent.CONFIRMED` (§1.4) on a genuine (non-idempotent) success.
     """
-    booking = Booking.objects.get(pk=booking_id)
-    if not ReservationHold(redis_client=redis_client).is_active(booking_id):
-        raise ValidationError(
-            f"cannot confirm booking {booking_id}: its reservation hold has already expired."
-        )
-    booking.transition_status(Booking.Status.ACTIVE)
+    with transaction.atomic():
+        booking = Booking.objects.select_for_update().get(pk=booking_id)
+        if booking.status == Booking.Status.ACTIVE:
+            return booking
+        if not ReservationHold(redis_client=redis_client).is_active(booking_id):
+            raise ValidationError(
+                f"cannot confirm booking {booking_id}: its reservation hold has already expired."
+            )
+        booking.transition_status(Booking.Status.ACTIVE)
     ReservationHold(redis_client=redis_client).clear(booking_id)
 
     if event_bus is not None:

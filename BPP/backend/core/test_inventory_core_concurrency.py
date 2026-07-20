@@ -13,14 +13,18 @@ committing Postgres connection, per the tracker's own "not a theoretical claim" 
 """
 
 import datetime as dt
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+import redis
+from django.conf import settings
 from django.db import IntegrityError, connection, transaction
 from django.db.transaction import TransactionManagementError
 from django.utils import timezone
-from inventory_core.models import Resource, Slot
+from inventory_core.models import Booking, Resource, Slot
+from inventory_core.reservation import confirm_hold, hold_slot
 
 
 @pytest.fixture
@@ -105,6 +109,52 @@ def test_concurrent_try_reserve_against_capacity_one_slot_yields_exactly_one_suc
 
     slot.refresh_from_db()
     assert slot.capacity_remaining == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_confirm_on_the_same_booking_fires_exactly_one_event(django_db_blocker):
+    """livetracker2.md §3.4's real Test Gate: since `hold_slot()` already prevents two
+    customers from ever holding the same capacity-1 slot simultaneously, the only genuine
+    race reachable at Confirm time is two near-simultaneous `/confirm` calls for the SAME
+    booking (a real double-submit/flaky-retry scenario). Both must observe the booking end
+    up ACTIVE; only one may perform the real transition and fire `BookingConfirmed` — the
+    other must be a safe, non-erroring, non-duplicate-publishing no-op."""
+    with django_db_blocker.unblock():
+        resource = Resource.objects.create(owner_ref="biz-1", name="Stylist A")
+        slot = _make_slot(resource, capacity=1)
+        redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30)
+
+    published = []
+    publish_lock = threading.Lock()
+
+    class FakeBus:
+        def publish(self, *args, **kwargs):
+            with publish_lock:
+                published.append(args)
+
+    fake_bus = FakeBus()
+    n_attempts = 8
+    errors: list[Exception] = []
+
+    def attempt():
+        try:
+            confirm_hold(booking.id, redis_client=redis_client, event_bus=fake_bus)
+        except Exception as exc:  # noqa: BLE001 - captured for assertion, not swallowed
+            errors.append(exc)
+        finally:
+            connection.close()
+
+    with ThreadPoolExecutor(max_workers=n_attempts) as executor:
+        futures = [executor.submit(attempt) for _ in range(n_attempts)]
+        for future in futures:
+            future.result()
+
+    assert errors == []
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.ACTIVE
+    # SlotConfirmed + BookingConfirmed, published exactly once each — never once per thread.
+    assert len(published) == 2
 
 
 @pytest.mark.django_db

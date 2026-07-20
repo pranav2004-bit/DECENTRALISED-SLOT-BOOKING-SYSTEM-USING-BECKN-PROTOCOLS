@@ -152,6 +152,13 @@ class SearchSession(models.Model):
     init_order = models.JSONField(null=True, blank=True)
     init_error = models.JSONField(null=True, blank=True)
 
+    # §3.4 Confirmation — same mutually-exclusive success/error pattern, the final
+    # step of the same continuous transaction. `confirmed_order` holds the real,
+    # permanently-confirmed Order (status ACTIVE, a real payments[] stub) once
+    # on_confirm arrives successfully.
+    confirmed_order = models.JSONField(null=True, blank=True)
+    confirmed_error = models.JSONField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

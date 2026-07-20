@@ -252,3 +252,21 @@ def test_confirm_hold_rejects_an_already_expired_hold(resource, redis_client):
 
     with pytest.raises(ValidationError):
         confirm_hold(booking.id, redis_client=redis_client)
+
+
+@pytest.mark.django_db
+def test_confirm_hold_is_idempotent_for_an_already_active_booking(resource, redis_client):
+    """livetracker2.md §3.4's real gap, closed before implementing Confirm: retrying the
+    identical confirm request against an already-ACTIVE booking must not raise and must not
+    re-fire BookingConfirmed — a real double-submit/flaky-retry scenario, not hypothetical."""
+    slot = _make_slot(resource, capacity=1)
+    booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30)
+    confirm_hold(booking.id, redis_client=redis_client)
+
+    published = []
+    fake_bus = type("FakeBus", (), {"publish": lambda self, *a, **kw: published.append(a)})()
+
+    confirmed_again = confirm_hold(booking.id, redis_client=redis_client, event_bus=fake_bus)
+
+    assert confirmed_again.status == Booking.Status.ACTIVE
+    assert published == []

@@ -33,4 +33,11 @@ urlpatterns = [
     path("api/v1/auth/login", core_views.login_view, name="login"),
     path("api/v1/auth/logout", core_views.logout_view, name="logout"),
     path("api/v1/auth/me", core_views.me_view, name="me"),
+    path("api/v1/search", core_views.search_trigger_view, name="search-trigger"),
+    path(
+        "api/v1/search/<str:transaction_id>",
+        core_views.search_results_view,
+        name="search-results",
+    ),
+    path("on_search", core_views.on_search_view, name="on_search"),
 ]

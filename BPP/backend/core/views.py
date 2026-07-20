@@ -12,7 +12,7 @@ from django_observability.errors import error_response
 from inventory_core.domain_adapter import get_adapter
 from inventory_core.models import AvailabilityCalendar, Resource
 
-from . import onboarding_service
+from . import onboarding_service, search_service
 from .catalog import visible_resources
 
 
@@ -215,9 +215,35 @@ def resource_availability_create_view(request, resource_id):
 
 @require_http_methods(["GET"])
 def resources_list_view(request):
-    """Lists currently-visible `Resource`s — the set any future real search/catalog
-    surface should draw from. A deactivated business's resources are excluded (§2.2's own
-    Test Gate wording: "a deactivated business account's inventory stops appearing in
-    search"). Not the real Beckn `search`/`on_search` wiring — that's Phase 3 (§2.3)."""
+    """Lists currently-visible `Resource`s for BPP's own business dashboard — a
+    deactivated business's resources are excluded (§2.2's own Test Gate wording: "a
+    deactivated business account's inventory stops appearing in search"). Distinct
+    from the real Beckn `/search`/`/on_search` wire endpoints below (§3.1) — this is a
+    non-protocol, web-facing convenience endpoint, not part of the Beckn transaction
+    flow."""
     resources = visible_resources().values("id", "name", "owner_ref")
     return JsonResponse({"resources": list(resources)}, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def search_view(request):
+    """Real /search business logic (livetracker2.md Phase 3.1) — receives Gateway's
+    forwarded search intent, ACKs the calling Gateway/BAP pair synchronously, then
+    builds and sends the real Beauty catalog as a signed /on_search callback in the
+    background (see core/search_service.py's module docstring for the full
+    async-mandate reasoning)."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = search_service.validate_and_ack_search(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        search_service.dispatch_on_search_in_background(payload=payload)
+    return JsonResponse(response_body, status=status_code)

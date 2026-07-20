@@ -21,6 +21,7 @@ COPY shared/django_observability ./shared/django_observability
 COPY shared/resilient_http ./shared/resilient_http
 COPY shared/event_bus ./shared/event_bus
 COPY shared/beckn_crypto ./shared/beckn_crypto
+COPY shared/beckn_transaction ./shared/beckn_transaction
 COPY shared/realtime ./shared/realtime
 COPY BAP/backend/ ./BAP/backend/
 RUN chown -R app:app /app

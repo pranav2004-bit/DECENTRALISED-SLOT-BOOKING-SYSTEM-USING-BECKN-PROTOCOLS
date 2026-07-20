@@ -24,7 +24,7 @@ from django.db import IntegrityError, connection, transaction
 from django.db.transaction import TransactionManagementError
 from django.utils import timezone
 from inventory_core.models import Booking, Resource, Slot
-from inventory_core.reservation import confirm_hold, hold_slot
+from inventory_core.reservation import confirm_hold, hold_slot, reschedule_active_booking
 
 
 @pytest.fixture
@@ -155,6 +155,66 @@ def test_concurrent_confirm_on_the_same_booking_fires_exactly_one_event(django_d
     assert booking.status == Booking.Status.ACTIVE
     # SlotConfirmed + BookingConfirmed, published exactly once each — never once per thread.
     assert len(published) == 2
+
+
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_reschedules_swapping_two_slots_do_not_deadlock(django_db_blocker):
+    """livetracker2.md §3.5's real deadlock-safety Test Gate, found and fixed by
+    design before `reschedule_active_booking` was first written
+    (protocol_compliance_notes_v1.1.md §L): naively locking a booking's old slot
+    then its new slot would let two concurrent reschedules moving bookings in
+    opposite directions between the SAME two slots deadlock against each other.
+    Both slots here have real spare capacity (2 total, 1 occupied), so both
+    reschedules are genuinely satisfiable concurrently — this proves the
+    deterministic sorted-id lock ordering prevents a real deadlock, not just that
+    one of the two eventually wins a capacity race."""
+    with django_db_blocker.unblock():
+        resource = Resource.objects.create(owner_ref="biz-1", name="Stylist A")
+        redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        slot_1 = _make_slot(resource, capacity=2)
+        slot_2 = Slot.objects.create(
+            resource=resource,
+            start_time=slot_1.start_time + dt.timedelta(hours=1),
+            end_time=slot_1.end_time + dt.timedelta(hours=1),
+            capacity_total=2,
+            capacity_remaining=2,
+        )
+        booking_1 = hold_slot(
+            slot_1.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30
+        )
+        booking_2 = hold_slot(
+            slot_2.id, holder_ref="cust-2", redis_client=redis_client, ttl_seconds=30
+        )
+        confirm_hold(booking_1.id, redis_client=redis_client)
+        confirm_hold(booking_2.id, redis_client=redis_client)
+
+    errors: list[Exception] = []
+
+    def move(booking_id, target_slot_id):
+        try:
+            reschedule_active_booking(booking_id, target_slot_id)
+        except Exception as exc:  # noqa: BLE001 - captured for assertion, not swallowed
+            errors.append(exc)
+        finally:
+            connection.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_a = executor.submit(move, booking_1.id, slot_2.id)
+        future_b = executor.submit(move, booking_2.id, slot_1.id)
+        # A real deadlock would hang forever; a generous timeout turns that into a
+        # real, diagnosable test failure instead of the whole suite hanging.
+        future_a.result(timeout=15)
+        future_b.result(timeout=15)
+
+    assert errors == []
+    booking_1.refresh_from_db()
+    booking_2.refresh_from_db()
+    assert booking_1.slot_id == slot_2.id
+    assert booking_2.slot_id == slot_1.id
+    slot_1.refresh_from_db()
+    slot_2.refresh_from_db()
+    assert slot_1.capacity_remaining == 1
+    assert slot_2.capacity_remaining == 1
 
 
 @pytest.mark.django_db

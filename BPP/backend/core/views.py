@@ -13,7 +13,17 @@ from django_observability.errors import error_response
 from inventory_core.domain_adapter import get_adapter
 from inventory_core.models import AvailabilityCalendar, Resource
 
-from . import confirm_service, init_service, onboarding_service, search_service, select_service
+from . import (
+    cancel_service,
+    confirm_service,
+    init_service,
+    onboarding_service,
+    search_service,
+    select_service,
+    status_service,
+    track_service,
+    update_service,
+)
 from .catalog import visible_resources
 
 
@@ -331,4 +341,96 @@ def confirm_view(request):
     )
     if status_code == 200:
         confirm_service.dispatch_on_confirm_in_background(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def status_view(request):
+    """Real /status business logic (livetracker2.md Phase 3.5) — receives Gateway's
+    forwarded status request, ACKs the calling Gateway/BAP pair synchronously, then
+    returns the booking's real, live current state in the background (see
+    core/status_service.py's module docstring)."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = status_service.validate_and_ack_status(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        status_service.dispatch_on_status_in_background(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def cancel_view(request):
+    """Real /cancel business logic (livetracker2.md Phase 3.5) — receives Gateway's
+    forwarded cancellation, ACKs the calling Gateway/BAP pair synchronously, then
+    performs the real ACTIVE -> CANCELLED transition in the background (see
+    core/cancel_service.py's module docstring)."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = cancel_service.validate_and_ack_cancel(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        cancel_service.dispatch_on_cancel_in_background(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def update_view(request):
+    """Real /update business logic (livetracker2.md Phase 3.5) — receives Gateway's
+    forwarded reschedule request, ACKs the calling Gateway/BAP pair synchronously,
+    then moves the booking to the newly-requested slot in the background (see
+    core/update_service.py's module docstring)."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = update_service.validate_and_ack_update(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        update_service.dispatch_on_update_in_background(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def track_view(request):
+    """Real /track business logic (livetracker2.md Phase 3.5) — receives Gateway's
+    forwarded tracking request, ACKs the calling Gateway/BAP pair synchronously,
+    then returns a real (always-inactive, for this domain) Tracking object in the
+    background (see core/track_service.py's module docstring)."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = track_service.validate_and_ack_track(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        track_service.dispatch_on_track_in_background(payload=payload)
     return JsonResponse(response_body, status=status_code)

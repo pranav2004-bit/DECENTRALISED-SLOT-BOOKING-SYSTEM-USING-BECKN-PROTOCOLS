@@ -35,4 +35,12 @@ urlpatterns = [
     path("on_init", core_views.on_init_view, name="on_init"),
     path("confirm", core_views.confirm_view, name="confirm"),
     path("on_confirm", core_views.on_confirm_view, name="on_confirm"),
+    path("status", core_views.status_view, name="status"),
+    path("on_status", core_views.on_status_view, name="on_status"),
+    path("cancel", core_views.cancel_view, name="cancel"),
+    path("on_cancel", core_views.on_cancel_view, name="on_cancel"),
+    path("update", core_views.update_view, name="update"),
+    path("on_update", core_views.on_update_view, name="on_update"),
+    path("track", core_views.track_view, name="track"),
+    path("on_track", core_views.on_track_view, name="on_track"),
 ]

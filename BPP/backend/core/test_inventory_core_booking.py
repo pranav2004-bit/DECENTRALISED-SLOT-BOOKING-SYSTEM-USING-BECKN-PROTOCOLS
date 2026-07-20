@@ -19,10 +19,12 @@ from django.utils import timezone
 from inventory_core.models import Booking, Resource, Slot
 from inventory_core.reservation import (
     ReservationHold,
+    cancel_booking,
     confirm_hold,
     hold_slot,
     release_expired_hold,
     release_hold_now,
+    reschedule_active_booking,
 )
 
 
@@ -270,3 +272,127 @@ def test_confirm_hold_is_idempotent_for_an_already_active_booking(resource, redi
 
     assert confirmed_again.status == Booking.Status.ACTIVE
     assert published == []
+
+
+# --- cancel_booking (livetracker2.md §3.5) --------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_cancel_booking_transitions_to_cancelled_and_restores_capacity(resource, redis_client):
+    slot = _make_slot(resource, capacity=1)
+    booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30)
+    confirm_hold(booking.id, redis_client=redis_client)
+
+    cancelled = cancel_booking(booking.id)
+
+    assert cancelled.status == Booking.Status.CANCELLED
+    slot.refresh_from_db()
+    assert slot.capacity_remaining == 1
+    assert slot.status == Slot.Status.AVAILABLE
+
+
+@pytest.mark.django_db
+def test_cancel_booking_rejects_a_still_held_booking(resource, redis_client):
+    """A still-HELD hold was never actually offered to the customer as a confirmed,
+    cancellable Order — use release_hold_now for that case instead."""
+    slot = _make_slot(resource, capacity=1)
+    booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30)
+
+    with pytest.raises(ValidationError):
+        cancel_booking(booking.id)
+
+
+@pytest.mark.django_db
+def test_cancel_booking_publishes_slot_released_and_booking_cancelled_events(
+    resource, redis_client
+):
+    slot = _make_slot(resource, capacity=1)
+    booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30)
+    confirm_hold(booking.id, redis_client=redis_client)
+
+    published = []
+    fake_bus = type("FakeBus", (), {"publish": lambda self, *a, **kw: published.append(a[0])})()
+
+    cancel_booking(booking.id, event_bus=fake_bus)
+
+    assert set(published) == {"SlotReleased", "BookingCancelled"}
+
+
+# --- reschedule_active_booking (livetracker2.md §3.5) ----------------------------------------
+
+
+@pytest.mark.django_db
+def test_reschedule_active_booking_moves_capacity_between_slots(resource, redis_client):
+    old_slot = _make_slot(resource, capacity=1)
+    new_slot = Slot.objects.create(
+        resource=resource,
+        start_time=old_slot.start_time + dt.timedelta(hours=1),
+        end_time=old_slot.end_time + dt.timedelta(hours=1),
+        capacity_total=1,
+        capacity_remaining=1,
+    )
+    booking = hold_slot(
+        old_slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30
+    )
+    confirm_hold(booking.id, redis_client=redis_client)
+
+    rescheduled = reschedule_active_booking(booking.id, new_slot.id)
+
+    assert rescheduled.slot_id == new_slot.id
+    assert rescheduled.status == Booking.Status.ACTIVE
+    old_slot.refresh_from_db()
+    new_slot.refresh_from_db()
+    assert old_slot.capacity_remaining == 1
+    assert old_slot.status == Slot.Status.AVAILABLE
+    assert new_slot.capacity_remaining == 0
+    assert new_slot.status == Slot.Status.HELD
+
+
+@pytest.mark.django_db
+def test_reschedule_active_booking_rejects_a_still_held_booking(resource, redis_client):
+    old_slot = _make_slot(resource, capacity=1)
+    new_slot = Slot.objects.create(
+        resource=resource,
+        start_time=old_slot.start_time + dt.timedelta(hours=1),
+        end_time=old_slot.end_time + dt.timedelta(hours=1),
+        capacity_total=1,
+        capacity_remaining=1,
+    )
+    booking = hold_slot(
+        old_slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30
+    )
+
+    with pytest.raises(ValidationError):
+        reschedule_active_booking(booking.id, new_slot.id)
+
+
+@pytest.mark.django_db
+def test_reschedule_active_booking_rejects_a_full_new_slot(resource, redis_client):
+    old_slot = _make_slot(resource, capacity=1)
+    new_slot = Slot.objects.create(
+        resource=resource,
+        start_time=old_slot.start_time + dt.timedelta(hours=1),
+        end_time=old_slot.end_time + dt.timedelta(hours=1),
+        capacity_total=1,
+        capacity_remaining=0,
+    )
+    booking = hold_slot(
+        old_slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30
+    )
+    confirm_hold(booking.id, redis_client=redis_client)
+
+    with pytest.raises(ValidationError):
+        reschedule_active_booking(booking.id, new_slot.id)
+
+    old_slot.refresh_from_db()
+    assert old_slot.capacity_remaining == 0  # unchanged — the reschedule never committed
+
+
+@pytest.mark.django_db
+def test_reschedule_active_booking_rejects_the_same_slot(resource, redis_client):
+    slot = _make_slot(resource, capacity=1)
+    booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30)
+    confirm_hold(booking.id, redis_client=redis_client)
+
+    with pytest.raises(ValidationError):
+        reschedule_active_booking(booking.id, slot.id)

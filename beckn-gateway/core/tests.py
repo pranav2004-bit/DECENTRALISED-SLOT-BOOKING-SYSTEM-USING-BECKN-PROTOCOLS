@@ -1859,3 +1859,1067 @@ def test_relay_on_confirm_logs_and_returns_when_bap_uri_missing():
     payload = _build_on_confirm_context()
     del payload["context"]["bap_uri"]
     routing.relay_on_confirm(payload=payload, authorization_header="irrelevant")  # must not raise
+
+
+# --- status / on_status (livetracker2.md Phase 3.5) -----------------------------------------
+
+
+def _build_status_context(*, bap_id="bap.example.com", bpp_id="bpp.example.com"):
+    """Unlike confirm's context, /status's message carries only order_id (§L.1)."""
+    return {
+        "context": {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "status",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "bpp_id": bpp_id,
+            "bpp_uri": f"https://{bpp_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-20T00:00:00Z",
+        },
+        "message": {"order_id": "booking-1"},
+    }
+
+
+def _build_on_status_context(*, bap_id="bap.example.com", bpp_id="bpp.example.com"):
+    return {
+        "context": {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "on_status",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "bpp_id": bpp_id,
+            "bpp_uri": f"https://{bpp_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-20T00:00:00Z",
+        },
+        "message": {"order": {"id": "booking-1", "status": "ACTIVE"}},
+    }
+
+
+@patch("core.routing.dispatch_status_in_background")
+def test_status_view_acks_immediately_for_a_validly_signed_request(mock_dispatch, client):
+    bap_pub, bap_priv = generate_signing_key_pair()
+    payload = _build_status_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=_lookup_callback(bap_pub, []),
+        )
+        resp = client.post(
+            reverse("status"), data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_dispatch.assert_called_once_with(payload=payload, authorization_header=header)
+
+
+def test_dispatch_status_forwards_to_the_specific_bpp_with_both_signatures(settings):
+    settings.SUBSCRIBER_ID = "gateway.local"
+    settings.UNIQUE_KEY_ID = "key1"
+    payload = _build_status_context()
+    original_auth_header = 'Signature keyId="bap.example.com|key-1|ed25519",...(original)'
+
+    lookup_requests = []
+    captured_requests = []
+
+    def lookup_callback(request):
+        lookup_requests.append(json.loads(request.body))
+        return (
+            200,
+            {},
+            json.dumps(
+                [
+                    {
+                        "subscriber_id": "bpp.example.com",
+                        "url": "https://bpp.example.com",
+                        "status": "SUBSCRIBED",
+                    }
+                ]
+            ),
+        )
+
+    def bpp_status_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(responses.POST, "http://registry:8000/lookup", callback=lookup_callback)
+        rsps.add_callback(
+            responses.POST, "https://bpp.example.com/status", callback=bpp_status_callback
+        )
+        routing.dispatch_status(payload=payload, authorization_header=original_auth_header)
+
+    assert lookup_requests == [{"subscriber_id": "bpp.example.com"}]
+    assert len(captured_requests) == 1
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+    assert "gateway.local" in forwarded.headers["X-Gateway-Authorization"]
+
+
+def test_dispatch_status_does_not_forward_when_bpp_no_longer_subscribed():
+    payload = _build_status_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "url": "https://bpp.example.com",
+                            "status": "UNDER_SUBSCRIPTION",
+                        }
+                    ]
+                ),
+            ),
+        )
+        # deliberately no /status callback registered — if dispatch_status forwards
+        # anyway, responses raises ConnectionError, failing this test for real.
+        routing.dispatch_status(payload=payload, authorization_header="irrelevant")
+
+
+def test_dispatch_status_does_not_raise_when_bpp_is_unreachable():
+    payload = _build_status_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "url": "https://bpp.example.com",
+                            "status": "SUBSCRIBED",
+                        }
+                    ]
+                ),
+            ),
+        )
+        rsps.add(responses.POST, "https://bpp.example.com/status", status=503)
+        # must not raise:
+        routing.dispatch_status(payload=payload, authorization_header="irrelevant")
+
+
+def test_status_view_rejects_missing_context_field(client):
+    payload = _build_status_context()
+    del payload["context"]["bap_id"]
+    body = json.dumps(payload).encode()
+
+    resp = client.post(
+        reverse("status"),
+        data=body,
+        content_type="application/json",
+        HTTP_AUTHORIZATION="irrelevant",
+    )
+    assert resp.status_code == 400
+
+
+@patch("core.routing.relay_on_status_in_background")
+def test_on_status_view_acks_immediately_for_a_validly_signed_bpp_callback(mock_relay, client):
+    bpp_pub, bpp_priv = generate_signing_key_pair()
+    payload = _build_on_status_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bpp.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bpp_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "status": "SUBSCRIBED",
+                            "signing_public_key": bpp_pub,
+                        }
+                    ]
+                ),
+            ),
+        )
+        resp = client.post(
+            reverse("on_status"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=header,
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_relay.assert_called_once_with(payload=payload, authorization_header=header)
+
+
+def test_relay_on_status_forwards_to_the_bap_with_both_signatures():
+    payload = _build_on_status_context()
+    original_auth_header = 'Signature keyId="bpp.example.com|key-1|ed25519",...(original)'
+
+    captured_requests = []
+
+    def bap_on_status_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "https://bap.example.com/on_status", callback=bap_on_status_callback
+        )
+        routing.relay_on_status(payload=payload, authorization_header=original_auth_header)
+
+    assert len(captured_requests) == 1
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+
+
+def test_relay_on_status_does_not_raise_when_bap_is_unreachable():
+    payload = _build_on_status_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(responses.POST, "https://bap.example.com/on_status", status=503)
+        routing.relay_on_status(payload=payload, authorization_header="irrelevant")
+
+
+def test_relay_on_status_logs_and_returns_when_bap_uri_missing():
+    payload = _build_on_status_context()
+    del payload["context"]["bap_uri"]
+    routing.relay_on_status(payload=payload, authorization_header="irrelevant")
+
+
+# --- cancel / on_cancel (livetracker2.md Phase 3.5) ------------------------------------------
+
+
+def _build_cancel_context(*, bap_id="bap.example.com", bpp_id="bpp.example.com"):
+    return {
+        "context": {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "cancel",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "bpp_id": bpp_id,
+            "bpp_uri": f"https://{bpp_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-20T00:00:00Z",
+        },
+        "message": {"order_id": "booking-1"},
+    }
+
+
+def _build_on_cancel_context(*, bap_id="bap.example.com", bpp_id="bpp.example.com"):
+    return {
+        "context": {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "on_cancel",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "bpp_id": bpp_id,
+            "bpp_uri": f"https://{bpp_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-20T00:00:00Z",
+        },
+        "message": {"order": {"id": "booking-1", "status": "CANCELLED"}},
+    }
+
+
+@patch("core.routing.dispatch_cancel_in_background")
+def test_cancel_view_acks_immediately_for_a_validly_signed_request(mock_dispatch, client):
+    bap_pub, bap_priv = generate_signing_key_pair()
+    payload = _build_cancel_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=_lookup_callback(bap_pub, []),
+        )
+        resp = client.post(
+            reverse("cancel"), data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_dispatch.assert_called_once_with(payload=payload, authorization_header=header)
+
+
+def test_dispatch_cancel_forwards_to_the_specific_bpp_with_both_signatures(settings):
+    settings.SUBSCRIBER_ID = "gateway.local"
+    settings.UNIQUE_KEY_ID = "key1"
+    payload = _build_cancel_context()
+    original_auth_header = 'Signature keyId="bap.example.com|key-1|ed25519",...(original)'
+
+    lookup_requests = []
+    captured_requests = []
+
+    def lookup_callback(request):
+        lookup_requests.append(json.loads(request.body))
+        return (
+            200,
+            {},
+            json.dumps(
+                [
+                    {
+                        "subscriber_id": "bpp.example.com",
+                        "url": "https://bpp.example.com",
+                        "status": "SUBSCRIBED",
+                    }
+                ]
+            ),
+        )
+
+    def bpp_cancel_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(responses.POST, "http://registry:8000/lookup", callback=lookup_callback)
+        rsps.add_callback(
+            responses.POST, "https://bpp.example.com/cancel", callback=bpp_cancel_callback
+        )
+        routing.dispatch_cancel(payload=payload, authorization_header=original_auth_header)
+
+    assert lookup_requests == [{"subscriber_id": "bpp.example.com"}]
+    assert len(captured_requests) == 1
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+    assert "gateway.local" in forwarded.headers["X-Gateway-Authorization"]
+
+
+def test_dispatch_cancel_does_not_forward_when_bpp_no_longer_subscribed():
+    payload = _build_cancel_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "url": "https://bpp.example.com",
+                            "status": "UNDER_SUBSCRIPTION",
+                        }
+                    ]
+                ),
+            ),
+        )
+        routing.dispatch_cancel(payload=payload, authorization_header="irrelevant")
+
+
+def test_dispatch_cancel_does_not_raise_when_bpp_is_unreachable():
+    payload = _build_cancel_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "url": "https://bpp.example.com",
+                            "status": "SUBSCRIBED",
+                        }
+                    ]
+                ),
+            ),
+        )
+        rsps.add(responses.POST, "https://bpp.example.com/cancel", status=503)
+        routing.dispatch_cancel(payload=payload, authorization_header="irrelevant")
+
+
+def test_cancel_view_rejects_missing_context_field(client):
+    payload = _build_cancel_context()
+    del payload["context"]["bap_id"]
+    body = json.dumps(payload).encode()
+
+    resp = client.post(
+        reverse("cancel"),
+        data=body,
+        content_type="application/json",
+        HTTP_AUTHORIZATION="irrelevant",
+    )
+    assert resp.status_code == 400
+
+
+@patch("core.routing.relay_on_cancel_in_background")
+def test_on_cancel_view_acks_immediately_for_a_validly_signed_bpp_callback(mock_relay, client):
+    bpp_pub, bpp_priv = generate_signing_key_pair()
+    payload = _build_on_cancel_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bpp.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bpp_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "status": "SUBSCRIBED",
+                            "signing_public_key": bpp_pub,
+                        }
+                    ]
+                ),
+            ),
+        )
+        resp = client.post(
+            reverse("on_cancel"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=header,
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_relay.assert_called_once_with(payload=payload, authorization_header=header)
+
+
+def test_relay_on_cancel_forwards_to_the_bap_with_both_signatures():
+    payload = _build_on_cancel_context()
+    original_auth_header = 'Signature keyId="bpp.example.com|key-1|ed25519",...(original)'
+
+    captured_requests = []
+
+    def bap_on_cancel_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "https://bap.example.com/on_cancel", callback=bap_on_cancel_callback
+        )
+        routing.relay_on_cancel(payload=payload, authorization_header=original_auth_header)
+
+    assert len(captured_requests) == 1
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+
+
+def test_relay_on_cancel_does_not_raise_when_bap_is_unreachable():
+    payload = _build_on_cancel_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(responses.POST, "https://bap.example.com/on_cancel", status=503)
+        routing.relay_on_cancel(payload=payload, authorization_header="irrelevant")
+
+
+def test_relay_on_cancel_logs_and_returns_when_bap_uri_missing():
+    payload = _build_on_cancel_context()
+    del payload["context"]["bap_uri"]
+    routing.relay_on_cancel(payload=payload, authorization_header="irrelevant")
+
+
+# --- update / on_update (livetracker2.md Phase 3.5) ------------------------------------------
+
+
+def _build_update_context(*, bap_id="bap.example.com", bpp_id="bpp.example.com"):
+    """Unlike status/cancel/track, /update DOES carry a full message.order (§L.3)."""
+    return {
+        "context": {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "update",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "bpp_id": bpp_id,
+            "bpp_uri": f"https://{bpp_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-20T00:00:00Z",
+        },
+        "message": {
+            "update_target": "fulfillment",
+            "order": {
+                "provider": {"id": "biz-1"},
+                "items": [{"id": "item-1"}],
+                "fulfillments": [
+                    {
+                        "id": "booking-1",
+                        "stops": [
+                            {"type": "start", "time": {"timestamp": "2026-07-25T10:00:00Z"}}
+                        ],
+                    }
+                ],
+            },
+        },
+    }
+
+
+def _build_on_update_context(*, bap_id="bap.example.com", bpp_id="bpp.example.com"):
+    return {
+        "context": {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "on_update",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "bpp_id": bpp_id,
+            "bpp_uri": f"https://{bpp_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-20T00:00:00Z",
+        },
+        "message": {"order": {"id": "booking-1", "status": "ACTIVE"}},
+    }
+
+
+@patch("core.routing.dispatch_update_in_background")
+def test_update_view_acks_immediately_for_a_validly_signed_request(mock_dispatch, client):
+    bap_pub, bap_priv = generate_signing_key_pair()
+    payload = _build_update_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=_lookup_callback(bap_pub, []),
+        )
+        resp = client.post(
+            reverse("update"), data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_dispatch.assert_called_once_with(payload=payload, authorization_header=header)
+
+
+def test_dispatch_update_forwards_to_the_specific_bpp_with_both_signatures(settings):
+    settings.SUBSCRIBER_ID = "gateway.local"
+    settings.UNIQUE_KEY_ID = "key1"
+    payload = _build_update_context()
+    original_auth_header = 'Signature keyId="bap.example.com|key-1|ed25519",...(original)'
+
+    lookup_requests = []
+    captured_requests = []
+
+    def lookup_callback(request):
+        lookup_requests.append(json.loads(request.body))
+        return (
+            200,
+            {},
+            json.dumps(
+                [
+                    {
+                        "subscriber_id": "bpp.example.com",
+                        "url": "https://bpp.example.com",
+                        "status": "SUBSCRIBED",
+                    }
+                ]
+            ),
+        )
+
+    def bpp_update_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(responses.POST, "http://registry:8000/lookup", callback=lookup_callback)
+        rsps.add_callback(
+            responses.POST, "https://bpp.example.com/update", callback=bpp_update_callback
+        )
+        routing.dispatch_update(payload=payload, authorization_header=original_auth_header)
+
+    assert lookup_requests == [{"subscriber_id": "bpp.example.com"}]
+    assert len(captured_requests) == 1
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+    assert "gateway.local" in forwarded.headers["X-Gateway-Authorization"]
+
+
+def test_dispatch_update_does_not_forward_when_bpp_no_longer_subscribed():
+    payload = _build_update_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "url": "https://bpp.example.com",
+                            "status": "UNDER_SUBSCRIPTION",
+                        }
+                    ]
+                ),
+            ),
+        )
+        routing.dispatch_update(payload=payload, authorization_header="irrelevant")
+
+
+def test_dispatch_update_does_not_raise_when_bpp_is_unreachable():
+    payload = _build_update_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "url": "https://bpp.example.com",
+                            "status": "SUBSCRIBED",
+                        }
+                    ]
+                ),
+            ),
+        )
+        rsps.add(responses.POST, "https://bpp.example.com/update", status=503)
+        routing.dispatch_update(payload=payload, authorization_header="irrelevant")
+
+
+def test_update_view_rejects_missing_context_field(client):
+    payload = _build_update_context()
+    del payload["context"]["bap_id"]
+    body = json.dumps(payload).encode()
+
+    resp = client.post(
+        reverse("update"),
+        data=body,
+        content_type="application/json",
+        HTTP_AUTHORIZATION="irrelevant",
+    )
+    assert resp.status_code == 400
+
+
+@patch("core.routing.relay_on_update_in_background")
+def test_on_update_view_acks_immediately_for_a_validly_signed_bpp_callback(mock_relay, client):
+    bpp_pub, bpp_priv = generate_signing_key_pair()
+    payload = _build_on_update_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bpp.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bpp_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "status": "SUBSCRIBED",
+                            "signing_public_key": bpp_pub,
+                        }
+                    ]
+                ),
+            ),
+        )
+        resp = client.post(
+            reverse("on_update"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=header,
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_relay.assert_called_once_with(payload=payload, authorization_header=header)
+
+
+def test_relay_on_update_forwards_to_the_bap_with_both_signatures():
+    payload = _build_on_update_context()
+    original_auth_header = 'Signature keyId="bpp.example.com|key-1|ed25519",...(original)'
+
+    captured_requests = []
+
+    def bap_on_update_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "https://bap.example.com/on_update", callback=bap_on_update_callback
+        )
+        routing.relay_on_update(payload=payload, authorization_header=original_auth_header)
+
+    assert len(captured_requests) == 1
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+
+
+def test_relay_on_update_does_not_raise_when_bap_is_unreachable():
+    payload = _build_on_update_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(responses.POST, "https://bap.example.com/on_update", status=503)
+        routing.relay_on_update(payload=payload, authorization_header="irrelevant")
+
+
+def test_relay_on_update_logs_and_returns_when_bap_uri_missing():
+    payload = _build_on_update_context()
+    del payload["context"]["bap_uri"]
+    routing.relay_on_update(payload=payload, authorization_header="irrelevant")
+
+
+# --- track / on_track (livetracker2.md Phase 3.5) -------------------------------------------
+
+
+def _build_track_context(*, bap_id="bap.example.com", bpp_id="bpp.example.com"):
+    return {
+        "context": {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "track",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "bpp_id": bpp_id,
+            "bpp_uri": f"https://{bpp_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-20T00:00:00Z",
+        },
+        "message": {"order_id": "booking-1"},
+    }
+
+
+def _build_on_track_context(*, bap_id="bap.example.com", bpp_id="bpp.example.com"):
+    """/on_track's message carries `tracking`, not `order` (§L.4/§L.5)."""
+    return {
+        "context": {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "on_track",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "bpp_id": bpp_id,
+            "bpp_uri": f"https://{bpp_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-20T00:00:00Z",
+        },
+        "message": {"tracking": {"status": "inactive"}},
+    }
+
+
+@patch("core.routing.dispatch_track_in_background")
+def test_track_view_acks_immediately_for_a_validly_signed_request(mock_dispatch, client):
+    bap_pub, bap_priv = generate_signing_key_pair()
+    payload = _build_track_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=_lookup_callback(bap_pub, []),
+        )
+        resp = client.post(
+            reverse("track"), data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_dispatch.assert_called_once_with(payload=payload, authorization_header=header)
+
+
+def test_dispatch_track_forwards_to_the_specific_bpp_with_both_signatures(settings):
+    settings.SUBSCRIBER_ID = "gateway.local"
+    settings.UNIQUE_KEY_ID = "key1"
+    payload = _build_track_context()
+    original_auth_header = 'Signature keyId="bap.example.com|key-1|ed25519",...(original)'
+
+    lookup_requests = []
+    captured_requests = []
+
+    def lookup_callback(request):
+        lookup_requests.append(json.loads(request.body))
+        return (
+            200,
+            {},
+            json.dumps(
+                [
+                    {
+                        "subscriber_id": "bpp.example.com",
+                        "url": "https://bpp.example.com",
+                        "status": "SUBSCRIBED",
+                    }
+                ]
+            ),
+        )
+
+    def bpp_track_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(responses.POST, "http://registry:8000/lookup", callback=lookup_callback)
+        rsps.add_callback(
+            responses.POST, "https://bpp.example.com/track", callback=bpp_track_callback
+        )
+        routing.dispatch_track(payload=payload, authorization_header=original_auth_header)
+
+    assert lookup_requests == [{"subscriber_id": "bpp.example.com"}]
+    assert len(captured_requests) == 1
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+    assert "gateway.local" in forwarded.headers["X-Gateway-Authorization"]
+
+
+def test_dispatch_track_does_not_forward_when_bpp_no_longer_subscribed():
+    payload = _build_track_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "url": "https://bpp.example.com",
+                            "status": "UNDER_SUBSCRIPTION",
+                        }
+                    ]
+                ),
+            ),
+        )
+        routing.dispatch_track(payload=payload, authorization_header="irrelevant")
+
+
+def test_dispatch_track_does_not_raise_when_bpp_is_unreachable():
+    payload = _build_track_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "url": "https://bpp.example.com",
+                            "status": "SUBSCRIBED",
+                        }
+                    ]
+                ),
+            ),
+        )
+        rsps.add(responses.POST, "https://bpp.example.com/track", status=503)
+        routing.dispatch_track(payload=payload, authorization_header="irrelevant")
+
+
+def test_track_view_rejects_missing_context_field(client):
+    payload = _build_track_context()
+    del payload["context"]["bap_id"]
+    body = json.dumps(payload).encode()
+
+    resp = client.post(
+        reverse("track"),
+        data=body,
+        content_type="application/json",
+        HTTP_AUTHORIZATION="irrelevant",
+    )
+    assert resp.status_code == 400
+
+
+@patch("core.routing.relay_on_track_in_background")
+def test_on_track_view_acks_immediately_for_a_validly_signed_bpp_callback(mock_relay, client):
+    bpp_pub, bpp_priv = generate_signing_key_pair()
+    payload = _build_on_track_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bpp.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bpp_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "status": "SUBSCRIBED",
+                            "signing_public_key": bpp_pub,
+                        }
+                    ]
+                ),
+            ),
+        )
+        resp = client.post(
+            reverse("on_track"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=header,
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_relay.assert_called_once_with(payload=payload, authorization_header=header)
+
+
+def test_relay_on_track_forwards_to_the_bap_with_both_signatures():
+    payload = _build_on_track_context()
+    original_auth_header = 'Signature keyId="bpp.example.com|key-1|ed25519",...(original)'
+
+    captured_requests = []
+
+    def bap_on_track_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "https://bap.example.com/on_track", callback=bap_on_track_callback
+        )
+        routing.relay_on_track(payload=payload, authorization_header=original_auth_header)
+
+    assert len(captured_requests) == 1
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+
+
+def test_relay_on_track_does_not_raise_when_bap_is_unreachable():
+    payload = _build_on_track_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(responses.POST, "https://bap.example.com/on_track", status=503)
+        routing.relay_on_track(payload=payload, authorization_header="irrelevant")
+
+
+def test_relay_on_track_logs_and_returns_when_bap_uri_missing():
+    payload = _build_on_track_context()
+    del payload["context"]["bap_uri"]
+    routing.relay_on_track(payload=payload, authorization_header="irrelevant")

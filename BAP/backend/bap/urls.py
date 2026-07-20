@@ -61,4 +61,32 @@ urlpatterns = [
         name="confirm-result",
     ),
     path("on_confirm", core_views.on_confirm_view, name="on_confirm"),
+    path("api/v1/status", core_views.status_trigger_view, name="status-trigger"),
+    path(
+        "api/v1/status/<str:transaction_id>",
+        core_views.status_result_view,
+        name="status-result",
+    ),
+    path("on_status", core_views.on_status_view, name="on_status"),
+    path("api/v1/cancel", core_views.cancel_trigger_view, name="cancel-trigger"),
+    path(
+        "api/v1/cancel/<str:transaction_id>",
+        core_views.cancel_result_view,
+        name="cancel-result",
+    ),
+    path("on_cancel", core_views.on_cancel_view, name="on_cancel"),
+    path("api/v1/update", core_views.update_trigger_view, name="update-trigger"),
+    path(
+        "api/v1/update/<str:transaction_id>",
+        core_views.update_result_view,
+        name="update-result",
+    ),
+    path("on_update", core_views.on_update_view, name="on_update"),
+    path("api/v1/track", core_views.track_trigger_view, name="track-trigger"),
+    path(
+        "api/v1/track/<str:transaction_id>",
+        core_views.track_result_view,
+        name="track-result",
+    ),
+    path("on_track", core_views.on_track_view, name="on_track"),
 ]

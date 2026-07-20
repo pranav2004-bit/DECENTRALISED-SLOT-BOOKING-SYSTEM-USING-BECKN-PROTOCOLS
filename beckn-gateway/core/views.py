@@ -38,21 +38,44 @@ def on_subscribe_view(request):
 @csrf_exempt
 @require_http_methods(["POST"])
 def search_view(request):
-    """Phase 4.1 trust-chain plumbing endpoint — see core/routing.py's module docstring.
-    Verifies the caller's signature and returns which SUBSCRIBED BPPs Gateway would
-    route to; does not forward the request or implement /on_search."""
+    """Real /search business logic (livetracker2.md Phase 3.1) — see
+    core/routing.py's module docstring for the async-mandate reasoning. Validates and
+    ACKs the calling BAP synchronously, then fires the actual forwarding to every
+    SUBSCRIBED BPP in the background — the ACK returns without waiting on any BPP."""
     try:
         payload = json.loads(request.body)
     except json.JSONDecodeError:
         return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
 
-    try:
-        result = routing.route_search(
-            payload=payload,
-            authorization_header=request.headers.get("Authorization", ""),
-            body=request.body,
+    authorization_header = request.headers.get("Authorization", "")
+    response_body, status_code = routing.validate_and_ack_search(
+        payload=payload, authorization_header=authorization_header, body=request.body
+    )
+    if status_code == 200:
+        routing.dispatch_search_in_background(
+            payload=payload, authorization_header=authorization_header
         )
-    except routing.RoutingError as exc:
-        return JsonResponse({"error": exc.message}, status=exc.status_code)
+    return JsonResponse(response_body, status=status_code)
 
-    return JsonResponse(result, status=200)
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def on_search_view(request):
+    """Receives a BPP's /on_search callback and relays it on to the originating BAP
+    (livetracker2.md Phase 3.1) — Gateway is on the critical path for both directions
+    of the search/on_search pair (protocol_compliance_notes_v1.1.md §H.4), not just
+    routing the initial /search."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    authorization_header = request.headers.get("Authorization", "")
+    response_body, status_code = routing.validate_and_ack_on_search(
+        payload=payload, authorization_header=authorization_header, body=request.body
+    )
+    if status_code == 200:
+        routing.relay_on_search_in_background(
+            payload=payload, authorization_header=authorization_header
+        )
+    return JsonResponse(response_body, status=status_code)

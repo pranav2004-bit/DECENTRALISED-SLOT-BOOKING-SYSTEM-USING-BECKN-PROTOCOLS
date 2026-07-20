@@ -7,7 +7,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django_observability.errors import error_response
 
-from . import onboarding_service
+from . import onboarding_service, search_service
 
 
 @require_http_methods(["GET"])
@@ -129,3 +129,68 @@ def me_view(request):
     if not request.user.is_authenticated:
         return error_response("UNAUTHORIZED", "not logged in", 401)
     return JsonResponse(_customer_json(request.user), status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def search_trigger_view(request):
+    """Customer-facing search trigger (livetracker2.md §3.1) — deliberately NOT the
+    Beckn wire shape (API_CONVENTIONS.md §3.6's scope line: web-to-backend calls use
+    this project's own simple JSON convention, never the protocol shape). Builds and
+    sends the real signed Beckn `/search` to Gateway, returns a transaction_id the
+    browser polls for results with — search itself doesn't require login, matching
+    ordinary browse-before-signup e-commerce UX."""
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    query = (payload.get("query") or "").strip()
+    domain = (payload.get("domain") or "").strip()
+    if not query or not domain:
+        return error_response("VALIDATION_ERROR", "query and domain are required", 400)
+
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        transaction_id = search_service.trigger_search(
+            query=query, domain=domain, customer=customer
+        )
+    except search_service.SearchError as exc:
+        return error_response("SEARCH_UNAVAILABLE", exc.message, exc.status_code)
+
+    return JsonResponse({"transaction_id": transaction_id}, status=202)
+
+
+@require_http_methods(["GET"])
+def search_results_view(request, transaction_id):
+    """Customer-facing results poll — real results only exist once BPP(s) actually
+    call back via /on_search, so an empty `results` list here is a normal in-progress
+    state, not an error (protocol_compliance_notes_v1.1.md §H.1: async is mandatory,
+    there is no synchronous alternative to poll around)."""
+    result = search_service.get_search_results(transaction_id=transaction_id)
+    if result is None:
+        return error_response("NOT_FOUND", "no such search transaction", 404)
+    return JsonResponse(result, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def on_search_view(request):
+    """Real /on_search wire endpoint — receives Gateway's relayed callback from a BPP,
+    verifies both the BPP's and Gateway's signatures, ACKs synchronously, then records
+    the real catalog against the matching SearchSession in the background (same
+    async-mandate discipline as Gateway/BPP's own routing/search_service)."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = search_service.validate_and_ack_on_search(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        search_service.record_on_search_result(payload=payload)
+    return JsonResponse(response_body, status=status_code)

@@ -2,14 +2,15 @@
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import responses
 from django.test import Client
 from django.urls import reverse
 
+from core import routing
 from core.crypto import generate_signing_key_pair, sign_outbound_request
-from core.validation import validate_context
 
 
 @pytest.fixture
@@ -54,11 +55,11 @@ def test_unhandled_exception_maps_to_standardized_error_schema(client, settings)
     assert body["error"]["message"] == "Internal server error"
 
 
-def test_sign_outbound_request_produces_a_proxy_authorization_ready_value():
+def test_sign_outbound_request_produces_an_x_gateway_authorization_ready_value():
     """Confirms real signing works and the header VALUE round-trips through
     verify_request_signature (the value format is identical to Authorization's — the
-    caller is responsible for setting it under the Proxy-Authorization header name,
-    per protocol_compliance_notes_v1.1.md §C.3; not this function's job to name it)."""
+    caller is responsible for setting it under the X-Gateway-Authorization header name,
+    per protocol_compliance_notes_v1.1.md §C.3/§H.3; not this function's job to name it)."""
     from beckn_crypto import verify_request_signature
 
     public_b64, private_b64 = generate_signing_key_pair()
@@ -75,39 +76,6 @@ def test_sign_outbound_request_produces_a_proxy_authorization_ready_value():
         )
         is True
     )
-
-
-def test_validate_context_accepts_all_required_fields():
-    validate_context(
-        {
-            "domain": "ONDC:RET13",
-            "location": {"country": {"code": "IND"}},
-            "action": "search",
-            "version": "1.1.0",
-            "bap_id": "bap.example.com",
-            "bap_uri": "https://bap.example.com",
-            "transaction_id": "txn-1",
-            "message_id": "msg-1",
-            "timestamp": "2026-07-15T00:00:00Z",
-        }
-    )  # must not raise
-
-
-def test_validate_context_rejects_missing_field():
-    from core.validation import PayloadValidationError
-
-    context = {
-        "domain": "ONDC:RET13",
-        "location": {"country": {"code": "IND"}},
-        "action": "search",
-        "version": "1.1.0",
-        "bap_uri": "https://bap.example.com",
-        "transaction_id": "txn-1",
-        "message_id": "msg-1",
-        "timestamp": "2026-07-15T00:00:00Z",
-    }  # bap_id deliberately omitted
-    with pytest.raises(PayloadValidationError, match="bap_id"):
-        validate_context(context)
 
 
 # --- Phase 3.3 Gateway Onboarding ---
@@ -379,11 +347,30 @@ def _build_search_context(*, bap_id="bap.example.com", domain="ONDC:RET13"):
     }
 
 
+def _build_on_search_context(*, bap_id="bap.example.com", bpp_id="bpp.example.com"):
+    return {
+        "context": {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "on_search",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "bpp_id": bpp_id,
+            "bpp_uri": f"https://{bpp_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-15T00:00:00Z",
+        },
+        "message": {"catalog": {"descriptor": {"name": "Beauty Catalog"}, "providers": []}},
+    }
+
+
 def _lookup_callback(bap_pub, bpp_entries):
-    """Registry Lookup is called twice by route_search: once by trust verification
-    (filtered by subscriber_id) and once for BPP discovery (filtered by domain+type).
-    A single callback keyed on the request body handles both without relying on call
-    order, which `responses` doesn't guarantee."""
+    """Registry Lookup is called twice by validate_and_ack_search: once by trust
+    verification (filtered by subscriber_id) and once for BPP discovery (filtered by
+    domain+type). A single callback keyed on the request body handles both without
+    relying on call order, which `responses` doesn't guarantee."""
 
     def callback(request):
         filters = json.loads(request.body)
@@ -406,7 +393,16 @@ def _lookup_callback(bap_pub, bpp_entries):
     return callback
 
 
-def test_search_view_routes_to_subscribed_bpps_for_a_validly_signed_request(client):
+@patch("core.routing.dispatch_search_in_background")
+def test_search_view_acks_immediately_for_a_validly_signed_request(mock_dispatch, client):
+    """The view returns the real ACK envelope synchronously — it does not wait on
+    dispatch_search's background BPP forwarding, per the confirmed async mandate
+    (protocol_compliance_notes_v1.1.md §H.1). dispatch_search_in_background is mocked
+    deliberately: forwarding behavior itself is tested directly against
+    routing.dispatch_search below (synchronous, no thread). Without this mock, the
+    view fires a genuine daemon thread that outlives this test and the whole pytest
+    process, making a real DNS lookup against whatever bap_uri the payload happened
+    to use."""
     bap_pub, bap_priv = generate_signing_key_pair()
     payload = _build_search_context()
     body = json.dumps(payload).encode()
@@ -416,6 +412,81 @@ def test_search_view_routes_to_subscribed_bpps_for_a_validly_signed_request(clie
         unique_key_id="key-1",
         signing_private_key_b64=bap_priv,
     )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=_lookup_callback(bap_pub, []),
+        )
+        resp = client.post(
+            reverse("search"), data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_dispatch.assert_called_once_with(payload=payload, authorization_header=header)
+
+
+def test_dispatch_search_forwards_to_each_subscribed_bpp_with_both_signatures(settings):
+    """Real forwarding behavior, called directly and synchronously (not through the
+    view's background thread) so the assertion isn't racing anything. Confirms the
+    forwarded body is byte-identical to the original payload, the original
+    Authorization header is preserved untouched, and a fresh X-Gateway-Authorization
+    is added (protocol_compliance_notes_v1.1.md §H.3). SUBSCRIBER_ID/UNIQUE_KEY_ID are
+    set explicitly here rather than relied on from the ambient environment — CI doesn't
+    set them for this app (they default to ""), which made an earlier version of this
+    test's `"gateway.local" in ...` assertion pass locally but fail in CI."""
+    settings.SUBSCRIBER_ID = "gateway.local"
+    settings.UNIQUE_KEY_ID = "key1"
+    payload = _build_search_context()
+    original_auth_header = "Signature keyId=\"bap.example.com|key-1|ed25519\",...(original)"
+    bpp_entries = [
+        {
+            "subscriber_id": "bpp.example.com",
+            "url": "https://bpp.example.com",
+            "status": "SUBSCRIBED",
+        },
+        {
+            "subscriber_id": "inactive-bpp.example.com",
+            "url": "https://inactive-bpp.example.com",
+            "status": "UNDER_SUBSCRIPTION",
+        },
+    ]
+
+    captured_requests = []
+
+    def bpp_search_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (200, {}, json.dumps(bpp_entries)),
+        )
+        rsps.add_callback(
+            responses.POST, "https://bpp.example.com/search", callback=bpp_search_callback
+        )
+        routing.dispatch_search(payload=payload, authorization_header=original_auth_header)
+
+    assert len(captured_requests) == 1  # the UNDER_SUBSCRIPTION entry must not be forwarded to
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+    assert "gateway.local" in forwarded.headers["X-Gateway-Authorization"]
+
+
+def test_dispatch_search_does_not_raise_when_a_bpp_is_unreachable():
+    """A single unreachable BPP must not blow up the whole dispatch — failures are
+    logged, not raised, so one bad BPP can't affect others or crash the background
+    thread the view fired this from."""
+    payload = _build_search_context()
     bpp_entries = [
         {
             "subscriber_id": "bpp.example.com",
@@ -428,16 +499,11 @@ def test_search_view_routes_to_subscribed_bpps_for_a_validly_signed_request(clie
         rsps.add_callback(
             responses.POST,
             "http://registry:8000/lookup",
-            callback=_lookup_callback(bap_pub, bpp_entries),
+            callback=lambda request: (200, {}, json.dumps(bpp_entries)),
         )
-        resp = client.post(
-            reverse("search"), data=body, content_type="application/json", HTTP_AUTHORIZATION=header
-        )
-
-    assert resp.status_code == 200
-    assert resp.json() == {
-        "routed_to": [{"subscriber_id": "bpp.example.com", "url": "https://bpp.example.com"}]
-    }
+        rsps.add(responses.POST, "https://bpp.example.com/search", status=503)
+        # must not raise:
+        routing.dispatch_search(payload=payload, authorization_header="irrelevant")
 
 
 def test_search_view_rejects_tampered_signature(client):
@@ -503,3 +569,135 @@ def test_search_view_rejects_missing_context_field(client):
         HTTP_AUTHORIZATION="irrelevant",
     )
     assert resp.status_code == 400
+
+
+@patch("core.routing.relay_on_search_in_background")
+def test_on_search_view_acks_immediately_for_a_validly_signed_bpp_callback(mock_relay, client):
+    """Mirrors test_search_view_acks_immediately... but the caller being verified is
+    the BPP (identity checked against context.bpp_id, not bap_id) — the roles are
+    reversed from /search, per protocol_compliance_notes_v1.1.md §H.4.
+    relay_on_search_in_background is mocked for the same reason
+    dispatch_search_in_background is mocked above — real relay behavior is tested
+    directly against routing.relay_on_search below, without racing a thread."""
+    bpp_pub, bpp_priv = generate_signing_key_pair()
+    payload = _build_on_search_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bpp.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bpp_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "status": "SUBSCRIBED",
+                            "signing_public_key": bpp_pub,
+                        }
+                    ]
+                ),
+            ),
+        )
+        resp = client.post(
+            reverse("on_search"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=header,
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_relay.assert_called_once_with(payload=payload, authorization_header=header)
+
+
+def test_on_search_view_rejects_bpp_id_impersonation(client):
+    bpp_pub, bpp_priv = generate_signing_key_pair()
+    payload = _build_on_search_context(bpp_id="someone-else.example.com")
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bpp.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bpp_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "status": "SUBSCRIBED",
+                            "signing_public_key": bpp_pub,
+                        }
+                    ]
+                ),
+            ),
+        )
+        resp = client.post(
+            reverse("on_search"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=header,
+        )
+
+    assert resp.status_code == 401
+
+
+def test_relay_on_search_forwards_to_the_bap_with_both_signatures():
+    """Real relay behavior, called directly and synchronously. Confirms the relayed
+    body is byte-identical, the original (BPP's) Authorization header is preserved,
+    and a fresh X-Gateway-Authorization is added — no Registry lookup needed since
+    bap_uri already travels with the context."""
+    payload = _build_on_search_context()
+    original_auth_header = "Signature keyId=\"bpp.example.com|key-1|ed25519\",...(original)"
+
+    captured_requests = []
+
+    def bap_on_search_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "https://bap.example.com/on_search", callback=bap_on_search_callback
+        )
+        routing.relay_on_search(payload=payload, authorization_header=original_auth_header)
+
+    assert len(captured_requests) == 1
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+
+
+def test_relay_on_search_does_not_raise_when_bap_is_unreachable():
+    payload = _build_on_search_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(responses.POST, "https://bap.example.com/on_search", status=503)
+        # must not raise:
+        routing.relay_on_search(payload=payload, authorization_header="irrelevant")
+
+
+def test_relay_on_search_logs_and_returns_when_bap_uri_missing():
+    payload = _build_on_search_context()
+    del payload["context"]["bap_uri"]
+    routing.relay_on_search(payload=payload, authorization_header="irrelevant")  # must not raise

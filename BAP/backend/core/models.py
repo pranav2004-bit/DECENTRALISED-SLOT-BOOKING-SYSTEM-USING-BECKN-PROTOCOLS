@@ -109,3 +109,26 @@ class SiteVerification(models.Model):
 
     def __str__(self) -> str:
         return f"SiteVerification(request_id={self.request_id})"
+
+
+class SearchSession(models.Model):
+    """One real Beckn search transaction (livetracker2.md §3.1) — created the moment a
+    customer triggers a search, accumulates real `on_search` catalog results as they
+    arrive asynchronously (protocol_compliance_notes_v1.1.md §H.1: results are never
+    available synchronously, only via a later callback). A transaction can accumulate
+    results from more than one `SUBSCRIBED` BPP over its lifetime — `results` is a
+    list appended to, never overwritten. Anonymous search is allowed (`customer` is
+    nullable) — matching ordinary e-commerce UX where browsing doesn't require login,
+    the same reasoning this project already applied by not gating `resources_list_view`
+    on BPP's side behind auth."""
+
+    transaction_id = models.CharField(max_length=255, unique=True)
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, null=True, blank=True)
+    query = models.CharField(max_length=500, blank=True)
+    domain = models.CharField(max_length=100)
+    results = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"SearchSession({self.transaction_id})"

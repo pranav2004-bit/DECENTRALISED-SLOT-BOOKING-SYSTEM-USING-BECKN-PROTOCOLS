@@ -19,6 +19,7 @@ RUN addgroup --system app && adduser --system --ingroup app app
 COPY shared/django_observability ./shared/django_observability
 COPY shared/resilient_http ./shared/resilient_http
 COPY shared/beckn_crypto ./shared/beckn_crypto
+COPY shared/beckn_transaction ./shared/beckn_transaction
 COPY beckn-gateway/ ./beckn-gateway/
 RUN chown -R app:app /app
 USER app

@@ -39,7 +39,7 @@ def sign_outbound_request(
     the confirmed scheme (protocol_compliance_notes_v1.1.md §C.2): Ed25519 signature
     over a signing string containing a BLAKE-512 digest of `body`, TTL-bound
     created/expires. Set this as the `Authorization` header — BAP uses that header
-    name, not Gateway's `Proxy-Authorization` (§C.3)."""
+    name, not Gateway's `X-Gateway-Authorization` (§C.3/§H.3)."""
     created = int(time.time())
     expires = created + 30
     digest_b64 = compute_blake512_digest(body)

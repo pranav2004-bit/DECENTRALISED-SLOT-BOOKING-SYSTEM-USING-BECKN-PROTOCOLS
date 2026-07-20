@@ -38,7 +38,7 @@ def sign_outbound_request(
     """Builds the full `Authorization` header value for a BPP-originated request, per
     the confirmed scheme (protocol_compliance_notes_v1.1.md §C.2). Set this as the
     `Authorization` header — BPP uses that header name, not Gateway's
-    `Proxy-Authorization` (§C.3)."""
+    `X-Gateway-Authorization` (§C.3/§H.3)."""
     created = int(time.time())
     expires = created + 30
     digest_b64 = compute_blake512_digest(body)

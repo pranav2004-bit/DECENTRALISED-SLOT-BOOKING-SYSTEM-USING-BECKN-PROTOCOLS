@@ -28,4 +28,5 @@ urlpatterns = [
     ),
     path("on_subscribe", core_views.on_subscribe_view, name="on_subscribe"),
     path("search", core_views.search_view, name="search"),
+    path("on_search", core_views.on_search_view, name="on_search"),
 ]

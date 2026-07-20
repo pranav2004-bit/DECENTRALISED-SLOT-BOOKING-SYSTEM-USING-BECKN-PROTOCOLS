@@ -1,14 +1,15 @@
 """Registry Client Service — wraps the shared ResilientHttpClient (timeout + retry +
 circuit breaker, per livetracker1.md Phase 1.2) for Gateway's calls to Registry.
 
-subscribe()/lookup() here use the `Authorization` header, NOT `Proxy-Authorization` —
+subscribe()/lookup() here use the `Authorization` header, NOT `X-Gateway-Authorization` —
 a deliberate, documented departure from core/crypto.py's module docstring (which is
 about Gateway's role forwarding OTHER participants' transaction requests, e.g.
-search -> on_search, per protocol_compliance_notes_v1.1.md §C.3). Subscribe/Lookup are
+search -> on_search, per protocol_compliance_notes_v1.1.md §C.3/§H.3). Subscribe/Lookup are
 registry.yaml paths where Gateway acts as an onboarding participant itself, not a proxy
 forwarding someone else's request — and §C.4 confirms "every path in registry.yaml ...
 requires SubscriberAuth via a signed Authorization header", the same rule BAP/BPP follow.
-Proxy-Authorization is for Phase 4's actual search-routing work, not this.
+X-Gateway-Authorization is for Phase 3's actual search-routing work (livetracker2.md),
+not this.
 
 The circuit breaker is Redis-backed (Phase 4.2 follow-up) only when CACHE_ENABLED —
 unlike BAP/BPP, Gateway's Redis (gateway-cache) is an optional [BETA] service, not

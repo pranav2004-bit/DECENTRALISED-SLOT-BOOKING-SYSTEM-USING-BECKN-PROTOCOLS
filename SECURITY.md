@@ -26,7 +26,7 @@ This system's trust boundary is the Beckn/ONDC Registry (see [protocol_complianc
 
 ## Signing
 
-Every inter-participant request is signed — see [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) §C for the exact `Authorization`/`Proxy-Authorization` header format, Ed25519 algorithm, and BLAKE-512 digest scheme. No endpoint (including `/lookup`) is unauthenticated.
+Every inter-participant request is signed — see [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) §C for the exact `Authorization`/`X-Gateway-Authorization` header format, Ed25519 algorithm, and BLAKE-512 digest scheme. No endpoint (including `/lookup`) is unauthenticated.
 
 ## Dependency & Container Scanning
 

@@ -1,11 +1,15 @@
 """Cryptography Service — real implementation, per beckn_gateway_details_v1.1.md §9.
 Thin wrapper around shared/beckn_crypto. Confirmed real protocol distinction
-(protocol_compliance_notes_v1.1.md §C.3): Gateway signs its own outbound calls via
-`Proxy-Authorization`, NOT `Authorization` — the header VALUE format is identical to
+(protocol_compliance_notes_v1.1.md §C.3/§H.3): Gateway signs its own outbound calls via
+`X-Gateway-Authorization`, NOT `Authorization` — the header VALUE format is identical to
 Registry/BAP/BPP's signing scheme, only the HTTP header NAME differs, so
-`build_proxy_authorization_header` below reuses the same underlying value builder and
-just documents which header to set it on. Do not set this value under the
-`Authorization` header name.
+`sign_outbound_request` below reuses the same underlying value builder and just
+documents which header to set it on. Do not set this value under the `Authorization`
+header name. **Correction:** an earlier version of this docstring said
+`Proxy-Authorization` — that name was itself deprecated by the real protocol spec
+(`beckn/protocol-specifications` PR #149, since `Proxy-Authorization` is a single-hop
+RFC 7235 header that intermediaries strip) and replaced with `X-Gateway-Authorization`;
+see §H.3 for the full correction.
 """
 
 import time
@@ -40,8 +44,8 @@ def sign_outbound_request(
     *, body: bytes, subscriber_id: str, unique_key_id: str, signing_private_key_b64: str
 ) -> str:
     """Builds the header VALUE for a Gateway-originated request. The caller MUST set
-    this on the `Proxy-Authorization` header, not `Authorization` — see module
-    docstring and protocol_compliance_notes_v1.1.md §C.3."""
+    this on the `X-Gateway-Authorization` header, not `Authorization` — see module
+    docstring and protocol_compliance_notes_v1.1.md §C.3/§H.3."""
     created = int(time.time())
     expires = created + 30
     digest_b64 = compute_blake512_digest(body)

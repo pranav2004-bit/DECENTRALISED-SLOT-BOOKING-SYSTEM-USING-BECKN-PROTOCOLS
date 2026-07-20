@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model, login, logout, password_validation
@@ -12,7 +13,7 @@ from django_observability.errors import error_response
 from inventory_core.domain_adapter import get_adapter
 from inventory_core.models import AvailabilityCalendar, Resource
 
-from . import onboarding_service, search_service
+from . import onboarding_service, search_service, select_service
 from .catalog import visible_resources
 
 
@@ -151,6 +152,19 @@ def resource_create_view(request):
             "VALIDATION_ERROR", " ".join(exc.messages), 400, field="domain_data"
         )
 
+    price_value = Decimal("0.00")
+    if "price_value" in payload:
+        try:
+            price_value = Decimal(str(payload["price_value"]))
+        except InvalidOperation:
+            return error_response(
+                "VALIDATION_ERROR", "price_value must be a valid decimal", 400, field="price_value"
+            )
+        if price_value < 0:
+            return error_response(
+                "VALIDATION_ERROR", "price_value must not be negative", 400, field="price_value"
+            )
+
     resource = Resource.objects.create(
         owner_ref=str(request.user.id),
         name=name,
@@ -158,6 +172,8 @@ def resource_create_view(request):
         short_desc=payload.get("short_desc", ""),
         long_desc=payload.get("long_desc", ""),
         domain_data=domain_data,
+        price_currency=payload.get("price_currency", "INR"),
+        price_value=price_value,
     )
     return JsonResponse({"id": str(resource.id), "name": resource.name}, status=201)
 
@@ -246,4 +262,27 @@ def search_view(request):
     )
     if status_code == 200:
         search_service.dispatch_on_search_in_background(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def select_view(request):
+    """Real /select business logic (livetracker2.md Phase 3.2) — receives Gateway's
+    forwarded selection, ACKs the calling Gateway/BAP pair synchronously, then resolves
+    the requested item+time against live availability and attempts the real atomic
+    hold in the background (see core/select_service.py's module docstring)."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = select_service.validate_and_ack_select(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        select_service.dispatch_on_select_in_background(payload=payload)
     return JsonResponse(response_body, status=status_code)

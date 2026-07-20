@@ -24,6 +24,7 @@ COPY shared/beckn_crypto ./shared/beckn_crypto
 COPY shared/beckn_transaction ./shared/beckn_transaction
 COPY shared/inventory_core ./shared/inventory_core
 COPY shared/realtime ./shared/realtime
+COPY shared/testing/contract_schemas ./shared/testing/contract_schemas
 COPY BPP/backend/ ./BPP/backend/
 RUN chown -R app:app /app
 USER app

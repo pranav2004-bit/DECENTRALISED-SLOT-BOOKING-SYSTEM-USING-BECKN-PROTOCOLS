@@ -16,6 +16,7 @@ shared/event_bus.
 import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -42,6 +43,15 @@ class Resource(models.Model):
     long_desc = models.TextField(blank=True)
     category_id = models.CharField(max_length=100, blank=True)
     rateable = models.BooleanField(default=True)
+
+    # Minimal real pricing (livetracker2.md §3.2) — mirrors the confirmed `Price.yaml` shape
+    # (`currency`/`value`; the other six situational fields it defines — estimated/computed/
+    # listed/offered/minimum/maximum_value — are for auction/estimate scenarios this project
+    # doesn't need and are deliberately left unpopulated, not guessed at). Added now because
+    # `on_select`'s response requires a real `quote`, not because `search`/`on_search` needed
+    # it — §2.3's catalog exposure reuses this same field once populated, no separate copy.
+    price_currency = models.CharField(max_length=10, default="INR")
+    price_value = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
 
     # The generic, no-fork extension point (livetracker2.md §1.5, ADR-0003): domain-specific
     # fields (e.g. Beauty's consultation type) live here, validated by that domain's own

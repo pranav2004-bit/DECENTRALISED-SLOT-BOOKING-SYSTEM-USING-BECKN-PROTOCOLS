@@ -129,6 +129,44 @@ def release_expired_hold(booking_id, *, redis_client, event_bus=None) -> bool:
     return True
 
 
+def release_hold_now(booking_id, *, redis_client, event_bus=None) -> bool:
+    """Releases a `HELD` booking immediately, regardless of whether its Redis TTL has
+    actually expired yet — the deliberate counterpart to `release_expired_hold`, which
+    only acts once the TTL is already gone. Needed for §3.2's real re-selection case: a
+    customer selecting a different slot after already holding one from an earlier
+    `select` in the same transaction must not leak the first hold until its TTL
+    eventually expires on its own. Same capacity-restoration logic as
+    `release_expired_hold`, minus the `is_active()` gate, plus an explicit
+    `ReservationHold.clear()` so the now-stale Redis key doesn't linger either. Returns
+    `True` if it performed a release, `False` if the booking wasn't `HELD` (never raises
+    for that ordinary outcome)."""
+    try:
+        booking = Booking.objects.select_related("slot").get(pk=booking_id)
+    except Booking.DoesNotExist:
+        return False
+
+    if booking.status != Booking.Status.HELD:
+        return False
+
+    with transaction.atomic():
+        booking.transition_status(Booking.Status.CANCELLED)
+        with Slot.objects.lock_for_mutation(booking.slot_id) as slot:
+            slot.capacity_remaining = min(
+                slot.capacity_remaining + booking.quantity, slot.capacity_total
+            )
+            if slot.status == Slot.Status.HELD and slot.capacity_remaining > 0:
+                slot.status = Slot.Status.AVAILABLE
+            slot.save(update_fields=["capacity_remaining", "status", "updated_at"])
+
+    ReservationHold(redis_client=redis_client).clear(booking_id)
+
+    if event_bus is not None:
+        publish_event(event_bus, SlotEvent.RELEASED, slot_id=str(booking.slot_id))
+        publish_event(event_bus, BookingEvent.CANCELLED, booking_id=str(booking_id))
+
+    return True
+
+
 def confirm_hold(booking_id, *, redis_client, event_bus=None) -> Booking:
     """Transitions a `HELD` booking to `ACTIVE` (the real confirm business-flow itself is
     Phase 3's job — this is just the state-machine + Redis-cleanup half of it) and clears its

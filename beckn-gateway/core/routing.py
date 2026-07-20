@@ -242,3 +242,177 @@ def relay_on_search_in_background(*, payload: dict, authorization_header: str) -
         daemon=True,
     )
     thread.start()
+
+
+# --- select / on_select (livetracker2.md Phase 3.2) --------------------------------------
+
+
+def validate_and_ack_select(
+    *, payload: dict, authorization_header: str, body: bytes
+) -> tuple[dict, int]:
+    """Synchronous half of /select: validates and verifies the calling BAP, returns
+    the real ACK/NACK envelope. Does NOT forward to the BPP — that's dispatch_select's
+    job, meant to run after this returns."""
+    try:
+        context = payload["context"]
+    except KeyError as exc:
+        raise RoutingError("Missing context", status_code=400) from exc
+
+    try:
+        _verify_caller(
+            context=context,
+            authorization_header=authorization_header,
+            body=body,
+            expected_id_field="bap_id",
+        )
+    except RoutingError as exc:
+        return (
+            build_nack_response(
+                context=context, error={"code": "ROUTING_ERROR", "message": exc.message}
+            ),
+            exc.status_code,
+        )
+
+    return build_ack_response(context=context), 200
+
+
+def validate_and_ack_on_select(
+    *, payload: dict, authorization_header: str, body: bytes
+) -> tuple[dict, int]:
+    """Synchronous half of /on_select: validates and verifies the calling BPP (its
+    identity must match context.bpp_id). Does NOT relay to the BAP — that's
+    relay_on_select's job."""
+    try:
+        context = payload["context"]
+    except KeyError as exc:
+        raise RoutingError("Missing context", status_code=400) from exc
+
+    try:
+        _verify_caller(
+            context=context,
+            authorization_header=authorization_header,
+            body=body,
+            expected_id_field="bpp_id",
+        )
+    except RoutingError as exc:
+        return (
+            build_nack_response(
+                context=context, error={"code": "ROUTING_ERROR", "message": exc.message}
+            ),
+            exc.status_code,
+        )
+
+    return build_ack_response(context=context), 200
+
+
+def dispatch_select(*, payload: dict, authorization_header: str) -> None:
+    """Forwards a customer's selection to the ONE specific BPP they already chose from
+    an earlier search's real on_search results — unlike dispatch_search's broadcast to
+    every SUBSCRIBED BPP in the domain, /select's context already carries a real
+    bpp_id/bpp_uri (populated by the BPP's own on_search response and echoed back
+    through the whole flow).
+
+    Re-checks that BPP's SUBSCRIBED status via a fresh Registry lookup before
+    forwarding — a real, not hypothetical, gap: a BPP's status can go stale between
+    search and select, and dispatch_search already re-checks SUBSCRIBED on every call,
+    so forwarding select to a remembered bpp_uri without the same re-check would be a
+    real trust-chain regression (protocol_compliance_notes_v1.1.md §I, `livetracker2.md`
+    §3.2's own gap-closed note). Same fire-and-forget/log-don't-raise discipline as
+    dispatch_search."""
+    context = payload["context"]
+    body = json.dumps(payload).encode()
+
+    bpp_id = context.get("bpp_id")
+    bpp_uri = context.get("bpp_uri")
+    if not bpp_id or not bpp_uri:
+        logger.error("dispatch_select: context missing bpp_id/bpp_uri, cannot forward")
+        return
+
+    try:
+        results = registry_client.lookup({"subscriber_id": bpp_id})
+    except Exception:
+        logger.exception("dispatch_select: Registry lookup failed for bpp_id %s", bpp_id)
+        return
+
+    if not results or results[0].get("status") != "SUBSCRIBED":
+        logger.info(
+            "dispatch_select: bpp_id %s is no longer SUBSCRIBED, refusing to forward", bpp_id
+        )
+        return
+
+    _, signing_priv = get_signing_keys()
+    gateway_signature = sign_outbound_request(
+        body=body,
+        subscriber_id=settings.SUBSCRIBER_ID,
+        unique_key_id=settings.UNIQUE_KEY_ID,
+        signing_private_key_b64=signing_priv,
+    )
+
+    bpp_select_url = bpp_uri.rstrip("/") + "/select"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": authorization_header,
+        "X-Gateway-Authorization": gateway_signature,
+    }
+    try:
+        client = registry_client.get_client()
+        response = client.post(bpp_select_url, data=body, headers=headers)
+        response.raise_for_status()
+    except Exception:
+        logger.exception("dispatch_select: forwarding to %s failed", bpp_select_url)
+
+
+def dispatch_select_in_background(*, payload: dict, authorization_header: str) -> None:
+    """Fires dispatch_select on a daemon thread — same fire-and-forget entry point
+    pattern as dispatch_search_in_background."""
+    thread = threading.Thread(
+        target=dispatch_select,
+        kwargs={"payload": payload, "authorization_header": authorization_header},
+        daemon=True,
+    )
+    thread.start()
+
+
+def relay_on_select(*, payload: dict, authorization_header: str) -> None:
+    """Forwards a BPP's /on_select callback on to the originating BAP — on_select
+    routes back through Gateway, same as on_search (§H.4). Same
+    fire-and-forget/log-don't-raise discipline as relay_on_search."""
+    context = payload["context"]
+    body = json.dumps(payload).encode()
+
+    bap_uri = context.get("bap_uri")
+    if not bap_uri:
+        logger.error("relay_on_select: context missing bap_uri, cannot relay callback")
+        return
+
+    _, signing_priv = get_signing_keys()
+    gateway_signature = sign_outbound_request(
+        body=body,
+        subscriber_id=settings.SUBSCRIBER_ID,
+        unique_key_id=settings.UNIQUE_KEY_ID,
+        signing_private_key_b64=signing_priv,
+    )
+
+    bap_on_select_url = bap_uri.rstrip("/") + "/on_select"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": authorization_header,
+        "X-Gateway-Authorization": gateway_signature,
+    }
+    try:
+        client = registry_client.get_client()
+        response = client.post(bap_on_select_url, data=body, headers=headers)
+        response.raise_for_status()
+    except Exception:
+        logger.exception("relay_on_select: forwarding to %s failed", bap_on_select_url)
+
+
+def relay_on_select_in_background(*, payload: dict, authorization_header: str) -> None:
+    """Fires relay_on_select on a daemon thread — same fire-and-forget entry point
+    pattern as relay_on_search_in_background."""
+    thread = threading.Thread(
+        target=relay_on_select,
+        kwargs={"payload": payload, "authorization_header": authorization_header},
+        daemon=True,
+    )
+    thread.start()

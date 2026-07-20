@@ -127,6 +127,16 @@ class SearchSession(models.Model):
     query = models.CharField(max_length=500, blank=True)
     domain = models.CharField(max_length=100)
     results = models.JSONField(default=list)
+
+    # §3.2 Selection — one active selection per transaction, sharing the same
+    # transaction_id per real Beckn semantics (search -> select -> init -> confirm is
+    # one continuous transaction, not separate ones). `selected_order` holds the real
+    # Order (with its quote) once on_select arrives successfully; `selected_error`
+    # holds the real error instead when the BPP rejects the selection (e.g. the slot
+    # was taken microseconds earlier) — the two are mutually exclusive, never both set.
+    selected_order = models.JSONField(null=True, blank=True)
+    selected_error = models.JSONField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -53,3 +53,36 @@ def verify_participant_signature(*, authorization_header: str, body: bytes) -> b
         )
     except SignatureVerificationError as exc:
         raise TrustEstablishmentError(str(exc)) from exc
+
+
+def verify_bpp_and_gateway(
+    *, context: dict, authorization_header: str, gateway_authorization_header: str, body: bytes
+) -> None:
+    """Defense in depth for every Gateway-relayed inbound callback (on_search, and
+    now on_select) — verifies BOTH the BPP's own signature (identity must match
+    context.bpp_id) AND the forwarding Gateway's own X-Gateway-Authorization signature
+    over the identical body. A callback reaching BAP directly — bypassing Gateway
+    entirely, even with a genuine BPP signature — is rejected for missing/invalid
+    X-Gateway-Authorization. Extracted from §3.1's search_service.py (originally
+    `_verify_bpp_and_gateway`, private to that module) once §3.2 needed the identical
+    check for on_select — a single shared version instead of two drifting copies,
+    mirroring the same extraction already done on BPP's side (core/trust.py's
+    verify_bap_and_gateway). Raises TrustEstablishmentError on any failure; the caller
+    decides the HTTP status code."""
+    if not authorization_header:
+        raise TrustEstablishmentError("Missing Authorization header")
+
+    verify_participant_signature(authorization_header=authorization_header, body=body)
+
+    signer_subscriber_id = parse_authorization_header(authorization_header)["subscriber_id"]
+    if signer_subscriber_id != context.get("bpp_id"):
+        raise TrustEstablishmentError(
+            f"Signature identity ({signer_subscriber_id!r}) does not match "
+            f"context.bpp_id ({context.get('bpp_id')!r})"
+        )
+
+    if not gateway_authorization_header:
+        raise TrustEstablishmentError("Missing X-Gateway-Authorization header")
+    verify_participant_signature(
+        authorization_header=gateway_authorization_header, body=body
+    )

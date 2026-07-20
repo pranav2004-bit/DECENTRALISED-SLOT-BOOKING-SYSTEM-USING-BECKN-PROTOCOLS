@@ -40,4 +40,11 @@ urlpatterns = [
         name="search-results",
     ),
     path("on_search", core_views.on_search_view, name="on_search"),
+    path("api/v1/select", core_views.select_trigger_view, name="select-trigger"),
+    path(
+        "api/v1/select/<str:transaction_id>",
+        core_views.select_result_view,
+        name="select-result",
+    ),
+    path("on_select", core_views.on_select_view, name="on_select"),
 ]

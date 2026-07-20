@@ -31,4 +31,6 @@ urlpatterns = [
     path("on_search", core_views.on_search_view, name="on_search"),
     path("select", core_views.select_view, name="select"),
     path("on_select", core_views.on_select_view, name="on_select"),
+    path("init", core_views.init_view, name="init"),
+    path("on_init", core_views.on_init_view, name="on_init"),
 ]

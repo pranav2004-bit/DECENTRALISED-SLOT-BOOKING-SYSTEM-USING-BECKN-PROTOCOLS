@@ -189,4 +189,17 @@ def record_on_select_result(*, payload: dict) -> None:
     else:
         session.selected_order = payload["message"]["order"]
         session.selected_error = None
-    session.save(update_fields=["selected_order", "selected_error", "updated_at"])
+        # Recorded so a later /init (§3.3) can target the same BPP again without
+        # re-deriving it from `selected_order.provider.id`, which isn't reliably
+        # unique across different BPPs.
+        session.selected_bpp_id = context.get("bpp_id", "")
+        session.selected_bpp_uri = context.get("bpp_uri", "")
+    session.save(
+        update_fields=[
+            "selected_order",
+            "selected_error",
+            "selected_bpp_id",
+            "selected_bpp_uri",
+            "updated_at",
+        ]
+    )

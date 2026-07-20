@@ -42,4 +42,5 @@ urlpatterns = [
     path("api/v1/catalog/resources", core_views.resources_list_view, name="resources-list"),
     path("search", core_views.search_view, name="search"),
     path("select", core_views.select_view, name="select"),
+    path("init", core_views.init_view, name="init"),
 ]

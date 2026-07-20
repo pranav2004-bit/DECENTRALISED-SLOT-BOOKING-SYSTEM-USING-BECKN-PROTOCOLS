@@ -47,4 +47,11 @@ urlpatterns = [
         name="select-result",
     ),
     path("on_select", core_views.on_select_view, name="on_select"),
+    path("api/v1/init", core_views.init_trigger_view, name="init-trigger"),
+    path(
+        "api/v1/init/<str:transaction_id>",
+        core_views.init_result_view,
+        name="init-result",
+    ),
+    path("on_init", core_views.on_init_view, name="on_init"),
 ]

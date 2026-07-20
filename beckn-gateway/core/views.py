@@ -124,3 +124,48 @@ def on_select_view(request):
             payload=payload, authorization_header=authorization_header
         )
     return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def init_view(request):
+    """Real /init business logic (livetracker2.md Phase 3.3) — validates and ACKs the
+    calling BAP synchronously, then forwards to the one specific, already-known BPP
+    (after a fresh SUBSCRIBED re-check — see core/routing.py's dispatch_init
+    docstring) in the background."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    authorization_header = request.headers.get("Authorization", "")
+    response_body, status_code = routing.validate_and_ack_init(
+        payload=payload, authorization_header=authorization_header, body=request.body
+    )
+    if status_code == 200:
+        routing.dispatch_init_in_background(
+            payload=payload, authorization_header=authorization_header
+        )
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def on_init_view(request):
+    """Receives a BPP's /on_init callback and relays it on to the originating BAP
+    (livetracker2.md Phase 3.3) — same routes-back-through-Gateway pattern as
+    on_select."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    authorization_header = request.headers.get("Authorization", "")
+    response_body, status_code = routing.validate_and_ack_on_init(
+        payload=payload, authorization_header=authorization_header, body=request.body
+    )
+    if status_code == 200:
+        routing.relay_on_init_in_background(
+            payload=payload, authorization_header=authorization_header
+        )
+    return JsonResponse(response_body, status=status_code)

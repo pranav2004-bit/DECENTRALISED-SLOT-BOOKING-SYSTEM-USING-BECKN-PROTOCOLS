@@ -43,6 +43,14 @@ class ReservationHold:
     def is_active(self, booking_id) -> bool:
         return bool(self._redis.exists(self._key(booking_id)))
 
+    def remaining_ttl_seconds(self, booking_id) -> float | None:
+        """Real seconds left on this hold's Redis TTL, or `None` if the key doesn't
+        exist (never active, or already expired/cleared) — the honest "how long is
+        this quote actually still good for" value, not the full configured window
+        restated (livetracker2.md §3.3's `Quotation.ttl`)."""
+        ttl = self._redis.ttl(self._key(booking_id))
+        return ttl if ttl and ttl > 0 else None
+
     def clear(self, booking_id) -> None:
         self._redis.delete(self._key(booking_id))
 

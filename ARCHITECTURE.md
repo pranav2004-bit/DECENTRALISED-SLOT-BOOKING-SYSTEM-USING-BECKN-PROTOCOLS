@@ -28,6 +28,7 @@ Framework/business logic reused across apps rather than duplicated per-app, impo
 | `observability` | Plain Python | all | Shared logging/metrics reference conventions |
 | `testing` | Plain Python | all | Shared contract-schema test fixtures (`shared/testing/contract_schemas/`) |
 | `inventory_core` | Django app | BPP (Phase 2.2) | Generic, domain-agnostic `Resource`/`Slot`/`Booking`/`AvailabilityCalendar` booking core — concurrency-safe capacity, a two-machine Booking/Fulfillment state model, a Redis-backed TTL hold window, event-bus wiring, and a Domain Adapter extension point — built once and shared across Beauty/Healthcare/Automotive (`livetracker2.md` Phase 1, ADR-0003) |
+| `realtime` | Django app (Channels consumer) | BAP, BPP | `FoundationConsumer` — the WebSocket transport foundation (`livetracker2.md` Phase 2.4): accepts a connection, sends a `connected` ack, echoes `pong` on `ping`. Routed via each app's `asgi.py` `ProtocolTypeRouter` (served by `daphne`, replacing the previous WSGI/gunicorn-only setup which had no WebSocket capability). The full live-inventory-push feature built on top of this transport is Phase 4.4's job, not this module's |
 
 ## Repository Strategy
 
@@ -56,3 +57,4 @@ Significant decisions get an ADR in [docs/adr/](docs/adr/) rather than being bur
 | [0001](docs/adr/0001-monorepo.md) | Monorepo for all four applications |
 | [0002](docs/adr/0002-trunk-based-development.md) | Trunk-based development, no long-lived `develop` branch |
 | [0003](docs/adr/0003-generic-inventory-core.md) | Generic domain-agnostic inventory core, shared across Healthcare/Automotive/Beauty, proven on one category before widening |
+| [0004](docs/adr/0004-web-ui-duplicated-not-shared-package.md) | BAP/web and BPP/web's shared UI foundation is duplicated code, not a shared npm package — no JS monorepo tooling exists yet, revisit if drift becomes a real problem |

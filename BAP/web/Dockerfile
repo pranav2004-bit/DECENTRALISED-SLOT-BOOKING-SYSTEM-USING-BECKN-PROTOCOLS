@@ -9,6 +9,14 @@ FROM node:20-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# NEXT_PUBLIC_* vars are inlined into the client bundle at `next build` time, not read
+# from the running container's environment — docker-compose's env_file has no effect
+# here since it only applies at `docker run`, not `docker build`. Passed as build args
+# from docker-compose.yml's build.args, same real values as .env for local dev.
+ARG NEXT_PUBLIC_API_BASE_URL
+ARG NEXT_PUBLIC_WS_BASE_URL
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
+ENV NEXT_PUBLIC_WS_BASE_URL=$NEXT_PUBLIC_WS_BASE_URL
 RUN npm run build
 
 FROM node:20-alpine AS runtime

@@ -14,7 +14,7 @@ export default function Error({
   }, [error]);
 
   return (
-    <main className="flex flex-1 flex-col items-center justify-center px-4 py-12 text-center sm:px-6 lg:px-8">
+    <div className="flex flex-1 flex-col items-center justify-center px-4 py-12 text-center sm:px-6 lg:px-8">
       <h1 className="text-lg font-semibold sm:text-xl">Something went wrong</h1>
       <p className="mt-2 text-sm text-neutral-600 sm:text-base">
         An unexpected error occurred. Please try again.
@@ -25,6 +25,6 @@ export default function Error({
       >
         Try again
       </button>
-    </main>
+    </div>
   );
 }

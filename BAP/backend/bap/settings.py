@@ -48,6 +48,7 @@ TESTING = "pytest" in sys.modules
 SERVICE_NAME = "bap-backend"
 
 INSTALLED_APPS = [
+    "daphne",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -55,9 +56,15 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "channels",
     "django_observability",
     "core",
 ]
+
+# WebSocket channel between Web App and Backend (livetracker2.md §2.4) — foundation transport
+# only, see shared/realtime/consumers.py. "daphne" must be first in INSTALLED_APPS per
+# Channels' own documented setup.
+ASGI_APPLICATION = "bap.asgi.application"
 
 MIDDLEWARE = [
     "django_observability.middleware.CorrelationIdMiddleware",

@@ -48,6 +48,7 @@ build/
 
 # --- Docker ---
 *.log
+docker-compose.override.yml
 
 # --- IDE / OS ---
 .vscode/

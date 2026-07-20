@@ -13,7 +13,7 @@ from django_observability.errors import error_response
 from inventory_core.domain_adapter import get_adapter
 from inventory_core.models import AvailabilityCalendar, Resource
 
-from . import init_service, onboarding_service, search_service, select_service
+from . import confirm_service, init_service, onboarding_service, search_service, select_service
 from .catalog import visible_resources
 
 
@@ -308,4 +308,27 @@ def init_view(request):
     )
     if status_code == 200:
         init_service.dispatch_on_init_in_background(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def confirm_view(request):
+    """Real /confirm business logic (livetracker2.md Phase 3.4) — receives Gateway's
+    forwarded confirmation, ACKs the calling Gateway/BAP pair synchronously, then
+    performs the real HELD -> ACTIVE transition and returns the confirmed Order in
+    the background (see core/confirm_service.py's module docstring)."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = confirm_service.validate_and_ack_confirm(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        confirm_service.dispatch_on_confirm_in_background(payload=payload)
     return JsonResponse(response_body, status=status_code)

@@ -169,3 +169,48 @@ def on_init_view(request):
             payload=payload, authorization_header=authorization_header
         )
     return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def confirm_view(request):
+    """Real /confirm business logic (livetracker2.md Phase 3.4) — validates and ACKs
+    the calling BAP synchronously, then forwards to the one specific, already-known
+    BPP (after a fresh SUBSCRIBED re-check — see core/routing.py's dispatch_confirm
+    docstring) in the background."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    authorization_header = request.headers.get("Authorization", "")
+    response_body, status_code = routing.validate_and_ack_confirm(
+        payload=payload, authorization_header=authorization_header, body=request.body
+    )
+    if status_code == 200:
+        routing.dispatch_confirm_in_background(
+            payload=payload, authorization_header=authorization_header
+        )
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def on_confirm_view(request):
+    """Receives a BPP's /on_confirm callback and relays it on to the originating
+    BAP (livetracker2.md Phase 3.4) — same routes-back-through-Gateway pattern as
+    on_init."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    authorization_header = request.headers.get("Authorization", "")
+    response_body, status_code = routing.validate_and_ack_on_confirm(
+        payload=payload, authorization_header=authorization_header, body=request.body
+    )
+    if status_code == 200:
+        routing.relay_on_confirm_in_background(
+            payload=payload, authorization_header=authorization_header
+        )
+    return JsonResponse(response_body, status=status_code)

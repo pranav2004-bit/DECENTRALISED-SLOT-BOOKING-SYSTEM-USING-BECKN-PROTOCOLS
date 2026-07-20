@@ -20,6 +20,13 @@ SECRET_KEY = env("DJANGO_SECRET_KEY")
 DATABASE_URL = env("DATABASE_URL")
 REDIS_URL = env("REDIS_URL")
 
+# Reservation Window / TTL-based HELD state (livetracker2.md §1.3), first actually used by
+# a real transaction flow in §3.2's select/on_select. 600s (10 minutes) is a conventional
+# e-commerce checkout window — no real-traffic baseline exists yet to tune this against
+# (same honesty already applied elsewhere in this project rather than inventing a
+# precision this stage doesn't have data to support).
+RESERVATION_HOLD_TTL_SECONDS = env.int("RESERVATION_HOLD_TTL_SECONDS", default=600)
+
 DEBUG = env.bool("DJANGO_DEBUG", default=False)
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])

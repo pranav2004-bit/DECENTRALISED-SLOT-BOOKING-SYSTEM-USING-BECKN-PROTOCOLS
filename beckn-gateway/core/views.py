@@ -79,3 +79,48 @@ def on_search_view(request):
             payload=payload, authorization_header=authorization_header
         )
     return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def select_view(request):
+    """Real /select business logic (livetracker2.md Phase 3.2) — validates and ACKs
+    the calling BAP synchronously, then forwards to the one specific, already-known
+    BPP the customer chose from search results (after a fresh SUBSCRIBED re-check —
+    see core/routing.py's dispatch_select docstring) in the background."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    authorization_header = request.headers.get("Authorization", "")
+    response_body, status_code = routing.validate_and_ack_select(
+        payload=payload, authorization_header=authorization_header, body=request.body
+    )
+    if status_code == 200:
+        routing.dispatch_select_in_background(
+            payload=payload, authorization_header=authorization_header
+        )
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def on_select_view(request):
+    """Receives a BPP's /on_select callback and relays it on to the originating BAP
+    (livetracker2.md Phase 3.2) — same routes-back-through-Gateway pattern as
+    on_search."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    authorization_header = request.headers.get("Authorization", "")
+    response_body, status_code = routing.validate_and_ack_on_select(
+        payload=payload, authorization_header=authorization_header, body=request.body
+    )
+    if status_code == 200:
+        routing.relay_on_select_in_background(
+            payload=payload, authorization_header=authorization_header
+        )
+    return JsonResponse(response_body, status=status_code)

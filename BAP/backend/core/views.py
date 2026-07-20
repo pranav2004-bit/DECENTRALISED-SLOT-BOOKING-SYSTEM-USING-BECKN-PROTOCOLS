@@ -7,7 +7,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django_observability.errors import error_response
 
-from . import onboarding_service, search_service
+from . import onboarding_service, search_service, select_service
 
 
 @require_http_methods(["GET"])
@@ -193,4 +193,71 @@ def on_search_view(request):
     )
     if status_code == 200:
         search_service.record_on_search_result(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def select_trigger_view(request):
+    """Customer-facing selection trigger (livetracker2.md §3.2) — deliberately NOT the
+    Beckn wire shape, same convention as search_trigger_view. Builds and sends the
+    real signed Beckn /select to Gateway, targeting the specific BPP that offered the
+    chosen item in an earlier real search."""
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    transaction_id = (payload.get("transaction_id") or "").strip()
+    item_id = (payload.get("item_id") or "").strip()
+    requested_timestamp = (payload.get("requested_timestamp") or "").strip()
+    if not transaction_id or not item_id or not requested_timestamp:
+        return error_response(
+            "VALIDATION_ERROR",
+            "transaction_id, item_id, and requested_timestamp are required",
+            400,
+        )
+
+    try:
+        select_service.trigger_select(
+            transaction_id=transaction_id,
+            item_id=item_id,
+            requested_timestamp=requested_timestamp,
+        )
+    except select_service.SelectError as exc:
+        return error_response("SELECT_UNAVAILABLE", exc.message, exc.status_code)
+
+    return JsonResponse({"transaction_id": transaction_id}, status=202)
+
+
+@require_http_methods(["GET"])
+def select_result_view(request, transaction_id):
+    """Customer-facing selection result poll — real results only exist once the BPP
+    actually calls back via /on_select, so both fields being null here is a normal
+    in-progress state, not an error."""
+    result = select_service.get_selection_result(transaction_id=transaction_id)
+    if result is None:
+        return error_response("NOT_FOUND", "no such search transaction", 404)
+    return JsonResponse(result, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def on_select_view(request):
+    """Real /on_select wire endpoint — receives Gateway's relayed callback from a BPP,
+    verifies both the BPP's and Gateway's signatures, ACKs synchronously, then records
+    the real Order+quote (or error) against the matching SearchSession."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = select_service.validate_and_ack_on_select(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        select_service.record_on_select_result(payload=payload)
     return JsonResponse(response_body, status=status_code)

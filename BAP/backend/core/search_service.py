@@ -9,7 +9,6 @@ distinct surfaces, deliberately not conflated (API_CONVENTIONS.md's scope line, 
 import json
 import logging
 
-from beckn_crypto import parse_authorization_header
 from beckn_transaction import (
     PayloadValidationError,
     build_ack_response,
@@ -104,44 +103,6 @@ def get_search_results(*, transaction_id: str) -> dict | None:
     }
 
 
-def _verify_bpp_and_gateway(
-    *, context: dict, authorization_header: str, gateway_authorization_header: str, body: bytes
-) -> None:
-    """Mirrors BPP's core/search_service.py's _verify_bap_and_gateway — same defense
-    in depth, mirrored roles: BAP only trusts an /on_search callback that both (a)
-    carries a genuine signature from the BPP named in context.bpp_id, and (b) actually
-    came through a real, SUBSCRIBED Gateway, never a callback that bypassed Gateway
-    even if the BPP's own signature is genuine."""
-    try:
-        validate_context(context)
-    except PayloadValidationError as exc:
-        raise SearchError(f"Invalid context: {exc}", status_code=400) from exc
-
-    if not authorization_header:
-        raise SearchError("Missing Authorization header", status_code=401)
-    try:
-        trust.verify_participant_signature(authorization_header=authorization_header, body=body)
-    except trust.TrustEstablishmentError as exc:
-        raise SearchError(f"BPP signature verification failed: {exc}", status_code=401) from exc
-
-    signer_subscriber_id = parse_authorization_header(authorization_header)["subscriber_id"]
-    if signer_subscriber_id != context.get("bpp_id"):
-        raise SearchError(
-            f"Signature identity ({signer_subscriber_id!r}) does not match "
-            f"context.bpp_id ({context.get('bpp_id')!r})",
-            status_code=401,
-        )
-
-    if not gateway_authorization_header:
-        raise SearchError("Missing X-Gateway-Authorization header", status_code=401)
-    try:
-        trust.verify_participant_signature(
-            authorization_header=gateway_authorization_header, body=body
-        )
-    except trust.TrustEstablishmentError as exc:
-        raise SearchError(f"Gateway signature verification failed: {exc}", status_code=401) from exc
-
-
 def validate_and_ack_on_search(
     *, payload: dict, authorization_header: str, gateway_authorization_header: str, body: bytes
 ) -> tuple[dict, int]:
@@ -150,32 +111,43 @@ def validate_and_ack_on_search(
     record_on_search_result's job, called after this returns 200."""
     try:
         context = payload["context"]
-    except KeyError as exc:
-        raise SearchError("Missing context", status_code=400) from exc
+        validate_context(context)
+    except (KeyError, PayloadValidationError) as exc:
+        return (
+            build_nack_response(
+                context=payload.get("context", {}),
+                error={"code": "SEARCH_ERROR", "message": f"Invalid context: {exc}"},
+            ),
+            400,
+        )
 
     try:
-        _verify_bpp_and_gateway(
+        trust.verify_bpp_and_gateway(
             context=context,
             authorization_header=authorization_header,
             gateway_authorization_header=gateway_authorization_header,
             body=body,
         )
-    except SearchError as exc:
+    except trust.TrustEstablishmentError as exc:
         return (
             build_nack_response(
-                context=context, error={"code": "SEARCH_ERROR", "message": exc.message}
+                context=context, error={"code": "SEARCH_ERROR", "message": str(exc)}
             ),
-            exc.status_code,
+            401,
         )
 
     return build_ack_response(context=context), 200
 
 
 def record_on_search_result(*, payload: dict) -> None:
-    """Appends the real catalog to the matching SearchSession's results. A callback
-    for a transaction_id this BAP has no record of (already expired, or a stray/
-    malicious callback) is logged and dropped, not silently accepted into a new,
-    unexplained session."""
+    """Appends the real catalog to the matching SearchSession's results, wrapped with
+    the responding BPP's own bpp_id/bpp_uri from the enveloping context — not just the
+    bare catalog. §3.2 needs this: selecting a specific item requires knowing which
+    BPP actually offered it, and the catalog alone doesn't carry that (it's a property
+    of the on_search envelope, not the catalog payload itself). A callback for a
+    transaction_id this BAP has no record of (already expired, or a stray/malicious
+    callback) is logged and dropped, not silently accepted into a new, unexplained
+    session."""
     context = payload["context"]
     transaction_id = context.get("transaction_id")
     try:
@@ -187,5 +159,10 @@ def record_on_search_result(*, payload: dict) -> None:
         )
         return
 
-    session.results = [*session.results, payload["message"]["catalog"]]
+    result = {
+        "bpp_id": context.get("bpp_id"),
+        "bpp_uri": context.get("bpp_uri"),
+        "catalog": payload["message"]["catalog"],
+    }
+    session.results = [*session.results, result]
     session.save(update_fields=["results", "updated_at"])

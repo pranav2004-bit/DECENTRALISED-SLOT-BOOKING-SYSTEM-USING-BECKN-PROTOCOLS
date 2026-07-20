@@ -17,7 +17,13 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from inventory_core.models import Booking, Resource, Slot
-from inventory_core.reservation import confirm_hold, hold_slot, release_expired_hold
+from inventory_core.reservation import (
+    ReservationHold,
+    confirm_hold,
+    hold_slot,
+    release_expired_hold,
+    release_hold_now,
+)
 
 
 @pytest.fixture
@@ -193,6 +199,37 @@ def test_release_expired_hold_is_a_noop_while_hold_still_active(resource, redis_
     assert released is False
     booking.refresh_from_db()
     assert booking.status == Booking.Status.HELD
+
+
+@pytest.mark.django_db
+def test_release_hold_now_releases_a_still_active_hold_immediately(resource, redis_client):
+    """The §3.2 re-selection case: unlike release_expired_hold, this must succeed even
+    though the TTL hasn't expired yet."""
+    slot = _make_slot(resource, capacity=1)
+    booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30)
+
+    released = release_hold_now(booking.id, redis_client=redis_client)
+
+    assert released is True
+    slot.refresh_from_db()
+    assert slot.status == Slot.Status.AVAILABLE
+    assert slot.capacity_remaining == slot.capacity_total
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.CANCELLED
+    assert ReservationHold(redis_client=redis_client).is_active(booking.id) is False
+
+
+@pytest.mark.django_db
+def test_release_hold_now_is_a_noop_for_a_non_held_booking(resource, redis_client):
+    slot = _make_slot(resource, capacity=1)
+    booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30)
+    confirm_hold(booking.id, redis_client=redis_client)
+
+    released = release_hold_now(booking.id, redis_client=redis_client)
+
+    assert released is False
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.ACTIVE
 
 
 @pytest.mark.django_db

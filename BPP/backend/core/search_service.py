@@ -10,7 +10,6 @@ import json
 import logging
 import threading
 
-from beckn_crypto import parse_authorization_header
 from beckn_transaction import (
     PayloadValidationError,
     build_ack_response,
@@ -29,52 +28,6 @@ from .participant_keys import get_signing_keys
 logger = logging.getLogger("bpp")
 
 
-class SearchError(Exception):
-    def __init__(self, message: str, status_code: int = 400):
-        super().__init__(message)
-        self.message = message
-        self.status_code = status_code
-
-
-def _verify_bap_and_gateway(
-    *, context: dict, authorization_header: str, gateway_authorization_header: str, body: bytes
-) -> None:
-    """Defense in depth: verifies BOTH the original BAP's signature (identity must
-    match context.bap_id, same check Gateway already did) AND the forwarding Gateway's
-    own X-Gateway-Authorization signature over the identical body. A request reaching
-    BPP directly — bypassing Gateway entirely, even with a genuine BAP signature —
-    must be rejected for missing/invalid X-Gateway-Authorization; BPP only trusts
-    search traffic that actually came through a real, SUBSCRIBED Gateway."""
-    try:
-        validate_context(context)
-    except PayloadValidationError as exc:
-        raise SearchError(f"Invalid context: {exc}", status_code=400) from exc
-
-    if not authorization_header:
-        raise SearchError("Missing Authorization header", status_code=401)
-    try:
-        trust.verify_participant_signature(authorization_header=authorization_header, body=body)
-    except trust.TrustEstablishmentError as exc:
-        raise SearchError(f"BAP signature verification failed: {exc}", status_code=401) from exc
-
-    signer_subscriber_id = parse_authorization_header(authorization_header)["subscriber_id"]
-    if signer_subscriber_id != context.get("bap_id"):
-        raise SearchError(
-            f"Signature identity ({signer_subscriber_id!r}) does not match "
-            f"context.bap_id ({context.get('bap_id')!r})",
-            status_code=401,
-        )
-
-    if not gateway_authorization_header:
-        raise SearchError("Missing X-Gateway-Authorization header", status_code=401)
-    try:
-        trust.verify_participant_signature(
-            authorization_header=gateway_authorization_header, body=body
-        )
-    except trust.TrustEstablishmentError as exc:
-        raise SearchError(f"Gateway signature verification failed: {exc}", status_code=401) from exc
-
-
 def validate_and_ack_search(
     *, payload: dict, authorization_header: str, gateway_authorization_header: str, body: bytes
 ) -> tuple[dict, int]:
@@ -83,22 +36,29 @@ def validate_and_ack_search(
     dispatch_on_search's job, fired in the background after this returns."""
     try:
         context = payload["context"]
-    except KeyError as exc:
-        raise SearchError("Missing context", status_code=400) from exc
+        validate_context(context)
+    except (KeyError, PayloadValidationError) as exc:
+        return (
+            build_nack_response(
+                context=payload.get("context", {}),
+                error={"code": "SEARCH_ERROR", "message": f"Invalid context: {exc}"},
+            ),
+            400,
+        )
 
     try:
-        _verify_bap_and_gateway(
+        trust.verify_bap_and_gateway(
             context=context,
             authorization_header=authorization_header,
             gateway_authorization_header=gateway_authorization_header,
             body=body,
         )
-    except SearchError as exc:
+    except trust.TrustEstablishmentError as exc:
         return (
             build_nack_response(
-                context=context, error={"code": "SEARCH_ERROR", "message": exc.message}
+                context=context, error={"code": "SEARCH_ERROR", "message": str(exc)}
             ),
-            exc.status_code,
+            401,
         )
 
     return build_ack_response(context=context), 200

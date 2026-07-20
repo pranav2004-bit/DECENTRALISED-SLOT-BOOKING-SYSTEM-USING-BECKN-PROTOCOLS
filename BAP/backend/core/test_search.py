@@ -149,7 +149,13 @@ def test_search_results_view_returns_accumulated_results(client):
     session = SearchSession.objects.create(
         transaction_id="txn-1", query="haircut", domain="ONDC:RET13"
     )
-    session.results = [{"descriptor": {"name": "Beauty Catalog"}, "providers": []}]
+    session.results = [
+        {
+            "bpp_id": "bpp.example.com",
+            "bpp_uri": "https://bpp.example.com",
+            "catalog": {"descriptor": {"name": "Beauty Catalog"}, "providers": []},
+        }
+    ]
     session.save()
 
     resp = client.get(reverse("search-results", args=["txn-1"]))
@@ -228,7 +234,9 @@ def test_record_on_search_result_appends_real_catalog_to_matching_session():
 
     session = SearchSession.objects.get(transaction_id="txn-1")
     assert len(session.results) == 1
-    assert session.results[0]["descriptor"]["name"] == "Beauty Catalog"
+    assert session.results[0]["bpp_id"] == "bpp.example.com"
+    assert session.results[0]["bpp_uri"] == "https://bpp.example.com"
+    assert session.results[0]["catalog"]["descriptor"]["name"] == "Beauty Catalog"
 
 
 @pytest.mark.django_db

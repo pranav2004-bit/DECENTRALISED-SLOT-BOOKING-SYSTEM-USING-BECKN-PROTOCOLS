@@ -39,6 +39,10 @@ def _resource_to_item(resource: Resource) -> dict:
         },
         "category_ids": [resource.category_id] if resource.category_id else [],
         "rateable": resource.rateable,
+        "price": {
+            "currency": resource.price_currency,
+            "value": str(resource.price_value),
+        },
     }
 
 

@@ -52,6 +52,8 @@ def test_catalog_round_trips_real_business_and_resource_data():
         code="STY-A",
         short_desc="Senior stylist",
         category_id="ONDC:RET13",
+        price_currency="INR",
+        price_value="750.00",
     )
 
     catalog = build_beauty_catalog()
@@ -69,6 +71,21 @@ def test_catalog_round_trips_real_business_and_resource_data():
     assert item["descriptor"]["code"] == "STY-A"
     assert item["category_ids"] == ["ONDC:RET13"]
     assert item["rateable"] is True
+    assert item["price"] == {"currency": "INR", "value": "750.00"}
+
+
+@pytest.mark.django_db
+def test_catalog_item_uses_the_default_price_when_none_set():
+    business = BusinessAccount.objects.create_user(
+        contact="salon2@example.com", business_name="Default Price Salon", password=TEST_PASSWORD
+    )
+    Resource.objects.create(owner_ref=str(business.id), name="Stylist B")
+
+    catalog = build_beauty_catalog()
+    jsonschema.validate(instance=catalog, schema=_schema())
+
+    item = catalog["providers"][0]["items"][0]
+    assert item["price"] == {"currency": "INR", "value": "0.00"}
 
 
 @pytest.mark.django_db

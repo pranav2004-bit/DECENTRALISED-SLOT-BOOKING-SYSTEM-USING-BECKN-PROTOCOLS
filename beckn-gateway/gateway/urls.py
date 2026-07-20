@@ -29,4 +29,6 @@ urlpatterns = [
     path("on_subscribe", core_views.on_subscribe_view, name="on_subscribe"),
     path("search", core_views.search_view, name="search"),
     path("on_search", core_views.on_search_view, name="on_search"),
+    path("select", core_views.select_view, name="select"),
+    path("on_select", core_views.on_select_view, name="on_select"),
 ]

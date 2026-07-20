@@ -7,6 +7,15 @@
 | Python (registry, beckn-gateway, BAP/backend, BPP/backend) | `pytest` + `pytest-django` | Config in each app's `pyproject.toml` (`[tool.pytest.ini_options]`) |
 | TypeScript/Next.js (BAP/web, BPP/web) | `Vitest` | Faster than Jest for this project's scale; swap is low-cost later if needed |
 
+## Frontend Component Testing
+
+Introduced in `livetracker2.md` Phase 2.4 — before this, `BAP/web`/`BPP/web`'s Vitest config ran in a `node` environment with zero DOM, since the only prior test target (`lib/api-client.ts`) was pure logic. Phase 2.4 added the first real React components (`AppShell`, the base component library, `useRealtimeConnection()`), so the test infra had to grow with them, not stay behind:
+
+- **`vitest.config.ts` switched to `environment: "jsdom"`** (from `node`) plus a `@vitejs/plugin-react` plugin and a `resolve.alias` for the `@/*` path (Vitest doesn't read `tsconfig.json`'s `paths` automatically — Next.js does, but the test runner needed the alias declared explicitly or every `@/...` import in a test file fails to resolve).
+- **`@testing-library/react`** for rendering components and `renderHook` for the `useRealtimeConnection()` hook; **`@testing-library/user-event`** for realistic click/keyboard interaction simulation over raw DOM event dispatch; **`@testing-library/jest-dom`** for the `toBeInTheDocument()`/`toHaveAttribute()`/`toHaveTextContent()` style of DOM assertion, wired in via a `vitest.setup.ts` that also calls `cleanup()` after every test (React Testing Library doesn't auto-unmount between tests the way Jest's default environment does).
+- **WebSocket in tests**: `jsdom` doesn't implement `WebSocket`, so `useRealtimeConnection.test.ts` defines a small `MockWebSocket` class (tracks its own listeners, exposes an `emit()` helper to fire `open`/`message`/`close`/`error` from the test) and installs it via `vi.stubGlobal('WebSocket', MockWebSocket)` — a real handshake is exercised separately, live, in a browser (see Phase 2.4's Test Gate in `livetracker2.md`); the unit test's job is only the hook's own state-machine logic (`connecting`/`open`/`closed`/`error`, reconnect-on-close, manual `reconnect()`).
+- Same pattern applied identically to both `BAP/web` and `BPP/web`, matching [ADR-0004](docs/adr/0004-web-ui-duplicated-not-shared-package.md)'s duplicated-not-shared decision for the UI code itself.
+
 ## Local Testing Gotcha (Windows/Docker Desktop/WSL2)
 
 Found in Phase 1.4: when connecting from the Windows host to a Docker-published port, `localhost` can silently hit a stale `wslrelay.exe` binding on the IPv6 loopback (`[::1]`) instead of Docker's actual port-forward, causing connection resets and multi-minute timeouts (standalone containers) or an immediate `curl` failure (exit 56/7) that look like flakiness but aren't — `netstat -ano | findstr :<port>` will show two different PIDs bound to the same port on `0.0.0.0` vs `[::1]`. **Fix:** connect via `127.0.0.1` explicitly instead of `localhost`, in local test `.env` files and in any host-side `curl`/browser access.

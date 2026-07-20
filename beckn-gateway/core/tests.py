@@ -1077,3 +1077,390 @@ def test_relay_on_select_logs_and_returns_when_bap_uri_missing():
     payload = _build_on_select_context()
     del payload["context"]["bap_uri"]
     routing.relay_on_select(payload=payload, authorization_header="irrelevant")  # must not raise
+
+
+# --- init / on_init (livetracker2.md Phase 3.3) -------------------------------------------
+
+
+def _build_init_context(*, bap_id="bap.example.com", bpp_id="bpp.example.com"):
+    """Same already-know-the-BPP shape as select's context — /init targets the one
+    BPP a prior /select already resolved to, not a domain-wide broadcast."""
+    return {
+        "context": {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "init",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "bpp_id": bpp_id,
+            "bpp_uri": f"https://{bpp_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-20T00:00:00Z",
+        },
+        "message": {
+            "order": {
+                "provider": {"id": "biz-1"},
+                "items": [{"id": "item-1"}],
+                "fulfillments": [{"id": "booking-1"}],
+            }
+        },
+    }
+
+
+def _build_on_init_context(*, bap_id="bap.example.com", bpp_id="bpp.example.com"):
+    return {
+        "context": {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "on_init",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "bpp_id": bpp_id,
+            "bpp_uri": f"https://{bpp_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-20T00:00:00Z",
+        },
+        "message": {
+            "order": {
+                "provider": {"id": "biz-1"},
+                "items": [{"id": "item-1"}],
+                "fulfillments": [{"id": "booking-1"}],
+                "quote": {
+                    "price": {"currency": "INR", "value": "500.00"},
+                    "breakup": [
+                        {
+                            "item": {"id": "item-1"},
+                            "title": "Stylist A",
+                            "price": {"currency": "INR", "value": "500.00"},
+                        }
+                    ],
+                    "ttl": "PT600S",
+                },
+            }
+        },
+    }
+
+
+@patch("core.routing.dispatch_init_in_background")
+def test_init_view_acks_immediately_for_a_validly_signed_request(mock_dispatch, client):
+    bap_pub, bap_priv = generate_signing_key_pair()
+    payload = _build_init_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=_lookup_callback(bap_pub, []),
+        )
+        resp = client.post(
+            reverse("init"), data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_dispatch.assert_called_once_with(payload=payload, authorization_header=header)
+
+
+def test_dispatch_init_forwards_to_the_specific_bpp_with_both_signatures(settings):
+    """Real forwarding behavior, called directly and synchronously. Confirms a fresh
+    SUBSCRIBED lookup happens for the specific bpp_id (the same staleness re-check
+    dispatch_select already established, now applied between select and init), the
+    forwarded body is byte-identical, the original Authorization header is
+    preserved, and a fresh X-Gateway-Authorization is added."""
+    settings.SUBSCRIBER_ID = "gateway.local"
+    settings.UNIQUE_KEY_ID = "key1"
+    payload = _build_init_context()
+    original_auth_header = 'Signature keyId="bap.example.com|key-1|ed25519",...(original)'
+
+    lookup_requests = []
+    captured_requests = []
+
+    def lookup_callback(request):
+        lookup_requests.append(json.loads(request.body))
+        return (
+            200,
+            {},
+            json.dumps(
+                [
+                    {
+                        "subscriber_id": "bpp.example.com",
+                        "url": "https://bpp.example.com",
+                        "status": "SUBSCRIBED",
+                    }
+                ]
+            ),
+        )
+
+    def bpp_init_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(responses.POST, "http://registry:8000/lookup", callback=lookup_callback)
+        rsps.add_callback(
+            responses.POST, "https://bpp.example.com/init", callback=bpp_init_callback
+        )
+        routing.dispatch_init(payload=payload, authorization_header=original_auth_header)
+
+    assert lookup_requests == [{"subscriber_id": "bpp.example.com"}]
+    assert len(captured_requests) == 1
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+    assert "gateway.local" in forwarded.headers["X-Gateway-Authorization"]
+
+
+def test_dispatch_init_does_not_forward_when_bpp_no_longer_subscribed():
+    """The same staleness gap already closed for dispatch_select applies equally
+    between select and init: a BPP's SUBSCRIBED status can go stale in that window
+    too. dispatch_init must re-check it live and refuse to forward, even though the
+    context already carries a remembered bpp_uri."""
+    payload = _build_init_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "url": "https://bpp.example.com",
+                            "status": "UNDER_SUBSCRIPTION",
+                        }
+                    ]
+                ),
+            ),
+        )
+        # deliberately no /init callback registered for bpp.example.com — if
+        # dispatch_init forwards anyway, responses raises ConnectionError, failing
+        # this test for real, not just via a call-count assertion.
+        routing.dispatch_init(payload=payload, authorization_header="irrelevant")
+
+
+def test_dispatch_init_does_not_raise_when_bpp_is_unreachable():
+    payload = _build_init_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "url": "https://bpp.example.com",
+                            "status": "SUBSCRIBED",
+                        }
+                    ]
+                ),
+            ),
+        )
+        rsps.add(responses.POST, "https://bpp.example.com/init", status=503)
+        # must not raise:
+        routing.dispatch_init(payload=payload, authorization_header="irrelevant")
+
+
+def test_init_view_rejects_tampered_signature(client):
+    bap_pub, _ = generate_signing_key_pair()
+    _, attacker_priv = generate_signing_key_pair()
+    payload = _build_init_context()
+    body = json.dumps(payload).encode()
+    forged_header = sign_outbound_request(
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=attacker_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(bap_pub, [])
+        )
+        resp = client.post(
+            reverse("init"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=forged_header,
+        )
+
+    assert resp.status_code == 401
+
+
+def test_init_view_rejects_bap_id_impersonation(client):
+    bap_pub, bap_priv = generate_signing_key_pair()
+    payload = _build_init_context(bap_id="someone-else.example.com")
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(bap_pub, [])
+        )
+        resp = client.post(
+            reverse("init"), data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+        )
+
+    assert resp.status_code == 401
+
+
+def test_init_view_rejects_missing_context_field(client):
+    payload = _build_init_context()
+    del payload["context"]["bap_id"]
+    body = json.dumps(payload).encode()
+
+    resp = client.post(
+        reverse("init"),
+        data=body,
+        content_type="application/json",
+        HTTP_AUTHORIZATION="irrelevant",
+    )
+    assert resp.status_code == 400
+
+
+@patch("core.routing.relay_on_init_in_background")
+def test_on_init_view_acks_immediately_for_a_validly_signed_bpp_callback(mock_relay, client):
+    bpp_pub, bpp_priv = generate_signing_key_pair()
+    payload = _build_on_init_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bpp.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bpp_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "status": "SUBSCRIBED",
+                            "signing_public_key": bpp_pub,
+                        }
+                    ]
+                ),
+            ),
+        )
+        resp = client.post(
+            reverse("on_init"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=header,
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_relay.assert_called_once_with(payload=payload, authorization_header=header)
+
+
+def test_on_init_view_rejects_bpp_id_impersonation(client):
+    bpp_pub, bpp_priv = generate_signing_key_pair()
+    payload = _build_on_init_context(bpp_id="someone-else.example.com")
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bpp.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bpp_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "status": "SUBSCRIBED",
+                            "signing_public_key": bpp_pub,
+                        }
+                    ]
+                ),
+            ),
+        )
+        resp = client.post(
+            reverse("on_init"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=header,
+        )
+
+    assert resp.status_code == 401
+
+
+def test_relay_on_init_forwards_to_the_bap_with_both_signatures():
+    payload = _build_on_init_context()
+    original_auth_header = 'Signature keyId="bpp.example.com|key-1|ed25519",...(original)'
+
+    captured_requests = []
+
+    def bap_on_init_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "https://bap.example.com/on_init", callback=bap_on_init_callback
+        )
+        routing.relay_on_init(payload=payload, authorization_header=original_auth_header)
+
+    assert len(captured_requests) == 1
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+
+
+def test_relay_on_init_does_not_raise_when_bap_is_unreachable():
+    payload = _build_on_init_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(responses.POST, "https://bap.example.com/on_init", status=503)
+        # must not raise:
+        routing.relay_on_init(payload=payload, authorization_header="irrelevant")
+
+
+def test_relay_on_init_logs_and_returns_when_bap_uri_missing():
+    payload = _build_on_init_context()
+    del payload["context"]["bap_uri"]
+    routing.relay_on_init(payload=payload, authorization_header="irrelevant")  # must not raise

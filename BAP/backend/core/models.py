@@ -137,6 +137,21 @@ class SearchSession(models.Model):
     selected_order = models.JSONField(null=True, blank=True)
     selected_error = models.JSONField(null=True, blank=True)
 
+    # The specific BPP a successful selection actually resolved to — needed to target
+    # /init at the same BPP again (§3.3), since `selected_order.provider.id` alone
+    # isn't reliably enough to re-derive it (provider ids are each BPP's own choice,
+    # not guaranteed unique across different BPPs). Set alongside selected_order,
+    # blank while no successful selection exists yet.
+    selected_bpp_id = models.CharField(max_length=255, blank=True)
+    selected_bpp_uri = models.CharField(max_length=500, blank=True)
+
+    # §3.3 Initialization — same mutually-exclusive success/error pattern as
+    # selected_order/selected_error, one step further along the same continuous
+    # transaction. `init_order` holds the real Order (with its real Quotation,
+    # price+breakup[]+ttl) once on_init arrives successfully.
+    init_order = models.JSONField(null=True, blank=True)
+    init_error = models.JSONField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

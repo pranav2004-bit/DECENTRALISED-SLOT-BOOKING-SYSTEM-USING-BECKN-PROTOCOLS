@@ -13,7 +13,7 @@ from django_observability.errors import error_response
 from inventory_core.domain_adapter import get_adapter
 from inventory_core.models import AvailabilityCalendar, Resource
 
-from . import onboarding_service, search_service, select_service
+from . import init_service, onboarding_service, search_service, select_service
 from .catalog import visible_resources
 
 
@@ -285,4 +285,27 @@ def select_view(request):
     )
     if status_code == 200:
         select_service.dispatch_on_select_in_background(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def init_view(request):
+    """Real /init business logic (livetracker2.md Phase 3.3) — receives Gateway's
+    forwarded initialization, ACKs the calling Gateway/BAP pair synchronously, then
+    revalidates the referenced booking against live state and returns a real
+    Quotation in the background (see core/init_service.py's module docstring)."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = init_service.validate_and_ack_init(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        init_service.dispatch_on_init_in_background(payload=payload)
     return JsonResponse(response_body, status=status_code)

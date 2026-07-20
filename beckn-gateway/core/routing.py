@@ -416,3 +416,171 @@ def relay_on_select_in_background(*, payload: dict, authorization_header: str) -
         daemon=True,
     )
     thread.start()
+
+
+# --- init / on_init (livetracker2.md Phase 3.3) ----------------------------------------
+
+
+def validate_and_ack_init(
+    *, payload: dict, authorization_header: str, body: bytes
+) -> tuple[dict, int]:
+    """Synchronous half of /init: validates and verifies the calling BAP, returns
+    the real ACK/NACK envelope. Does NOT forward to the BPP — that's dispatch_init's
+    job, meant to run after this returns."""
+    try:
+        context = payload["context"]
+    except KeyError as exc:
+        raise RoutingError("Missing context", status_code=400) from exc
+
+    try:
+        _verify_caller(
+            context=context,
+            authorization_header=authorization_header,
+            body=body,
+            expected_id_field="bap_id",
+        )
+    except RoutingError as exc:
+        return (
+            build_nack_response(
+                context=context, error={"code": "ROUTING_ERROR", "message": exc.message}
+            ),
+            exc.status_code,
+        )
+
+    return build_ack_response(context=context), 200
+
+
+def validate_and_ack_on_init(
+    *, payload: dict, authorization_header: str, body: bytes
+) -> tuple[dict, int]:
+    """Synchronous half of /on_init: validates and verifies the calling BPP (its
+    identity must match context.bpp_id). Does NOT relay to the BAP — that's
+    relay_on_init's job."""
+    try:
+        context = payload["context"]
+    except KeyError as exc:
+        raise RoutingError("Missing context", status_code=400) from exc
+
+    try:
+        _verify_caller(
+            context=context,
+            authorization_header=authorization_header,
+            body=body,
+            expected_id_field="bpp_id",
+        )
+    except RoutingError as exc:
+        return (
+            build_nack_response(
+                context=context, error={"code": "ROUTING_ERROR", "message": exc.message}
+            ),
+            exc.status_code,
+        )
+
+    return build_ack_response(context=context), 200
+
+
+def dispatch_init(*, payload: dict, authorization_header: str) -> None:
+    """Forwards a customer's initialization to the ONE specific BPP already chosen at
+    Selection — same targeted-forward pattern as dispatch_select, not a broadcast.
+
+    Re-checks that BPP's SUBSCRIBED status via a fresh Registry lookup before
+    forwarding — the same staleness risk dispatch_select already closed between
+    search and select applies equally between select and init (§3.3's own gap-closed
+    note). Same fire-and-forget/log-don't-raise discipline as dispatch_select."""
+    context = payload["context"]
+    body = json.dumps(payload).encode()
+
+    bpp_id = context.get("bpp_id")
+    bpp_uri = context.get("bpp_uri")
+    if not bpp_id or not bpp_uri:
+        logger.error("dispatch_init: context missing bpp_id/bpp_uri, cannot forward")
+        return
+
+    try:
+        results = registry_client.lookup({"subscriber_id": bpp_id})
+    except Exception:
+        logger.exception("dispatch_init: Registry lookup failed for bpp_id %s", bpp_id)
+        return
+
+    if not results or results[0].get("status") != "SUBSCRIBED":
+        logger.info(
+            "dispatch_init: bpp_id %s is no longer SUBSCRIBED, refusing to forward", bpp_id
+        )
+        return
+
+    _, signing_priv = get_signing_keys()
+    gateway_signature = sign_outbound_request(
+        body=body,
+        subscriber_id=settings.SUBSCRIBER_ID,
+        unique_key_id=settings.UNIQUE_KEY_ID,
+        signing_private_key_b64=signing_priv,
+    )
+
+    bpp_init_url = bpp_uri.rstrip("/") + "/init"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": authorization_header,
+        "X-Gateway-Authorization": gateway_signature,
+    }
+    try:
+        client = registry_client.get_client()
+        response = client.post(bpp_init_url, data=body, headers=headers)
+        response.raise_for_status()
+    except Exception:
+        logger.exception("dispatch_init: forwarding to %s failed", bpp_init_url)
+
+
+def dispatch_init_in_background(*, payload: dict, authorization_header: str) -> None:
+    """Fires dispatch_init on a daemon thread — same fire-and-forget entry point
+    pattern as dispatch_select_in_background."""
+    thread = threading.Thread(
+        target=dispatch_init,
+        kwargs={"payload": payload, "authorization_header": authorization_header},
+        daemon=True,
+    )
+    thread.start()
+
+
+def relay_on_init(*, payload: dict, authorization_header: str) -> None:
+    """Forwards a BPP's /on_init callback on to the originating BAP — on_init routes
+    back through Gateway, same as on_search/on_select. Same fire-and-forget/log-
+    don't-raise discipline as relay_on_select."""
+    context = payload["context"]
+    body = json.dumps(payload).encode()
+
+    bap_uri = context.get("bap_uri")
+    if not bap_uri:
+        logger.error("relay_on_init: context missing bap_uri, cannot relay callback")
+        return
+
+    _, signing_priv = get_signing_keys()
+    gateway_signature = sign_outbound_request(
+        body=body,
+        subscriber_id=settings.SUBSCRIBER_ID,
+        unique_key_id=settings.UNIQUE_KEY_ID,
+        signing_private_key_b64=signing_priv,
+    )
+
+    bap_on_init_url = bap_uri.rstrip("/") + "/on_init"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": authorization_header,
+        "X-Gateway-Authorization": gateway_signature,
+    }
+    try:
+        client = registry_client.get_client()
+        response = client.post(bap_on_init_url, data=body, headers=headers)
+        response.raise_for_status()
+    except Exception:
+        logger.exception("relay_on_init: forwarding to %s failed", bap_on_init_url)
+
+
+def relay_on_init_in_background(*, payload: dict, authorization_header: str) -> None:
+    """Fires relay_on_init on a daemon thread — same fire-and-forget entry point
+    pattern as relay_on_select_in_background."""
+    thread = threading.Thread(
+        target=relay_on_init,
+        kwargs={"payload": payload, "authorization_header": authorization_header},
+        daemon=True,
+    )
+    thread.start()

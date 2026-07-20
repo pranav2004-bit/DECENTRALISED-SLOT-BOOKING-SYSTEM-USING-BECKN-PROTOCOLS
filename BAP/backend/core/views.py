@@ -7,7 +7,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django_observability.errors import error_response
 
-from . import onboarding_service, search_service, select_service
+from . import init_service, onboarding_service, search_service, select_service
 
 
 @require_http_methods(["GET"])
@@ -260,4 +260,62 @@ def on_select_view(request):
     )
     if status_code == 200:
         select_service.record_on_select_result(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def init_trigger_view(request):
+    """Customer-facing initialization trigger (livetracker2.md §3.3) — deliberately
+    NOT the Beckn wire shape, same convention as select_trigger_view. Builds and
+    sends the real signed Beckn /init to Gateway, targeting the same BPP a prior
+    successful /select already resolved to. No new fields needed from the customer —
+    everything required already lives on the session from Selection."""
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    transaction_id = (payload.get("transaction_id") or "").strip()
+    if not transaction_id:
+        return error_response("VALIDATION_ERROR", "transaction_id is required", 400)
+
+    try:
+        init_service.trigger_init(transaction_id=transaction_id)
+    except init_service.InitError as exc:
+        return error_response("INIT_UNAVAILABLE", exc.message, exc.status_code)
+
+    return JsonResponse({"transaction_id": transaction_id}, status=202)
+
+
+@require_http_methods(["GET"])
+def init_result_view(request, transaction_id):
+    """Customer-facing initialization result poll — real results only exist once
+    the BPP actually calls back via /on_init, so both fields being null here is a
+    normal in-progress state, not an error."""
+    result = init_service.get_init_result(transaction_id=transaction_id)
+    if result is None:
+        return error_response("NOT_FOUND", "no such search transaction", 404)
+    return JsonResponse(result, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def on_init_view(request):
+    """Real /on_init wire endpoint — receives Gateway's relayed callback from a BPP,
+    verifies both the BPP's and Gateway's signatures, ACKs synchronously, then
+    records the real Order+Quotation (or error) against the matching SearchSession."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = init_service.validate_and_ack_on_init(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        init_service.record_on_init_result(payload=payload)
     return JsonResponse(response_body, status=status_code)

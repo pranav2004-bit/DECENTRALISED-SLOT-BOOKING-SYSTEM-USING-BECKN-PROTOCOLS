@@ -112,7 +112,11 @@ services:
       - "8001:8000"
 
   bap-web:
-    build: ./BAP/web
+    build:
+      context: ./BAP/web
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8001
+        NEXT_PUBLIC_WS_BASE_URL: ws://localhost:8001
     env_file: ./BAP/web/.env
     depends_on:
       - bap-backend
@@ -135,7 +139,11 @@ services:
       - "8002:8000"
 
   bpp-web:
-    build: ./BPP/web
+    build:
+      context: ./BPP/web
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8002
+        NEXT_PUBLIC_WS_BASE_URL: ws://localhost:8002
     env_file: ./BPP/web/.env
     depends_on:
       - bpp-backend

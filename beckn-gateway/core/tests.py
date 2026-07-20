@@ -431,12 +431,17 @@ def test_search_view_acks_immediately_for_a_validly_signed_request(mock_dispatch
     mock_dispatch.assert_called_once_with(payload=payload, authorization_header=header)
 
 
-def test_dispatch_search_forwards_to_each_subscribed_bpp_with_both_signatures():
+def test_dispatch_search_forwards_to_each_subscribed_bpp_with_both_signatures(settings):
     """Real forwarding behavior, called directly and synchronously (not through the
     view's background thread) so the assertion isn't racing anything. Confirms the
     forwarded body is byte-identical to the original payload, the original
     Authorization header is preserved untouched, and a fresh X-Gateway-Authorization
-    is added (protocol_compliance_notes_v1.1.md §H.3)."""
+    is added (protocol_compliance_notes_v1.1.md §H.3). SUBSCRIBER_ID/UNIQUE_KEY_ID are
+    set explicitly here rather than relied on from the ambient environment — CI doesn't
+    set them for this app (they default to ""), which made an earlier version of this
+    test's `"gateway.local" in ...` assertion pass locally but fail in CI."""
+    settings.SUBSCRIBER_ID = "gateway.local"
+    settings.UNIQUE_KEY_ID = "key1"
     payload = _build_search_context()
     original_auth_header = "Signature keyId=\"bap.example.com|key-1|ed25519\",...(original)"
     bpp_entries = [

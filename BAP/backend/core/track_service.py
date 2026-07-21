@@ -28,6 +28,7 @@ from . import registry_client, trust
 from .crypto import sign_outbound_request
 from .models import SearchSession
 from .participant_keys import get_signing_keys
+from .session_authz import SessionAccessError, resolve_owned_session
 
 logger = logging.getLogger("bap")
 
@@ -39,14 +40,17 @@ class TrackError(Exception):
         self.status_code = status_code
 
 
-def trigger_track(*, transaction_id: str) -> None:
+def trigger_track(*, transaction_id: str, customer=None) -> None:
     """Customer-facing tracking trigger — builds and sends the real signed
     Beckn /track to Gateway, targeting the same BPP this transaction was
-    confirmed with. Requires a real successful /confirm to have happened first."""
+    confirmed with. Requires a real successful /confirm to have happened first.
+
+    `customer` (§3.7): IDOR protection — raises `TrackError(401/403)` if this
+    transaction belongs to a different customer than the caller."""
     try:
-        session = SearchSession.objects.get(transaction_id=transaction_id)
-    except SearchSession.DoesNotExist:
-        raise TrackError("No such search transaction", status_code=404) from None
+        session = resolve_owned_session(transaction_id=transaction_id, requesting_customer=customer)
+    except SessionAccessError as exc:
+        raise TrackError(exc.message, status_code=exc.status_code) from exc
 
     if not session.confirmed_order or not session.selected_bpp_id:
         raise TrackError(
@@ -97,14 +101,17 @@ def trigger_track(*, transaction_id: str) -> None:
         raise TrackError("Gateway rejected the track request (NACK)", status_code=502)
 
 
-def get_track_result(*, transaction_id: str) -> dict | None:
+def get_track_result(*, transaction_id: str, customer=None) -> dict | None:
     """Returns the current tracking outcome, or None if no such search session
     exists. Both fields are None while on_track hasn't arrived yet — a normal,
-    honest in-progress state, not an error."""
+    honest in-progress state, not an error. `customer` (§3.7): IDOR protection,
+    same contract as get_confirm_result."""
     try:
-        session = SearchSession.objects.get(transaction_id=transaction_id)
-    except SearchSession.DoesNotExist:
-        return None
+        session = resolve_owned_session(transaction_id=transaction_id, requesting_customer=customer)
+    except SessionAccessError as exc:
+        if exc.status_code == 404:
+            return None
+        raise TrackError(exc.message, status_code=exc.status_code) from exc
     return {
         "transaction_id": session.transaction_id,
         "tracking": session.tracking,

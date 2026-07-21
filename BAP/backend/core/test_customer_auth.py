@@ -53,6 +53,36 @@ def test_signup_creates_a_real_customer(client):
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize(
+    "payload_name",
+    [
+        "'; DROP TABLE core_customer; --",
+        "<script>alert('xss')</script>",
+        "Robert'); DROP TABLE core_customer;--",
+    ],
+)
+def test_signup_safely_stores_sqli_and_xss_shaped_name_without_executing_it(client, payload_name):
+    """SEC (§3.7's own Test Gate): SQLi/XSS-shaped payloads against signup
+    fields are rejected or safely stored, never reflected/executed. Django's
+    ORM parameterizes all queries (structural SQLi prevention, not
+    string-concatenated SQL anywhere in this codebase) and JsonResponse
+    auto-escapes on serialization — this proves that holds in practice, not
+    just in theory: the account is created with the literal string intact,
+    the customer table still exists and is queryable afterward."""
+    resp = client.post(
+        reverse("signup"),
+        data={"name": payload_name, "contact": "jane@example.com", "password": TEST_PASSWORD},
+        content_type="application/json",
+    )
+    assert resp.status_code == 201
+    assert resp.json()["name"] == payload_name
+
+    customer = Customer.objects.get(contact="jane@example.com")
+    assert customer.name == payload_name
+    assert Customer.objects.count() == 1
+
+
+@pytest.mark.django_db
 def test_signup_rejects_duplicate_contact(client):
     _signup(client)
     resp = _signup(client)
@@ -85,6 +115,49 @@ def test_signup_rejects_a_weak_password_via_djangos_own_validators(client):
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
     assert resp.json()["error"]["field"] == "password"
+
+
+@pytest.mark.django_db
+def test_signup_rejects_oversized_name_and_contact(client):
+    """SEC (§3.7): rejects oversized input before it reaches business logic / the
+    DB, rather than a real Postgres varchar(255) overflow surfacing as an
+    uncaught DataError -> a generic 500."""
+    resp = client.post(
+        reverse("signup"),
+        data={"name": "x" * 256, "contact": "jane@example.com", "password": TEST_PASSWORD},
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["field"] == "name"
+
+    resp = client.post(
+        reverse("signup"),
+        data={"name": "Jane Doe", "contact": "x" * 256, "password": TEST_PASSWORD},
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["field"] == "contact"
+
+
+@pytest.mark.django_db
+def test_signup_is_rate_limited(client):
+    """SEC (§3.7's own Test Gate): rapid-fire signup spam is throttled — real
+    abuse-simulation, hitting the actual endpoint 6 times in a row."""
+    for _ in range(5):
+        resp = client.post(
+            reverse("signup"),
+            data={"name": "Jane Doe", "contact": "jane@example.com", "password": TEST_PASSWORD},
+            content_type="application/json",
+        )
+        assert resp.status_code in (201, 409)
+
+    resp = client.post(
+        reverse("signup"),
+        data={"name": "Jane Doe", "contact": "jane@example.com", "password": TEST_PASSWORD},
+        content_type="application/json",
+    )
+    assert resp.status_code == 429
+    assert resp.json()["error"]["code"] == "RATE_LIMITED"
 
 
 @pytest.mark.django_db
@@ -168,3 +241,35 @@ def test_session_data_lives_in_redis_not_the_database(client):
     # And confirms it did NOT also land in Django's default DB-backed session table —
     # SESSION_ENGINE="cache" (not "cached_db") means this table should stay empty.
     assert DjangoSession.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_signup_rejects_a_request_with_no_csrf_token():
+    """SEC (§3.7): real gap closed — signup/login are no longer @csrf_exempt.
+    `enforce_csrf_checks=True` makes Django's test Client behave like a real
+    browser instead of silently bypassing CSRF, the way the default test Client
+    always does."""
+    strict_client = Client(enforce_csrf_checks=True)
+    resp = strict_client.post(
+        reverse("signup"),
+        data={"name": "Jane Doe", "contact": "jane@example.com", "password": TEST_PASSWORD},
+        content_type="application/json",
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.django_db
+def test_signup_succeeds_with_a_real_csrf_token_from_the_csrf_cookie_endpoint():
+    """The real, intended flow (§3.7): GET the CSRF cookie first (the standard
+    Django AJAX-CSRF pattern), then echo it back as X-CSRFToken on the POST."""
+    strict_client = Client(enforce_csrf_checks=True)
+    strict_client.get(reverse("csrf-token"))
+    csrf_token = strict_client.cookies["csrftoken"].value
+
+    resp = strict_client.post(
+        reverse("signup"),
+        data={"name": "Jane Doe", "contact": "jane@example.com", "password": TEST_PASSWORD},
+        content_type="application/json",
+        HTTP_X_CSRFTOKEN=csrf_token,
+    )
+    assert resp.status_code == 201

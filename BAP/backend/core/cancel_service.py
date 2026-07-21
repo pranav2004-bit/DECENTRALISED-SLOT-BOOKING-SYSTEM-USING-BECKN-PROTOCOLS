@@ -28,6 +28,7 @@ from . import registry_client, trust
 from .crypto import sign_outbound_request
 from .models import SearchSession
 from .participant_keys import get_signing_keys
+from .session_authz import SessionAccessError, resolve_owned_session
 
 logger = logging.getLogger("bap")
 
@@ -39,16 +40,21 @@ class CancelError(Exception):
         self.status_code = status_code
 
 
-def trigger_cancel(*, transaction_id: str, cancellation_reason_id: str = "") -> None:
+def trigger_cancel(
+    *, transaction_id: str, cancellation_reason_id: str = "", customer=None
+) -> None:
     """Customer-facing cancellation trigger — builds and sends the real signed
     Beckn /cancel to Gateway, targeting the same BPP this transaction was
     confirmed with. Requires a real successful /confirm to have happened first
     — a still-HELD hold isn't a real, cancellable Order (§3.5's own explicit
-    scope decision)."""
+    scope decision).
+
+    `customer` (§3.7): IDOR protection — raises `CancelError(401/403)` if this
+    transaction belongs to a different customer than the caller."""
     try:
-        session = SearchSession.objects.get(transaction_id=transaction_id)
-    except SearchSession.DoesNotExist:
-        raise CancelError("No such search transaction", status_code=404) from None
+        session = resolve_owned_session(transaction_id=transaction_id, requesting_customer=customer)
+    except SessionAccessError as exc:
+        raise CancelError(exc.message, status_code=exc.status_code) from exc
 
     if not session.confirmed_order or not session.selected_bpp_id:
         raise CancelError(
@@ -102,14 +108,17 @@ def trigger_cancel(*, transaction_id: str, cancellation_reason_id: str = "") -> 
         raise CancelError("Gateway rejected the cancel request (NACK)", status_code=502)
 
 
-def get_cancel_result(*, transaction_id: str) -> dict | None:
+def get_cancel_result(*, transaction_id: str, customer=None) -> dict | None:
     """Returns the current cancellation outcome, or None if no such search
     session exists. Both fields are None while on_cancel hasn't arrived yet — a
-    normal, honest in-progress state, not an error."""
+    normal, honest in-progress state, not an error. `customer` (§3.7): IDOR
+    protection, same contract as get_confirm_result."""
     try:
-        session = SearchSession.objects.get(transaction_id=transaction_id)
-    except SearchSession.DoesNotExist:
-        return None
+        session = resolve_owned_session(transaction_id=transaction_id, requesting_customer=customer)
+    except SessionAccessError as exc:
+        if exc.status_code == 404:
+            return None
+        raise CancelError(exc.message, status_code=exc.status_code) from exc
     return {
         "transaction_id": session.transaction_id,
         "cancelled_order": session.cancelled_order,

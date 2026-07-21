@@ -25,6 +25,7 @@ from . import registry_client, trust
 from .crypto import sign_outbound_request
 from .models import SearchSession
 from .participant_keys import get_signing_keys
+from .session_authz import SessionAccessError, resolve_owned_session
 
 logger = logging.getLogger("bap")
 
@@ -36,13 +37,18 @@ class SearchError(Exception):
         self.status_code = status_code
 
 
-def trigger_search(*, query: str, domain: str, customer=None) -> str:
+def trigger_search(*, query: str, domain: str, customer=None, client_ip: str | None = None) -> str:
     """Customer-facing entry point: builds a real Beckn Intent + context, signs it,
     and sends it to Gateway's /search — synchronously, but only waiting for Gateway's
     immediate ACK (a fast local call), never for the actual catalog data, which arrives
     later via /on_search. Creates the SearchSession real results accumulate into.
     Returns the transaction_id the customer polls with. Raises SearchError if Gateway
-    itself rejects the request (NACK) or is unreachable."""
+    itself rejects the request (NACK) or is unreachable.
+
+    `client_ip` (§3.7): recorded on the session so an anonymous customer's later
+    `/select` can be checked against `select_service`'s reservation-hold abuse cap
+    — a logged-in `customer` already provides a per-actor key, an anonymous one
+    doesn't otherwise have one."""
     transaction_id = new_transaction_id()
     context = build_context(
         domain=domain,
@@ -82,13 +88,17 @@ def trigger_search(*, query: str, domain: str, customer=None) -> str:
         raise SearchError("Gateway rejected the search request (NACK)", status_code=502)
 
     SearchSession.objects.create(
-        transaction_id=transaction_id, customer=customer, query=query, domain=domain
+        transaction_id=transaction_id,
+        customer=customer,
+        query=query,
+        domain=domain,
+        client_ip=client_ip,
     )
     return transaction_id
 
 
 def get_search_results(
-    *, transaction_id: str, cursor: str | None = None, limit: int = 20
+    *, transaction_id: str, cursor: str | None = None, limit: int = 20, customer=None
 ) -> dict | None:
     """Returns one cursor-paginated page of the accumulated results for a
     transaction_id, or None if no such search session exists. Results may be an
@@ -101,11 +111,17 @@ def get_search_results(
     record_on_search_result — never reordered or deleted from), so "give me results
     after the one identified by this bpp_id" stays correct even while more on_search
     callbacks keep arriving mid-poll, unlike a raw position that a real offset-based
-    scheme would use."""
+    scheme would use.
+
+    `customer` (§3.7): IDOR protection — raises `SearchError(401/403)` if this
+    transaction belongs to a different customer than the caller; returns `None` for
+    a genuinely nonexistent transaction, unchanged from before."""
     try:
-        session = SearchSession.objects.get(transaction_id=transaction_id)
-    except SearchSession.DoesNotExist:
-        return None
+        session = resolve_owned_session(transaction_id=transaction_id, requesting_customer=customer)
+    except SessionAccessError as exc:
+        if exc.status_code == 404:
+            return None
+        raise SearchError(exc.message, status_code=exc.status_code) from exc
 
     all_results = session.results
     start = 0

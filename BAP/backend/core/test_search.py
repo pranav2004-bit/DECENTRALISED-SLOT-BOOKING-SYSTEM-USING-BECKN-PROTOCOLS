@@ -139,6 +139,40 @@ def test_trigger_search_view_rejects_missing_fields(client):
 
 
 @pytest.mark.django_db
+def test_trigger_search_safely_stores_sqli_and_xss_shaped_query_without_executing_it(
+    bap_identity_settings, client
+):
+    """SEC (§3.7's own Test Gate): a SQLi/XSS-shaped search query is rejected or
+    safely stored, never reflected/executed — same discipline as signup's own
+    coverage."""
+    payload_query = "'; DROP TABLE core_searchsession; --<script>alert(1)</script>"
+
+    def gateway_search_callback(request):
+        body = json.loads(request.body)
+        return (
+            200,
+            {},
+            json.dumps({"context": body["context"], "message": {"ack": {"status": "ACK"}}}),
+        )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://gateway:8000/search", callback=gateway_search_callback
+        )
+        resp = client.post(
+            reverse("search-trigger"),
+            data=json.dumps({"query": payload_query, "domain": "ONDC:RET13"}),
+            content_type="application/json",
+        )
+
+    assert resp.status_code == 202
+    transaction_id = resp.json()["transaction_id"]
+    session = SearchSession.objects.get(transaction_id=transaction_id)
+    assert session.query == payload_query
+    assert SearchSession.objects.count() == 1
+
+
+@pytest.mark.django_db
 def test_search_results_view_returns_404_for_an_unknown_transaction(client):
     resp = client.get(reverse("search-results", args=["nonexistent-txn"]))
     assert resp.status_code == 404

@@ -3,10 +3,11 @@ import json
 from django.contrib.auth import authenticate, get_user_model, login, logout, password_validation
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpResponse, JsonResponse
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 from django_observability.errors import error_response
 from django_observability.idempotency import idempotent_view
+from django_observability.rate_limit import rate_limit
 
 from . import (
     booking_history_service,
@@ -66,8 +67,22 @@ def _customer_json(customer) -> dict:
     }
 
 
-@csrf_exempt
+@require_http_methods(["GET"])
+@ensure_csrf_cookie
+def csrf_token_view(request):
+    """The real, standard Django mechanism for a cross-origin SPA to obtain a
+    CSRF cookie before its first mutating call (§3.7) — needed now that
+    `signup_view`/`login_view` are no longer `@csrf_exempt`: `ensure_csrf_cookie`
+    forces Django to set the `csrftoken` cookie on this response even though
+    nothing here renders a template calling `get_token()` itself. The frontend
+    reads that cookie and echoes it back as `X-CSRFToken` on its next POST, the
+    documented Django AJAX-CSRF pattern. No real frontend calls this yet (only
+    the Phase 2.4 shell exists) — ready for §3.9 to consume."""
+    return JsonResponse({"status": "ok"}, status=200)
+
+
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=5, scope="signup")
 def signup_view(request):
     """Customer signup (livetracker2.md §2.1) — an ordinary web-app auth layer, unrelated
     to the Ed25519/Registry participant trust in livetracker1.md. Not wrapped in
@@ -91,6 +106,15 @@ def signup_view(request):
         return error_response("VALIDATION_ERROR", "contact is required", 400, field="contact")
     if not password:
         return error_response("VALIDATION_ERROR", "password is required", 400, field="password")
+    # §3.7: reject oversized input before it reaches the DB layer, where a real
+    # Postgres varchar(255) overflow would otherwise surface as an uncaught
+    # DataError -> a generic 500, not a clean 400.
+    if len(name) > 255:
+        return error_response("VALIDATION_ERROR", "name is too long (max 255)", 400, field="name")
+    if len(contact) > 255:
+        return error_response(
+            "VALIDATION_ERROR", "contact is too long (max 255)", 400, field="contact"
+        )
 
     Customer = get_user_model()
     if Customer.objects.filter(contact=contact).exists():
@@ -107,8 +131,8 @@ def signup_view(request):
     return JsonResponse(_customer_json(customer), status=201)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=5, scope="login")
 def login_view(request):
     """Logs a customer in and establishes a real session (Redis-backed, per
     `SESSION_ENGINE`). `authenticate()` already refuses an `is_active=False` customer —
@@ -120,6 +144,9 @@ def login_view(request):
 
     contact = (payload.get("contact") or "").strip()
     password = payload.get("password") or ""
+
+    if len(contact) > 255:
+        return error_response("UNAUTHORIZED", "invalid contact or password", 401)
 
     customer = authenticate(request, username=contact, password=password)
     if customer is None:
@@ -162,6 +189,7 @@ def bookings_list_view(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=20, scope="search")
 def search_trigger_view(request):
     """Customer-facing search trigger (livetracker2.md §3.1) — deliberately NOT the
     Beckn wire shape (API_CONVENTIONS.md §3.6's scope line: web-to-backend calls use
@@ -178,11 +206,21 @@ def search_trigger_view(request):
     domain = (payload.get("domain") or "").strip()
     if not query or not domain:
         return error_response("VALIDATION_ERROR", "query and domain are required", 400)
+    # §3.7: reject oversized input before it reaches business logic / the DB.
+    if len(query) > 500:
+        return error_response("VALIDATION_ERROR", "query is too long (max 500)", 400, field="query")
+    if len(domain) > 100:
+        return error_response(
+            "VALIDATION_ERROR", "domain is too long (max 100)", 400, field="domain"
+        )
 
     customer = request.user if request.user.is_authenticated else None
     try:
         transaction_id = search_service.trigger_search(
-            query=query, domain=domain, customer=customer
+            query=query,
+            domain=domain,
+            customer=customer,
+            client_ip=request.META.get("REMOTE_ADDR"),
         )
     except search_service.SearchError as exc:
         return error_response("SEARCH_UNAVAILABLE", exc.message, exc.status_code)
@@ -201,9 +239,14 @@ def search_results_view(request, transaction_id):
     search_service.get_search_results's docstring for why the cursor is a bpp_id,
     not a raw offset."""
     limit = pagination.parse_limit(request.GET.get("limit"))
-    result = search_service.get_search_results(
-        transaction_id=transaction_id, cursor=request.GET.get("cursor"), limit=limit
-    )
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        result = search_service.get_search_results(
+            transaction_id=transaction_id, cursor=request.GET.get("cursor"), limit=limit,
+            customer=customer,
+        )
+    except search_service.SearchError as exc:
+        return error_response("SEARCH_UNAVAILABLE", exc.message, exc.status_code)
     if result is None:
         return error_response("NOT_FOUND", "no such search transaction", 404)
     return JsonResponse(result, status=200)
@@ -234,6 +277,7 @@ def on_search_view(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=10, scope="select")
 def select_trigger_view(request):
     """Customer-facing selection trigger (livetracker2.md §3.2) — deliberately NOT the
     Beckn wire shape, same convention as search_trigger_view. Builds and sends the
@@ -254,11 +298,13 @@ def select_trigger_view(request):
             400,
         )
 
+    customer = request.user if request.user.is_authenticated else None
     try:
         select_service.trigger_select(
             transaction_id=transaction_id,
             item_id=item_id,
             requested_timestamp=requested_timestamp,
+            customer=customer,
         )
     except select_service.SelectError as exc:
         return error_response("SELECT_UNAVAILABLE", exc.message, exc.status_code)
@@ -271,7 +317,13 @@ def select_result_view(request, transaction_id):
     """Customer-facing selection result poll — real results only exist once the BPP
     actually calls back via /on_select, so both fields being null here is a normal
     in-progress state, not an error."""
-    result = select_service.get_selection_result(transaction_id=transaction_id)
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        result = select_service.get_selection_result(
+            transaction_id=transaction_id, customer=customer
+        )
+    except select_service.SelectError as exc:
+        return error_response("SELECT_UNAVAILABLE", exc.message, exc.status_code)
     if result is None:
         return error_response("NOT_FOUND", "no such search transaction", 404)
     return JsonResponse(result, status=200)
@@ -301,6 +353,7 @@ def on_select_view(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=10, scope="init")
 def init_trigger_view(request):
     """Customer-facing initialization trigger (livetracker2.md §3.3) — deliberately
     NOT the Beckn wire shape, same convention as select_trigger_view. Builds and
@@ -316,8 +369,9 @@ def init_trigger_view(request):
     if not transaction_id:
         return error_response("VALIDATION_ERROR", "transaction_id is required", 400)
 
+    customer = request.user if request.user.is_authenticated else None
     try:
-        init_service.trigger_init(transaction_id=transaction_id)
+        init_service.trigger_init(transaction_id=transaction_id, customer=customer)
     except init_service.InitError as exc:
         return error_response("INIT_UNAVAILABLE", exc.message, exc.status_code)
 
@@ -329,7 +383,11 @@ def init_result_view(request, transaction_id):
     """Customer-facing initialization result poll — real results only exist once
     the BPP actually calls back via /on_init, so both fields being null here is a
     normal in-progress state, not an error."""
-    result = init_service.get_init_result(transaction_id=transaction_id)
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        result = init_service.get_init_result(transaction_id=transaction_id, customer=customer)
+    except init_service.InitError as exc:
+        return error_response("INIT_UNAVAILABLE", exc.message, exc.status_code)
     if result is None:
         return error_response("NOT_FOUND", "no such search transaction", 404)
     return JsonResponse(result, status=200)
@@ -359,6 +417,7 @@ def on_init_view(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=10, scope="confirm")
 @idempotent_view()
 def confirm_trigger_view(request):
     """Customer-facing confirmation trigger (livetracker2.md §3.4) — deliberately
@@ -381,8 +440,9 @@ def confirm_trigger_view(request):
     if not transaction_id:
         return error_response("VALIDATION_ERROR", "transaction_id is required", 400)
 
+    customer = request.user if request.user.is_authenticated else None
     try:
-        confirm_service.trigger_confirm(transaction_id=transaction_id)
+        confirm_service.trigger_confirm(transaction_id=transaction_id, customer=customer)
     except confirm_service.ConfirmError as exc:
         return error_response("CONFIRM_UNAVAILABLE", exc.message, exc.status_code)
 
@@ -394,7 +454,13 @@ def confirm_result_view(request, transaction_id):
     """Customer-facing confirmation result poll — real results only exist once the
     BPP actually calls back via /on_confirm, so both fields being null here is a
     normal in-progress state, not an error."""
-    result = confirm_service.get_confirm_result(transaction_id=transaction_id)
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        result = confirm_service.get_confirm_result(
+            transaction_id=transaction_id, customer=customer
+        )
+    except confirm_service.ConfirmError as exc:
+        return error_response("CONFIRM_UNAVAILABLE", exc.message, exc.status_code)
     if result is None:
         return error_response("NOT_FOUND", "no such search transaction", 404)
     return JsonResponse(result, status=200)
@@ -424,6 +490,7 @@ def on_confirm_view(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=10, scope="status")
 def status_trigger_view(request):
     """Customer-facing status-check trigger (livetracker2.md §3.5) — deliberately
     NOT the Beckn wire shape. Sends the real signed Beckn /status to Gateway,
@@ -437,8 +504,9 @@ def status_trigger_view(request):
     if not transaction_id:
         return error_response("VALIDATION_ERROR", "transaction_id is required", 400)
 
+    customer = request.user if request.user.is_authenticated else None
     try:
-        status_service.trigger_status(transaction_id=transaction_id)
+        status_service.trigger_status(transaction_id=transaction_id, customer=customer)
     except status_service.StatusError as exc:
         return error_response("STATUS_UNAVAILABLE", exc.message, exc.status_code)
 
@@ -450,7 +518,11 @@ def status_result_view(request, transaction_id):
     """Customer-facing status result poll — real results only exist once the BPP
     actually calls back via /on_status, so both fields being null here is a
     normal in-progress state, not an error."""
-    result = status_service.get_status_result(transaction_id=transaction_id)
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        result = status_service.get_status_result(transaction_id=transaction_id, customer=customer)
+    except status_service.StatusError as exc:
+        return error_response("STATUS_UNAVAILABLE", exc.message, exc.status_code)
     if result is None:
         return error_response("NOT_FOUND", "no such search transaction", 404)
     return JsonResponse(result, status=200)
@@ -480,6 +552,7 @@ def on_status_view(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=10, scope="cancel")
 def cancel_trigger_view(request):
     """Customer-facing cancellation trigger (livetracker2.md §3.5) — deliberately
     NOT the Beckn wire shape. Sends the real signed Beckn /cancel to Gateway,
@@ -497,9 +570,12 @@ def cancel_trigger_view(request):
 
     cancellation_reason_id = (payload.get("cancellation_reason_id") or "").strip()
 
+    customer = request.user if request.user.is_authenticated else None
     try:
         cancel_service.trigger_cancel(
-            transaction_id=transaction_id, cancellation_reason_id=cancellation_reason_id
+            transaction_id=transaction_id,
+            cancellation_reason_id=cancellation_reason_id,
+            customer=customer,
         )
     except cancel_service.CancelError as exc:
         return error_response("CANCEL_UNAVAILABLE", exc.message, exc.status_code)
@@ -512,7 +588,11 @@ def cancel_result_view(request, transaction_id):
     """Customer-facing cancellation result poll — real results only exist once
     the BPP actually calls back via /on_cancel, so both fields being null here
     is a normal in-progress state, not an error."""
-    result = cancel_service.get_cancel_result(transaction_id=transaction_id)
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        result = cancel_service.get_cancel_result(transaction_id=transaction_id, customer=customer)
+    except cancel_service.CancelError as exc:
+        return error_response("CANCEL_UNAVAILABLE", exc.message, exc.status_code)
     if result is None:
         return error_response("NOT_FOUND", "no such search transaction", 404)
     return JsonResponse(result, status=200)
@@ -543,6 +623,7 @@ def on_cancel_view(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=10, scope="update")
 def update_trigger_view(request):
     """Customer-facing reschedule trigger (livetracker2.md §3.5) — deliberately
     NOT the Beckn wire shape. Sends the real signed Beckn /update to Gateway,
@@ -560,9 +641,12 @@ def update_trigger_view(request):
             "VALIDATION_ERROR", "transaction_id and requested_timestamp are required", 400
         )
 
+    customer = request.user if request.user.is_authenticated else None
     try:
         update_service.trigger_update(
-            transaction_id=transaction_id, requested_timestamp=requested_timestamp
+            transaction_id=transaction_id,
+            requested_timestamp=requested_timestamp,
+            customer=customer,
         )
     except update_service.UpdateError as exc:
         return error_response("UPDATE_UNAVAILABLE", exc.message, exc.status_code)
@@ -575,7 +659,11 @@ def update_result_view(request, transaction_id):
     """Customer-facing reschedule result poll — real results only exist once the
     BPP actually calls back via /on_update, so both fields being null here is a
     normal in-progress state, not an error."""
-    result = update_service.get_update_result(transaction_id=transaction_id)
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        result = update_service.get_update_result(transaction_id=transaction_id, customer=customer)
+    except update_service.UpdateError as exc:
+        return error_response("UPDATE_UNAVAILABLE", exc.message, exc.status_code)
     if result is None:
         return error_response("NOT_FOUND", "no such search transaction", 404)
     return JsonResponse(result, status=200)
@@ -606,6 +694,7 @@ def on_update_view(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=10, scope="track")
 def track_trigger_view(request):
     """Customer-facing tracking trigger (livetracker2.md §3.5) — deliberately NOT
     the Beckn wire shape. Sends the real signed Beckn /track to Gateway,
@@ -619,8 +708,9 @@ def track_trigger_view(request):
     if not transaction_id:
         return error_response("VALIDATION_ERROR", "transaction_id is required", 400)
 
+    customer = request.user if request.user.is_authenticated else None
     try:
-        track_service.trigger_track(transaction_id=transaction_id)
+        track_service.trigger_track(transaction_id=transaction_id, customer=customer)
     except track_service.TrackError as exc:
         return error_response("TRACK_UNAVAILABLE", exc.message, exc.status_code)
 
@@ -632,7 +722,11 @@ def track_result_view(request, transaction_id):
     """Customer-facing tracking result poll — real results only exist once the
     BPP actually calls back via /on_track, so both fields being null here is a
     normal in-progress state, not an error."""
-    result = track_service.get_track_result(transaction_id=transaction_id)
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        result = track_service.get_track_result(transaction_id=transaction_id, customer=customer)
+    except track_service.TrackError as exc:
+        return error_response("TRACK_UNAVAILABLE", exc.message, exc.status_code)
     if result is None:
         return error_response("NOT_FOUND", "no such search transaction", 404)
     return JsonResponse(result, status=200)

@@ -15,6 +15,7 @@ from core.crypto import sign_outbound_request
 from core.participant_keys import get_signing_keys
 
 _client: ResilientHttpClient | None = None
+_gateway_client: ResilientHttpClient | None = None
 
 
 def get_client() -> ResilientHttpClient:
@@ -28,6 +29,23 @@ def get_client() -> ResilientHttpClient:
             circuit_breaker_key="bpp-registry-client",
         )
     return _client
+
+
+def get_gateway_client() -> ResilientHttpClient:
+    """Isolated from `get_client()` (§3.6, `livetracker2.md`) — see
+    `BAP/backend/core/registry_client.py`'s `get_gateway_client()` docstring for the full
+    rationale (a Gateway outage previously tripping the shared Registry breaker too,
+    found via design audit before implementation). Same fix, mirrored for BPP."""
+    global _gateway_client
+    if _gateway_client is None:
+        _gateway_client = ResilientHttpClient(
+            timeout_seconds=settings.HTTP_CLIENT_TIMEOUT_MS / 1000,
+            max_retries=settings.HTTP_CLIENT_MAX_RETRIES,
+            circuit_breaker_threshold=settings.HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD,
+            redis_client=redis.Redis.from_url(settings.REDIS_URL),
+            circuit_breaker_key="bpp-gateway-client",
+        )
+    return _gateway_client
 
 
 def _signed_post(path: str, payload: dict) -> dict:

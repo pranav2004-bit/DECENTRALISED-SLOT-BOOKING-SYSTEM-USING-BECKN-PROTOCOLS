@@ -141,7 +141,7 @@ def dispatch_on_track(*, payload: dict) -> None:
 
     gateway_on_track_url = settings.GATEWAY_BASE_URL.rstrip("/") + "/on_track"
     try:
-        response = registry_client.get_client().post(
+        response = registry_client.get_gateway_client().post(
             gateway_on_track_url,
             data=body,
             headers={"Content-Type": "application/json", "Authorization": auth_header},

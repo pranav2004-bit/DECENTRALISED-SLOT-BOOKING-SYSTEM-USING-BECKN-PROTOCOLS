@@ -27,6 +27,7 @@ from core.crypto import sign_outbound_request
 from core.participant_keys import get_signing_keys
 
 _client: ResilientHttpClient | None = None
+_gateway_client: ResilientHttpClient | None = None
 
 
 def get_client() -> ResilientHttpClient:
@@ -40,6 +41,27 @@ def get_client() -> ResilientHttpClient:
             circuit_breaker_key="bap-registry-client",
         )
     return _client
+
+
+def get_gateway_client() -> ResilientHttpClient:
+    """Isolated from `get_client()` (§3.6, `livetracker2.md`) — that client's
+    `circuit_breaker_key` was scoped for Registry calls only (`livetracker1.md` Phase
+    4.2), but every `*_service.py` module's Gateway-bound call (`search`/`select`/
+    `init`/`confirm`/`status`/`cancel`/`update`/`track`) reused it, so a Gateway outage
+    would trip the shared breaker and then also fail-fast genuine Registry calls (e.g.
+    trust-verification `lookup()` calls during an incoming `on_X` callback), even though
+    Registry itself was never unhealthy. Separate breaker key, same underlying HTTP
+    client behavior."""
+    global _gateway_client
+    if _gateway_client is None:
+        _gateway_client = ResilientHttpClient(
+            timeout_seconds=settings.HTTP_CLIENT_TIMEOUT_MS / 1000,
+            max_retries=settings.HTTP_CLIENT_MAX_RETRIES,
+            circuit_breaker_threshold=settings.HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD,
+            redis_client=redis.Redis.from_url(settings.REDIS_URL),
+            circuit_breaker_key="bap-gateway-client",
+        )
+    return _gateway_client
 
 
 def _signed_post(path: str, payload: dict) -> dict:

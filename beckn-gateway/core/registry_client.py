@@ -28,6 +28,7 @@ from core.crypto import sign_outbound_request
 from core.participant_keys import get_signing_keys
 
 _client: ResilientHttpClient | None = None
+_participant_clients: dict[str, ResilientHttpClient] = {}
 
 
 def get_client() -> ResilientHttpClient:
@@ -44,6 +45,34 @@ def get_client() -> ResilientHttpClient:
             circuit_breaker_key="gateway-registry-client",
         )
     return _client
+
+
+def get_participant_client(subscriber_id: str) -> ResilientHttpClient:
+    """Returns a `ResilientHttpClient` isolated per counterparty `subscriber_id` (§3.6,
+    `livetracker2.md`), for Gateway's *outbound* calls to an individual BPP/BAP —
+    `dispatch_X`/`relay_on_X` in `routing.py`. Deliberately separate from `get_client()`
+    (Registry-only, its own `circuit_breaker_key`): before this fix, every one of those
+    calls reused `get_client()`'s single breaker, so one genuinely-down BPP could trip
+    fail-fast routing to every *other* healthy BPP/BAP too, and Registry's own health got
+    conflated with each individual downstream participant's — the opposite of what a
+    circuit breaker exists for. `RedisCircuitBreaker` only holds two auto-expiring Redis
+    keys per instance, so caching one client per real `subscriber_id` ever seen is cheap,
+    not an unbounded resource — the number of distinct subscriber_ids is bounded by the
+    number of real onboarded participants on the network."""
+    client = _participant_clients.get(subscriber_id)
+    if client is None:
+        redis_client = None
+        if settings.CACHE_ENABLED and settings.REDIS_URL:
+            import redis
+
+            redis_client = redis.Redis.from_url(settings.REDIS_URL)
+        client = ResilientHttpClient(
+            timeout_seconds=settings.REGISTRY_LOOKUP_TIMEOUT_MS / 1000,
+            redis_client=redis_client,
+            circuit_breaker_key=f"gateway-outbound:{subscriber_id}",
+        )
+        _participant_clients[subscriber_id] = client
+    return client
 
 
 def _signed_post(path: str, payload: dict) -> dict:

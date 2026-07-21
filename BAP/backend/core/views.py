@@ -6,12 +6,15 @@ from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django_observability.errors import error_response
+from django_observability.idempotency import idempotent_view
 
 from . import (
+    booking_history_service,
     cancel_service,
     confirm_service,
     init_service,
     onboarding_service,
+    pagination,
     search_service,
     select_service,
     status_service,
@@ -141,6 +144,22 @@ def me_view(request):
     return JsonResponse(_customer_json(request.user), status=200)
 
 
+@require_http_methods(["GET"])
+def bookings_list_view(request):
+    """The logged-in customer's own booking history (§3.6, livetracker2.md) — a
+    genuinely new endpoint, not an existing one this phase merely paginates (see
+    booking_history_service's module docstring). IDOR-safe by construction: always
+    scoped to request.user, never a customer id read from the request. Cursor-
+    paginated the same way as search_results_view."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+    limit = pagination.parse_limit(request.GET.get("limit"))
+    result = booking_history_service.get_customer_bookings(
+        customer=request.user, cursor=request.GET.get("cursor"), limit=limit
+    )
+    return JsonResponse(result, status=200)
+
+
 @csrf_exempt
 @require_http_methods(["POST"])
 def search_trigger_view(request):
@@ -176,8 +195,15 @@ def search_results_view(request, transaction_id):
     """Customer-facing results poll — real results only exist once BPP(s) actually
     call back via /on_search, so an empty `results` list here is a normal in-progress
     state, not an error (protocol_compliance_notes_v1.1.md §H.1: async is mandatory,
-    there is no synchronous alternative to poll around)."""
-    result = search_service.get_search_results(transaction_id=transaction_id)
+    there is no synchronous alternative to poll around).
+
+    Cursor-paginated (§3.6, API_CONVENTIONS.md `?cursor=&limit=`) — see
+    search_service.get_search_results's docstring for why the cursor is a bpp_id,
+    not a raw offset."""
+    limit = pagination.parse_limit(request.GET.get("limit"))
+    result = search_service.get_search_results(
+        transaction_id=transaction_id, cursor=request.GET.get("cursor"), limit=limit
+    )
     if result is None:
         return error_response("NOT_FOUND", "no such search transaction", 404)
     return JsonResponse(result, status=200)
@@ -333,12 +359,19 @@ def on_init_view(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@idempotent_view()
 def confirm_trigger_view(request):
     """Customer-facing confirmation trigger (livetracker2.md §3.4) — deliberately
     NOT the Beckn wire shape, same convention as init_trigger_view. Builds and
     sends the real signed Beckn /confirm to Gateway, targeting the same BPP a prior
     successful /init already resolved to. No new fields needed from the customer —
-    everything required already lives on the session from Initialization."""
+    everything required already lives on the session from Initialization.
+
+    `@idempotent_view()` (§3.6): a client sending a real `Idempotency-Key` header gets
+    the exact same recorded response replayed on a retry, instead of a second real
+    Beckn /confirm firing at Gateway/BPP — the specific web-layer double-booking risk
+    this bullet asked for, independent of and in addition to event-level idempotency
+    (§1.4)."""
     try:
         payload = json.loads(request.body or b"{}")
     except json.JSONDecodeError:

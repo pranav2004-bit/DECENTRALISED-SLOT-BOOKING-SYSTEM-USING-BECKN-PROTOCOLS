@@ -101,7 +101,7 @@ def trigger_select(*, transaction_id: str, item_id: str, requested_timestamp: st
 
     gateway_select_url = settings.GATEWAY_BASE_URL.rstrip("/") + "/select"
     try:
-        response = registry_client.get_client().post(
+        response = registry_client.get_gateway_client().post(
             gateway_select_url,
             data=body,
             headers={"Content-Type": "application/json", "Authorization": auth_header},

@@ -83,7 +83,7 @@ def trigger_status(*, transaction_id: str) -> None:
 
     gateway_status_url = settings.GATEWAY_BASE_URL.rstrip("/") + "/status"
     try:
-        response = registry_client.get_client().post(
+        response = registry_client.get_gateway_client().post(
             gateway_status_url,
             data=body,
             headers={"Content-Type": "application/json", "Authorization": auth_header},

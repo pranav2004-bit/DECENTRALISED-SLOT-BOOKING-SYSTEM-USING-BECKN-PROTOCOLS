@@ -93,7 +93,7 @@ def trigger_confirm(*, transaction_id: str) -> None:
 
     gateway_confirm_url = settings.GATEWAY_BASE_URL.rstrip("/") + "/confirm"
     try:
-        response = registry_client.get_client().post(
+        response = registry_client.get_gateway_client().post(
             gateway_confirm_url,
             data=body,
             headers={"Content-Type": "application/json", "Authorization": auth_header},

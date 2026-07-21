@@ -84,7 +84,9 @@ def test_bookings_list_is_cursor_paginated_newest_first(client):
     assert [b["transaction_id"] for b in first_body["bookings"]] == ["txn-2", "txn-1"]
     assert first_body["next_cursor"] is not None
 
-    second = client.get(reverse("bookings-list"), {"limit": "2", "cursor": first_body["next_cursor"]})
+    second = client.get(
+        reverse("bookings-list"), {"limit": "2", "cursor": first_body["next_cursor"]}
+    )
     second_body = second.json()
     assert [b["transaction_id"] for b in second_body["bookings"]] == ["txn-0"]
     assert second_body["next_cursor"] is None

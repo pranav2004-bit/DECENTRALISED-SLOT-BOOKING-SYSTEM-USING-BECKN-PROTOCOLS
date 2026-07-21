@@ -13,13 +13,14 @@ from core import registry_client
 
 
 def test_participant_client_is_a_separate_instance_from_registry_client():
-    assert registry_client.get_participant_client("bpp-1.local") is not registry_client.get_client()
+    participant_client = registry_client.get_participant_client("bpp-1.local")
+    assert participant_client is not registry_client.get_client()
 
 
 def test_participant_client_is_a_singleton_per_subscriber_id():
-    assert registry_client.get_participant_client("bpp-1.local") is registry_client.get_participant_client(
-        "bpp-1.local"
-    )
+    first = registry_client.get_participant_client("bpp-1.local")
+    second = registry_client.get_participant_client("bpp-1.local")
+    assert first is second
 
 
 def test_participant_clients_for_different_subscriber_ids_are_isolated_instances():

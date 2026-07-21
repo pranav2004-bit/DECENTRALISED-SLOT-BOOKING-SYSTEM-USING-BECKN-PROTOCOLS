@@ -181,11 +181,13 @@ def test_search_results_view_is_cursor_paginated(client):
     first = client.get(reverse("search-results", args=["txn-1"]), {"limit": "2"})
     assert first.status_code == 200
     first_body = first.json()
-    assert [r["bpp_id"] for r in first_body["results"]] == ["bpp-0.example.com", "bpp-1.example.com"]
+    first_page = [r["bpp_id"] for r in first_body["results"]]
+    assert first_page == ["bpp-0.example.com", "bpp-1.example.com"]
     assert first_body["next_cursor"] == "bpp-1.example.com"
 
     second = client.get(
-        reverse("search-results", args=["txn-1"]), {"limit": "2", "cursor": first_body["next_cursor"]}
+        reverse("search-results", args=["txn-1"]),
+        {"limit": "2", "cursor": first_body["next_cursor"]},
     )
     assert second.status_code == 200
     second_body = second.json()

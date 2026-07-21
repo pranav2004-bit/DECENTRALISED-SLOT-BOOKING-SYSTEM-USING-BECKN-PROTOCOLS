@@ -99,6 +99,19 @@ def hold_slot(
     return booking
 
 
+def _restore_capacity(slot: Slot, quantity: int) -> None:
+    """Shared capacity-restoration block (livetracker2.md §3.5's Rule-of-Three
+    extraction — `release_expired_hold`/`release_hold_now` already duplicated this
+    exact logic; §3.5's `cancel_booking` would have made a third copy). Caller must
+    already hold `slot`'s row lock (via `Slot.objects.lock_for_mutation`) and be
+    inside a `transaction.atomic()` block; this only mutates the in-memory instance
+    and saves it, it does not lock or start a transaction itself."""
+    slot.capacity_remaining = min(slot.capacity_remaining + quantity, slot.capacity_total)
+    if slot.status == Slot.Status.HELD and slot.capacity_remaining > 0:
+        slot.status = Slot.Status.AVAILABLE
+    slot.save(update_fields=["capacity_remaining", "status", "updated_at"])
+
+
 def release_expired_hold(booking_id, *, redis_client, event_bus=None) -> bool:
     """If `booking_id`'s Redis TTL hold has expired (or was never active) and the `Booking` is
     still `HELD`, atomically cancels the `Booking` and restores the `Slot`'s held capacity —
@@ -123,12 +136,7 @@ def release_expired_hold(booking_id, *, redis_client, event_bus=None) -> bool:
     with transaction.atomic():
         booking.transition_status(Booking.Status.CANCELLED)
         with Slot.objects.lock_for_mutation(booking.slot_id) as slot:
-            slot.capacity_remaining = min(
-                slot.capacity_remaining + booking.quantity, slot.capacity_total
-            )
-            if slot.status == Slot.Status.HELD and slot.capacity_remaining > 0:
-                slot.status = Slot.Status.AVAILABLE
-            slot.save(update_fields=["capacity_remaining", "status", "updated_at"])
+            _restore_capacity(slot, booking.quantity)
 
     if event_bus is not None:
         publish_event(event_bus, SlotEvent.RELEASED, slot_id=str(booking.slot_id))
@@ -159,12 +167,7 @@ def release_hold_now(booking_id, *, redis_client, event_bus=None) -> bool:
     with transaction.atomic():
         booking.transition_status(Booking.Status.CANCELLED)
         with Slot.objects.lock_for_mutation(booking.slot_id) as slot:
-            slot.capacity_remaining = min(
-                slot.capacity_remaining + booking.quantity, slot.capacity_total
-            )
-            if slot.status == Slot.Status.HELD and slot.capacity_remaining > 0:
-                slot.status = Slot.Status.AVAILABLE
-            slot.save(update_fields=["capacity_remaining", "status", "updated_at"])
+            _restore_capacity(slot, booking.quantity)
 
     ReservationHold(redis_client=redis_client).clear(booking_id)
 
@@ -213,4 +216,89 @@ def confirm_hold(booking_id, *, redis_client, event_bus=None) -> Booking:
         publish_event(event_bus, SlotEvent.CONFIRMED, slot_id=str(booking.slot_id))
         publish_event(event_bus, BookingEvent.CONFIRMED, booking_id=str(booking_id))
 
+    return booking
+
+
+def cancel_booking(booking_id, *, event_bus=None) -> Booking:
+    """Cancels an already-`ACTIVE` (confirmed) booking (livetracker2.md §3.5) — a
+    real `/cancel`, distinct from `release_hold_now`'s pre-order `HELD` release: a
+    still-`HELD` hold was never actually offered to the customer as a confirmed,
+    cancellable thing, so this deliberately only accepts `ACTIVE` bookings. Raises
+    `ValidationError` for any other status (already `CANCELLED`/`COMPLETE`, or
+    still `HELD` — use `release_hold_now` for that case instead).
+
+    Race-safe by the same `select_for_update()` discipline as `confirm_hold`
+    (§3.4) — two concurrent cancel attempts on the same booking can't both pass
+    the "is this ACTIVE" check and each fire a duplicate `BookingCancelled`.
+    """
+    with transaction.atomic():
+        booking = Booking.objects.select_for_update().get(pk=booking_id)
+        if booking.status != Booking.Status.ACTIVE:
+            raise ValidationError(
+                f"cannot cancel booking {booking_id}: not currently ACTIVE "
+                f"(status={booking.status!r})."
+            )
+        booking.transition_status(Booking.Status.CANCELLED)
+        with Slot.objects.lock_for_mutation(booking.slot_id) as slot:
+            _restore_capacity(slot, booking.quantity)
+
+    if event_bus is not None:
+        publish_event(event_bus, SlotEvent.RELEASED, slot_id=str(booking.slot_id))
+        publish_event(event_bus, BookingEvent.CANCELLED, booking_id=str(booking_id))
+
+    return booking
+
+
+def reschedule_active_booking(booking_id, new_slot_id, *, event_bus=None) -> Booking:
+    """Moves an already-`ACTIVE` booking from its current `Slot` to a different
+    one on the same `Resource` (livetracker2.md §3.5's `/update` reschedule),
+    atomically: claims capacity on the new slot (raising cleanly if unavailable),
+    releases capacity on the old slot, and reassigns the booking. Raises
+    `ValidationError` if the booking isn't `ACTIVE`, the new slot is the same as
+    the current one, or the new slot doesn't have capacity.
+
+    Deadlock-safety, found and fixed by design before this was first written
+    (`protocol_compliance_notes_v1.1.md` §L): naively locking the old slot then
+    the new slot (in that order) would let two concurrent reschedules moving
+    bookings in opposite directions between the same two slots deadlock against
+    each other. Both slot rows are locked in a deterministic order (sorted by id)
+    regardless of which is "old" and which is "new" here instead.
+    """
+    with transaction.atomic():
+        booking = Booking.objects.select_for_update().get(pk=booking_id)
+        if booking.status != Booking.Status.ACTIVE:
+            raise ValidationError(
+                f"cannot reschedule booking {booking_id}: not currently ACTIVE "
+                f"(status={booking.status!r})."
+            )
+        old_slot_id = booking.slot_id
+        if str(new_slot_id) == str(old_slot_id):
+            raise ValidationError("new slot is the same as the booking's current slot")
+
+        first_id, second_id = sorted([str(old_slot_id), str(new_slot_id)])
+        with (
+            Slot.objects.lock_for_mutation(first_id) as first_slot,
+            Slot.objects.lock_for_mutation(second_id) as second_slot,
+        ):
+            new_slot = first_slot if str(first_slot.id) == str(new_slot_id) else second_slot
+            old_slot = first_slot if str(first_slot.id) == str(old_slot_id) else second_slot
+
+            if new_slot.capacity_remaining < booking.quantity:
+                raise ValidationError(f"slot {new_slot_id} does not have enough capacity")
+            new_slot.capacity_remaining -= booking.quantity
+            if new_slot.capacity_remaining == 0:
+                new_slot.status = Slot.Status.HELD
+            new_slot.save(update_fields=["capacity_remaining", "status", "updated_at"])
+
+            _restore_capacity(old_slot, booking.quantity)
+
+        booking.slot_id = new_slot.id
+        booking.save(update_fields=["slot", "updated_at"])
+
+    if event_bus is not None:
+        publish_event(event_bus, SlotEvent.RELEASED, slot_id=str(old_slot_id))
+        publish_event(event_bus, SlotEvent.RESCHEDULED, slot_id=str(new_slot_id))
+        publish_event(event_bus, BookingEvent.RESCHEDULED, booking_id=str(booking_id))
+
+    booking.refresh_from_db()
     return booking

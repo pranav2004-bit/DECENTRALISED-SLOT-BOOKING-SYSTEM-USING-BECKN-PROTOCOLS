@@ -36,10 +36,11 @@ class SlotEvent:
     """Confirmed, real-protocol-aligned event vocabulary for `Slot` state changes (§1.4).
     Wired to a real trigger point now: `CREATED` (`AvailabilityCalendar.generate_slots`),
     `RESERVED` (`reservation.hold_slot`), `CONFIRMED` (`reservation.confirm_hold`), `RELEASED`
-    (`reservation.release_expired_hold`). `PUBLISHED` (catalog exposure), `LOCKED` (domain-level
-    combo-service locking), `CANCELLED` (provider-driven slot cancellation), and `COMPLETED`
-    (fulfillment completion) have no trigger point yet — those business flows aren't built until
-    Phase 2/3 — but the vocabulary is adopted now, not invented ad hoc later.
+    (`reservation.release_expired_hold`), `RESCHEDULED` (`reservation.reschedule_active_booking`,
+    §3.5). `PUBLISHED` (catalog exposure), `LOCKED` (domain-level combo-service locking),
+    `CANCELLED` (provider-driven slot cancellation), and `COMPLETED` (fulfillment completion)
+    have no trigger point yet — those business flows aren't built until Phase 2/3/4 — but the
+    vocabulary is adopted now, not invented ad hoc later.
     """
 
     CREATED = "SlotCreated"
@@ -48,6 +49,7 @@ class SlotEvent:
     LOCKED = "SlotLocked"
     CONFIRMED = "SlotConfirmed"
     RELEASED = "SlotReleased"
+    RESCHEDULED = "SlotRescheduled"
     CANCELLED = "SlotCancelled"
     COMPLETED = "SlotCompleted"
 
@@ -55,11 +57,14 @@ class SlotEvent:
 class BookingEvent:
     """`Booking`-level counterparts to `SlotEvent` — a separate stream for consumers that only
     care about the booking/order side, not the underlying slot. Wired now: `CONFIRMED`
-    (`reservation.confirm_hold`), `CANCELLED` (`reservation.release_expired_hold`).
+    (`reservation.confirm_hold`), `CANCELLED` (`reservation.release_expired_hold`/
+    `reservation.cancel_booking`, §3.5), `RESCHEDULED` (`reservation.reschedule_active_booking`,
+    §3.5).
     """
 
     CONFIRMED = "BookingConfirmed"
     CANCELLED = "BookingCancelled"
+    RESCHEDULED = "BookingRescheduled"
 
 
 def publish_event(bus, event_type: str, *, version: int = CURRENT_EVENT_VERSION, **data) -> str:

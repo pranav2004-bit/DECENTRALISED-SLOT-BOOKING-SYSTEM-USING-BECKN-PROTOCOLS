@@ -159,6 +159,21 @@ class SearchSession(models.Model):
     confirmed_order = models.JSONField(null=True, blank=True)
     confirmed_error = models.JSONField(null=True, blank=True)
 
+    # §3.5 Post-Booking — same mutually-exclusive success/error pattern, all
+    # operating on the already-confirmed booking above. `status_order` holds
+    # the real, live current Order state; `cancelled_order` the real cancelled
+    # Order; `updated_order` the real rescheduled Order; `tracking` the real
+    # (always-inactive, for this domain) Tracking object, per
+    # protocol_compliance_notes_v1.1.md §L.
+    status_order = models.JSONField(null=True, blank=True)
+    status_error = models.JSONField(null=True, blank=True)
+    cancelled_order = models.JSONField(null=True, blank=True)
+    cancelled_error = models.JSONField(null=True, blank=True)
+    updated_order = models.JSONField(null=True, blank=True)
+    updated_error = models.JSONField(null=True, blank=True)
+    tracking = models.JSONField(null=True, blank=True)
+    tracking_error = models.JSONField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

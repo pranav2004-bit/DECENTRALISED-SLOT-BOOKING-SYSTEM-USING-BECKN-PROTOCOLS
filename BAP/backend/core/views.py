@@ -7,7 +7,17 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django_observability.errors import error_response
 
-from . import confirm_service, init_service, onboarding_service, search_service, select_service
+from . import (
+    cancel_service,
+    confirm_service,
+    init_service,
+    onboarding_service,
+    search_service,
+    select_service,
+    status_service,
+    track_service,
+    update_service,
+)
 
 
 @require_http_methods(["GET"])
@@ -376,4 +386,243 @@ def on_confirm_view(request):
     )
     if status_code == 200:
         confirm_service.record_on_confirm_result(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def status_trigger_view(request):
+    """Customer-facing status-check trigger (livetracker2.md §3.5) — deliberately
+    NOT the Beckn wire shape. Sends the real signed Beckn /status to Gateway,
+    targeting the same BPP this transaction was confirmed with."""
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    transaction_id = (payload.get("transaction_id") or "").strip()
+    if not transaction_id:
+        return error_response("VALIDATION_ERROR", "transaction_id is required", 400)
+
+    try:
+        status_service.trigger_status(transaction_id=transaction_id)
+    except status_service.StatusError as exc:
+        return error_response("STATUS_UNAVAILABLE", exc.message, exc.status_code)
+
+    return JsonResponse({"transaction_id": transaction_id}, status=202)
+
+
+@require_http_methods(["GET"])
+def status_result_view(request, transaction_id):
+    """Customer-facing status result poll — real results only exist once the BPP
+    actually calls back via /on_status, so both fields being null here is a
+    normal in-progress state, not an error."""
+    result = status_service.get_status_result(transaction_id=transaction_id)
+    if result is None:
+        return error_response("NOT_FOUND", "no such search transaction", 404)
+    return JsonResponse(result, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def on_status_view(request):
+    """Real /on_status wire endpoint — receives Gateway's relayed callback from a
+    BPP, verifies both the BPP's and Gateway's signatures, ACKs synchronously,
+    then records the real Order (or error) against the matching SearchSession."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = status_service.validate_and_ack_on_status(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        status_service.record_on_status_result(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def cancel_trigger_view(request):
+    """Customer-facing cancellation trigger (livetracker2.md §3.5) — deliberately
+    NOT the Beckn wire shape. Sends the real signed Beckn /cancel to Gateway,
+    targeting the same BPP this transaction was confirmed with.
+    `cancellation_reason_id` is optional free-form text from the customer (no
+    real cancellation-reason catalog exists in this project)."""
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    transaction_id = (payload.get("transaction_id") or "").strip()
+    if not transaction_id:
+        return error_response("VALIDATION_ERROR", "transaction_id is required", 400)
+
+    cancellation_reason_id = (payload.get("cancellation_reason_id") or "").strip()
+
+    try:
+        cancel_service.trigger_cancel(
+            transaction_id=transaction_id, cancellation_reason_id=cancellation_reason_id
+        )
+    except cancel_service.CancelError as exc:
+        return error_response("CANCEL_UNAVAILABLE", exc.message, exc.status_code)
+
+    return JsonResponse({"transaction_id": transaction_id}, status=202)
+
+
+@require_http_methods(["GET"])
+def cancel_result_view(request, transaction_id):
+    """Customer-facing cancellation result poll — real results only exist once
+    the BPP actually calls back via /on_cancel, so both fields being null here
+    is a normal in-progress state, not an error."""
+    result = cancel_service.get_cancel_result(transaction_id=transaction_id)
+    if result is None:
+        return error_response("NOT_FOUND", "no such search transaction", 404)
+    return JsonResponse(result, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def on_cancel_view(request):
+    """Real /on_cancel wire endpoint — receives Gateway's relayed callback from a
+    BPP, verifies both the BPP's and Gateway's signatures, ACKs synchronously,
+    then records the real cancelled Order (or error) against the matching
+    SearchSession."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = cancel_service.validate_and_ack_on_cancel(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        cancel_service.record_on_cancel_result(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def update_trigger_view(request):
+    """Customer-facing reschedule trigger (livetracker2.md §3.5) — deliberately
+    NOT the Beckn wire shape. Sends the real signed Beckn /update to Gateway,
+    targeting the same BPP this transaction was confirmed with, requesting the
+    booking be moved to `requested_timestamp`."""
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    transaction_id = (payload.get("transaction_id") or "").strip()
+    requested_timestamp = (payload.get("requested_timestamp") or "").strip()
+    if not transaction_id or not requested_timestamp:
+        return error_response(
+            "VALIDATION_ERROR", "transaction_id and requested_timestamp are required", 400
+        )
+
+    try:
+        update_service.trigger_update(
+            transaction_id=transaction_id, requested_timestamp=requested_timestamp
+        )
+    except update_service.UpdateError as exc:
+        return error_response("UPDATE_UNAVAILABLE", exc.message, exc.status_code)
+
+    return JsonResponse({"transaction_id": transaction_id}, status=202)
+
+
+@require_http_methods(["GET"])
+def update_result_view(request, transaction_id):
+    """Customer-facing reschedule result poll — real results only exist once the
+    BPP actually calls back via /on_update, so both fields being null here is a
+    normal in-progress state, not an error."""
+    result = update_service.get_update_result(transaction_id=transaction_id)
+    if result is None:
+        return error_response("NOT_FOUND", "no such search transaction", 404)
+    return JsonResponse(result, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def on_update_view(request):
+    """Real /on_update wire endpoint — receives Gateway's relayed callback from a
+    BPP, verifies both the BPP's and Gateway's signatures, ACKs synchronously,
+    then records the real rescheduled Order (or error) against the matching
+    SearchSession."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = update_service.validate_and_ack_on_update(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        update_service.record_on_update_result(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def track_trigger_view(request):
+    """Customer-facing tracking trigger (livetracker2.md §3.5) — deliberately NOT
+    the Beckn wire shape. Sends the real signed Beckn /track to Gateway,
+    targeting the same BPP this transaction was confirmed with."""
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    transaction_id = (payload.get("transaction_id") or "").strip()
+    if not transaction_id:
+        return error_response("VALIDATION_ERROR", "transaction_id is required", 400)
+
+    try:
+        track_service.trigger_track(transaction_id=transaction_id)
+    except track_service.TrackError as exc:
+        return error_response("TRACK_UNAVAILABLE", exc.message, exc.status_code)
+
+    return JsonResponse({"transaction_id": transaction_id}, status=202)
+
+
+@require_http_methods(["GET"])
+def track_result_view(request, transaction_id):
+    """Customer-facing tracking result poll — real results only exist once the
+    BPP actually calls back via /on_track, so both fields being null here is a
+    normal in-progress state, not an error."""
+    result = track_service.get_track_result(transaction_id=transaction_id)
+    if result is None:
+        return error_response("NOT_FOUND", "no such search transaction", 404)
+    return JsonResponse(result, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def on_track_view(request):
+    """Real /on_track wire endpoint — receives Gateway's relayed callback from a
+    BPP, verifies both the BPP's and Gateway's signatures, ACKs synchronously,
+    then records the real (always-inactive, for this domain) Tracking object
+    (or error) against the matching SearchSession."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = track_service.validate_and_ack_on_track(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        track_service.record_on_track_result(payload=payload)
     return JsonResponse(response_body, status=status_code)

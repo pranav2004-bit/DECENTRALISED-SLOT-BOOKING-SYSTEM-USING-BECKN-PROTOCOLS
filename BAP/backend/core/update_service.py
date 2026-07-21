@@ -98,7 +98,7 @@ def trigger_update(*, transaction_id: str, requested_timestamp: str) -> None:
 
     gateway_update_url = settings.GATEWAY_BASE_URL.rstrip("/") + "/update"
     try:
-        response = registry_client.get_client().post(
+        response = registry_client.get_gateway_client().post(
             gateway_update_url,
             data=body,
             headers={"Content-Type": "application/json", "Authorization": auth_header},

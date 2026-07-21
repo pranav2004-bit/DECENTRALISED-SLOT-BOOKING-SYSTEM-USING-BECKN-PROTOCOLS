@@ -68,7 +68,7 @@ def trigger_search(*, query: str, domain: str, customer=None) -> str:
 
     gateway_search_url = settings.GATEWAY_BASE_URL.rstrip("/") + "/search"
     try:
-        response = registry_client.get_client().post(
+        response = registry_client.get_gateway_client().post(
             gateway_search_url,
             data=body,
             headers={"Content-Type": "application/json", "Authorization": auth_header},
@@ -87,19 +87,44 @@ def trigger_search(*, query: str, domain: str, customer=None) -> str:
     return transaction_id
 
 
-def get_search_results(*, transaction_id: str) -> dict | None:
-    """Returns the current accumulated results for a transaction_id, or None if no
-    such search session exists. Results may be an empty list if on_search hasn't
-    arrived yet — that's a normal, honest in-progress state, not an error."""
+def get_search_results(
+    *, transaction_id: str, cursor: str | None = None, limit: int = 20
+) -> dict | None:
+    """Returns one cursor-paginated page of the accumulated results for a
+    transaction_id, or None if no such search session exists. Results may be an
+    empty list if on_search hasn't arrived yet — that's a normal, honest in-progress
+    state, not an error.
+
+    Cursor is the responding BPP's own `bpp_id` from the last-seen result, not a raw
+    numeric offset (§3.6, livetracker2.md, API_CONVENTIONS.md's "avoids the classic
+    offset-pagination correctness problem"): `results` is append-only (see
+    record_on_search_result — never reordered or deleted from), so "give me results
+    after the one identified by this bpp_id" stays correct even while more on_search
+    callbacks keep arriving mid-poll, unlike a raw position that a real offset-based
+    scheme would use."""
     try:
         session = SearchSession.objects.get(transaction_id=transaction_id)
     except SearchSession.DoesNotExist:
         return None
+
+    all_results = session.results
+    start = 0
+    if cursor:
+        for i, entry in enumerate(all_results):
+            if entry.get("bpp_id") == cursor:
+                start = i + 1
+                break
+        else:
+            start = len(all_results)
+
+    page = all_results[start : start + limit]
+    next_cursor = page[-1]["bpp_id"] if start + len(page) < len(all_results) and page else None
     return {
         "transaction_id": session.transaction_id,
         "query": session.query,
         "domain": session.domain,
-        "results": session.results,
+        "results": page,
+        "next_cursor": next_cursor,
     }
 
 

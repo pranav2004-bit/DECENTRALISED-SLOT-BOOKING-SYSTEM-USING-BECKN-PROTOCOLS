@@ -88,7 +88,7 @@ def trigger_cancel(*, transaction_id: str, cancellation_reason_id: str = "") -> 
 
     gateway_cancel_url = settings.GATEWAY_BASE_URL.rstrip("/") + "/cancel"
     try:
-        response = registry_client.get_client().post(
+        response = registry_client.get_gateway_client().post(
             gateway_cancel_url,
             data=body,
             headers={"Content-Type": "application/json", "Authorization": auth_header},

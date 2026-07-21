@@ -168,7 +168,6 @@ def dispatch_search(*, payload: dict, authorization_header: str) -> None:
         signing_private_key_b64=signing_priv,
     )
 
-    client = registry_client.get_client()
     for bpp in subscribed_bpps:
         bpp_search_url = bpp["url"].rstrip("/") + "/search"
         headers = {
@@ -177,6 +176,7 @@ def dispatch_search(*, payload: dict, authorization_header: str) -> None:
             "X-Gateway-Authorization": gateway_signature,
         }
         try:
+            client = registry_client.get_participant_client(bpp["subscriber_id"])
             response = client.post(bpp_search_url, data=body, headers=headers)
             response.raise_for_status()
         except Exception:
@@ -226,7 +226,7 @@ def relay_on_search(*, payload: dict, authorization_header: str) -> None:
         "X-Gateway-Authorization": gateway_signature,
     }
     try:
-        client = registry_client.get_client()
+        client = registry_client.get_participant_client(context["bap_id"])
         response = client.post(bap_on_search_url, data=body, headers=headers)
         response.raise_for_status()
     except Exception:
@@ -355,7 +355,7 @@ def dispatch_select(*, payload: dict, authorization_header: str) -> None:
         "X-Gateway-Authorization": gateway_signature,
     }
     try:
-        client = registry_client.get_client()
+        client = registry_client.get_participant_client(bpp_id)
         response = client.post(bpp_select_url, data=body, headers=headers)
         response.raise_for_status()
     except Exception:
@@ -400,7 +400,7 @@ def relay_on_select(*, payload: dict, authorization_header: str) -> None:
         "X-Gateway-Authorization": gateway_signature,
     }
     try:
-        client = registry_client.get_client()
+        client = registry_client.get_participant_client(context["bap_id"])
         response = client.post(bap_on_select_url, data=body, headers=headers)
         response.raise_for_status()
     except Exception:
@@ -523,7 +523,7 @@ def dispatch_init(*, payload: dict, authorization_header: str) -> None:
         "X-Gateway-Authorization": gateway_signature,
     }
     try:
-        client = registry_client.get_client()
+        client = registry_client.get_participant_client(bpp_id)
         response = client.post(bpp_init_url, data=body, headers=headers)
         response.raise_for_status()
     except Exception:
@@ -568,7 +568,7 @@ def relay_on_init(*, payload: dict, authorization_header: str) -> None:
         "X-Gateway-Authorization": gateway_signature,
     }
     try:
-        client = registry_client.get_client()
+        client = registry_client.get_participant_client(context["bap_id"])
         response = client.post(bap_on_init_url, data=body, headers=headers)
         response.raise_for_status()
     except Exception:
@@ -691,7 +691,7 @@ def dispatch_confirm(*, payload: dict, authorization_header: str) -> None:
         "X-Gateway-Authorization": gateway_signature,
     }
     try:
-        client = registry_client.get_client()
+        client = registry_client.get_participant_client(bpp_id)
         response = client.post(bpp_confirm_url, data=body, headers=headers)
         response.raise_for_status()
     except Exception:
@@ -736,7 +736,7 @@ def relay_on_confirm(*, payload: dict, authorization_header: str) -> None:
         "X-Gateway-Authorization": gateway_signature,
     }
     try:
-        client = registry_client.get_client()
+        client = registry_client.get_participant_client(context["bap_id"])
         response = client.post(bap_on_confirm_url, data=body, headers=headers)
         response.raise_for_status()
     except Exception:
@@ -858,7 +858,7 @@ def dispatch_status(*, payload: dict, authorization_header: str) -> None:
         "X-Gateway-Authorization": gateway_signature,
     }
     try:
-        client = registry_client.get_client()
+        client = registry_client.get_participant_client(bpp_id)
         response = client.post(bpp_status_url, data=body, headers=headers)
         response.raise_for_status()
     except Exception:
@@ -903,7 +903,7 @@ def relay_on_status(*, payload: dict, authorization_header: str) -> None:
         "X-Gateway-Authorization": gateway_signature,
     }
     try:
-        client = registry_client.get_client()
+        client = registry_client.get_participant_client(context["bap_id"])
         response = client.post(bap_on_status_url, data=body, headers=headers)
         response.raise_for_status()
     except Exception:
@@ -1025,7 +1025,7 @@ def dispatch_cancel(*, payload: dict, authorization_header: str) -> None:
         "X-Gateway-Authorization": gateway_signature,
     }
     try:
-        client = registry_client.get_client()
+        client = registry_client.get_participant_client(bpp_id)
         response = client.post(bpp_cancel_url, data=body, headers=headers)
         response.raise_for_status()
     except Exception:
@@ -1070,7 +1070,7 @@ def relay_on_cancel(*, payload: dict, authorization_header: str) -> None:
         "X-Gateway-Authorization": gateway_signature,
     }
     try:
-        client = registry_client.get_client()
+        client = registry_client.get_participant_client(context["bap_id"])
         response = client.post(bap_on_cancel_url, data=body, headers=headers)
         response.raise_for_status()
     except Exception:
@@ -1192,7 +1192,7 @@ def dispatch_update(*, payload: dict, authorization_header: str) -> None:
         "X-Gateway-Authorization": gateway_signature,
     }
     try:
-        client = registry_client.get_client()
+        client = registry_client.get_participant_client(bpp_id)
         response = client.post(bpp_update_url, data=body, headers=headers)
         response.raise_for_status()
     except Exception:
@@ -1237,7 +1237,7 @@ def relay_on_update(*, payload: dict, authorization_header: str) -> None:
         "X-Gateway-Authorization": gateway_signature,
     }
     try:
-        client = registry_client.get_client()
+        client = registry_client.get_participant_client(context["bap_id"])
         response = client.post(bap_on_update_url, data=body, headers=headers)
         response.raise_for_status()
     except Exception:
@@ -1359,7 +1359,7 @@ def dispatch_track(*, payload: dict, authorization_header: str) -> None:
         "X-Gateway-Authorization": gateway_signature,
     }
     try:
-        client = registry_client.get_client()
+        client = registry_client.get_participant_client(bpp_id)
         response = client.post(bpp_track_url, data=body, headers=headers)
         response.raise_for_status()
     except Exception:
@@ -1404,7 +1404,7 @@ def relay_on_track(*, payload: dict, authorization_header: str) -> None:
         "X-Gateway-Authorization": gateway_signature,
     }
     try:
-        client = registry_client.get_client()
+        client = registry_client.get_participant_client(context["bap_id"])
         response = client.post(bap_on_track_url, data=body, headers=headers)
         response.raise_for_status()
     except Exception:

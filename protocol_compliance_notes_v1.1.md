@@ -264,6 +264,14 @@ Researched before implementing §3.5, directly against `api/transaction/build/tr
 
 **Net effect on §3.5 implementation, and two real design/correctness gaps this research prompted:** `/status`, `/cancel`, `/update`, and `/track` all resolve their target `Booking` via `order_id` (or `fulfillments[0].id` for `/update`) and verify `Booking.holder_ref == context["transaction_id"]` before proceeding — the exact same IDOR-shaped defense already established for `/init`/`/confirm` (§J/§K), reused here rather than re-derived. `/cancel` and `/update` (reschedule) are both scoped to already-`ACTIVE` (confirmed) bookings only — a still-`HELD` hold's "cancellation" is already the existing passive-TTL-expiry/re-selection behavior (§3.2), and no real customer-facing `Order` even exists yet at that stage to cancel or reschedule via the wire actions. A genuine lock-ordering deadlock risk was found and fixed *before* writing the reschedule primitive, not after: naively locking the booking's old slot then its new slot would let two concurrent reschedules moving bookings in opposite directions between the same two slots deadlock against each other; fixed by always locking both slot rows in a deterministic (sorted-id) order regardless of old/new. Two new event-vocabulary constants were added (`SlotEvent.RESCHEDULED`/`BookingEvent.RESCHEDULED`, mirroring the existing Confirmed/Cancelled pairing) — a legitimate small extension of this project's own "project-defined" internal event vocabulary, not a protocol claim.
 
+## M. Error Envelope — `Error.yaml` (`livetracker2.md` Phase 3.6)
+
+Researched before implementing §3.6, directly against `schema/Error.yaml`, in response to auditing `livetracker2.md` §3.6's own bullet text before writing any code for it.
+
+1. **`Error.yaml`'s real shape, confirmed directly (Tier A, `schema/Error.yaml`)**: `code` (string, "Standard error code... as intended by the Application"), `paths` (string, "path(s) to the entity/entities that have the error, in case of a validation error... comma separated if multiple paths need to be specified"), `message` (string, human-readable) — all optional. **There is no `type` field anywhere in this schema, and the path field is `paths` (plural, JSON-schema-validation-path semantics), not a singular `path`.** This directly contradicts `livetracker2.md` §3.6's own original bullet text, which described the shape as `type`/`code`/`message`/`path` — a claim that was never independently checked against source when first written, and is factually wrong on two counts (`type` does not exist; `path` is misnamed and pluralized).
+
+**Net effect on §3.6:** no code change was required by this finding — every Beckn wire endpoint built since §3.1 (`search`/`select`/`init`/`confirm`/`status`/`cancel`/`update`/`track`'s NACK paths, via `shared/beckn_transaction/ack.py`'s `build_nack_response()`) already emits only `code`+`message` and has never populated a `type` field or a `paths` field (correctly, since no JSON-schema-validation-error case exists anywhere in this project's own NACK-triggering logic — every NACK is a business-rule rejection, not a schema-validation failure). The finding is purely a documentation correction to §3.6's bullet text, closed by this section plus the corresponding edit to `livetracker2.md` §3.6 itself.
+
 ## Remaining Open Items (genuinely unresolved, none blocking)
 
 - `Order` fields still unused after §3.5 (`ref_order_ids`, `type`, `add_ons`, `offers`, `billing`, `cancellation`, `cancellation_terms`, `refund_terms`, `replacement_terms`, `return_terms`, `xinput`) — not yet needed for this project's minimal post-booking flows; will be confirmed before whichever later sub-phase actually needs them, same just-in-time approach.
@@ -309,6 +317,7 @@ Because §A–D above are now sourced from the actual OpenAPI spec files, this i
 - https://raw.githubusercontent.com/beckn/protocol-specifications/master/schema/Provider.yaml
 - https://raw.githubusercontent.com/beckn/protocol-specifications/master/schema/Item.yaml
 - https://raw.githubusercontent.com/beckn/protocol-specifications/master/schema/Catalog.yaml
+- https://raw.githubusercontent.com/beckn/protocol-specifications/master/schema/Error.yaml
 - https://gist.github.com/Ajcode69/4f9064ceac713c4f42677b0d619fe3ba
 - https://pramaan.ondc.org/
 - https://github.com/ONDC-Official/pramaan

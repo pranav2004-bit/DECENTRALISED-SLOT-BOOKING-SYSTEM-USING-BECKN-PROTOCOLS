@@ -183,6 +183,143 @@ def test_trigger_confirm_targets_the_same_bpp_from_init_and_sends_a_real_signed_
 
 
 @pytest.mark.django_db
+def test_trigger_confirm_is_idempotent_on_repeat_with_the_same_key(bap_identity_settings, client):
+    """FUNC (§3.6): a flaky-connection retry of the confirm POST, carrying the same
+    real Idempotency-Key header, must not fire a second real Beckn /confirm at
+    Gateway — the exact recorded response is replayed instead. Proven by asserting
+    Gateway's /confirm was hit exactly once despite two identical POSTs."""
+    from django.core.cache import cache
+
+    cache.clear()
+    _session_with_init()
+    captured_requests = []
+
+    def gateway_confirm_callback(request):
+        captured_requests.append(request)
+        body = json.loads(request.body)
+        return (
+            200,
+            {},
+            json.dumps({"context": body["context"], "message": {"ack": {"status": "ACK"}}}),
+        )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://gateway:8000/confirm", callback=gateway_confirm_callback
+        )
+        first = client.post(
+            reverse("confirm-trigger"),
+            data=json.dumps({"transaction_id": "txn-1"}),
+            content_type="application/json",
+            HTTP_IDEMPOTENCY_KEY="retry-key-1",
+        )
+        second = client.post(
+            reverse("confirm-trigger"),
+            data=json.dumps({"transaction_id": "txn-1"}),
+            content_type="application/json",
+            HTTP_IDEMPOTENCY_KEY="retry-key-1",
+        )
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert first.json() == second.json()
+    assert len(captured_requests) == 1
+
+
+@pytest.mark.django_db
+def test_trigger_confirm_without_idempotency_key_is_not_deduplicated(
+    bap_identity_settings, client
+):
+    """The header is opt-in (API_CONVENTIONS.md) — two requests with no key at all
+    are two independent real attempts, each forwarded to Gateway, same as before
+    this phase."""
+    from django.core.cache import cache
+
+    cache.clear()
+    _session_with_init()
+    captured_requests = []
+
+    def gateway_confirm_callback(request):
+        captured_requests.append(request)
+        body = json.loads(request.body)
+        return (
+            200,
+            {},
+            json.dumps({"context": body["context"], "message": {"ack": {"status": "ACK"}}}),
+        )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://gateway:8000/confirm", callback=gateway_confirm_callback
+        )
+        client.post(
+            reverse("confirm-trigger"),
+            data=json.dumps({"transaction_id": "txn-1"}),
+            content_type="application/json",
+        )
+        client.post(
+            reverse("confirm-trigger"),
+            data=json.dumps({"transaction_id": "txn-1"}),
+            content_type="application/json",
+        )
+
+    assert len(captured_requests) == 2
+
+
+@pytest.mark.django_db
+def test_trigger_confirm_retryable_failure_is_not_cached_so_a_real_retry_can_succeed(
+    bap_identity_settings, client
+):
+    """NEG (§3.6): a transient 502 (Gateway unreachable) must NOT be cached under
+    the Idempotency-Key — that response is `retryable: true`, so a genuine retry
+    with the same key must actually re-attempt the real call, not be stuck
+    replaying the stale failure. Proven by having the first call fail (Gateway
+    connection refused, no mock registered) and the second, same-key call succeed
+    once Gateway is reachable."""
+    from django.core.cache import cache
+
+    cache.clear()
+    _session_with_init()
+
+    with responses.RequestsMock():
+        # No callback registered for /confirm -> requests raises ConnectionError,
+        # trigger_confirm wraps it as ConfirmError(status_code=502).
+        first = client.post(
+            reverse("confirm-trigger"),
+            data=json.dumps({"transaction_id": "txn-1"}),
+            content_type="application/json",
+            HTTP_IDEMPOTENCY_KEY="retry-key-2",
+        )
+    assert first.status_code == 502
+    assert first.json()["error"]["retryable"] is True
+
+    captured_requests = []
+
+    def gateway_confirm_callback(request):
+        captured_requests.append(request)
+        body = json.loads(request.body)
+        return (
+            200,
+            {},
+            json.dumps({"context": body["context"], "message": {"ack": {"status": "ACK"}}}),
+        )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://gateway:8000/confirm", callback=gateway_confirm_callback
+        )
+        second = client.post(
+            reverse("confirm-trigger"),
+            data=json.dumps({"transaction_id": "txn-1"}),
+            content_type="application/json",
+            HTTP_IDEMPOTENCY_KEY="retry-key-2",
+        )
+
+    assert second.status_code == 202
+    assert len(captured_requests) == 1
+
+
+@pytest.mark.django_db
 def test_trigger_confirm_view_rejects_a_transaction_with_no_successful_init(
     bap_identity_settings, client
 ):

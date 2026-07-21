@@ -2,9 +2,9 @@ import logging
 import uuid
 
 from django.conf import settings
-from django.http import JsonResponse
 
 from .context import correlation_id_var
+from .errors import error_response
 
 logger = logging.getLogger("django_observability")
 
@@ -54,13 +54,4 @@ class ExceptionHandlingMiddleware:
         message = "Internal server error"
         if getattr(settings, "DEBUG", False):
             message = f"{type(exception).__name__}: {exception}"
-        return JsonResponse(
-            {
-                "error": {
-                    "code": "INTERNAL_ERROR",
-                    "message": message,
-                    "correlation_id": correlation_id,
-                }
-            },
-            status=500,
-        )
+        return error_response("INTERNAL_ERROR", message, 500)

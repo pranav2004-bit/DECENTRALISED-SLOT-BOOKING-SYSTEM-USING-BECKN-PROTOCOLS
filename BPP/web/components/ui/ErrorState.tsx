@@ -2,10 +2,12 @@ export function ErrorState({
   title = 'Something went wrong',
   description,
   onRetry,
+  actionLabel = 'Try again',
 }: {
   title?: string;
   description?: string;
   onRetry?: () => void;
+  actionLabel?: string;
 }) {
   return (
     <div role="alert" className="flex flex-col items-center gap-2 px-4 py-12 text-center">
@@ -17,7 +19,7 @@ export function ErrorState({
           onClick={onRetry}
           className="mt-4 rounded-md bg-neutral-900 px-4 py-2 text-sm text-white"
         >
-          Try again
+          {actionLabel}
         </button>
       )}
     </div>

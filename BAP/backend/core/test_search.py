@@ -164,6 +164,38 @@ def test_search_results_view_returns_accumulated_results(client):
 
 
 @pytest.mark.django_db
+def test_search_results_view_is_cursor_paginated(client):
+    """FUNC (§3.6): with more results than `limit`, the response is truncated to one
+    page and carries a real `next_cursor`; following that cursor returns the next
+    page and, once exhausted, `next_cursor` is null — the real
+    API_CONVENTIONS.md contract, not an unbounded dump."""
+    session = SearchSession.objects.create(
+        transaction_id="txn-1", query="haircut", domain="ONDC:RET13"
+    )
+    session.results = [
+        {"bpp_id": f"bpp-{i}.example.com", "bpp_uri": f"https://bpp-{i}.example.com", "catalog": {}}
+        for i in range(3)
+    ]
+    session.save()
+
+    first = client.get(reverse("search-results", args=["txn-1"]), {"limit": "2"})
+    assert first.status_code == 200
+    first_body = first.json()
+    first_page = [r["bpp_id"] for r in first_body["results"]]
+    assert first_page == ["bpp-0.example.com", "bpp-1.example.com"]
+    assert first_body["next_cursor"] == "bpp-1.example.com"
+
+    second = client.get(
+        reverse("search-results", args=["txn-1"]),
+        {"limit": "2", "cursor": first_body["next_cursor"]},
+    )
+    assert second.status_code == 200
+    second_body = second.json()
+    assert [r["bpp_id"] for r in second_body["results"]] == ["bpp-2.example.com"]
+    assert second_body["next_cursor"] is None
+
+
+@pytest.mark.django_db
 @patch("core.search_service.record_on_search_result")
 def test_on_search_view_acks_when_both_bpp_and_gateway_signatures_are_valid(
     mock_record, client

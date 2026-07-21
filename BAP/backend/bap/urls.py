@@ -33,6 +33,7 @@ urlpatterns = [
     path("api/v1/auth/login", core_views.login_view, name="login"),
     path("api/v1/auth/logout", core_views.logout_view, name="logout"),
     path("api/v1/auth/me", core_views.me_view, name="me"),
+    path("api/v1/bookings", core_views.bookings_list_view, name="bookings-list"),
     path("api/v1/search", core_views.search_trigger_view, name="search-trigger"),
     path(
         "api/v1/search/<str:transaction_id>",

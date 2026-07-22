@@ -8,18 +8,28 @@ blocked by the browser's own CORS enforcement, confirmed live via a real
 tests caught this because pytest's Django test client never enforces or checks
 CORS — this failure mode only exists from a real browser's perspective."""
 
-from django.test import Client, TestCase
+from django.test import Client, TestCase, override_settings
+
+# Deliberately not relying on the real `CORS_ALLOWED_ORIGINS` value from BAP's own
+# .env (present locally, but CI's workflow env block never sets it — that gap is
+# exactly what broke these tests the first time, with `CORS_ALLOWED_ORIGINS`
+# defaulting to `[]` and every assertion below hitting a real KeyError since the
+# header was then genuinely, correctly absent). `override_settings` makes this
+# test self-contained and correct in any environment, not dependent on ambient
+# config matching what the test happens to assume.
+TEST_ORIGIN = "http://localhost:3000"
 
 
+@override_settings(CORS_ALLOWED_ORIGINS=[TEST_ORIGIN])
 class CorsHeadersTests(TestCase):
     def test_allowed_origin_gets_cors_header_on_a_real_endpoint(self):
         client = Client()
         response = client.options(
             "/api/v1/search",
-            HTTP_ORIGIN="http://localhost:3000",
+            HTTP_ORIGIN=TEST_ORIGIN,
             HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
         )
-        self.assertEqual(response["Access-Control-Allow-Origin"], "http://localhost:3000")
+        self.assertEqual(response["Access-Control-Allow-Origin"], TEST_ORIGIN)
 
     def test_disallowed_origin_gets_no_cors_header(self):
         client = Client()
@@ -39,7 +49,7 @@ class CorsHeadersTests(TestCase):
         client = Client()
         response = client.options(
             "/api/v1/confirm",
-            HTTP_ORIGIN="http://localhost:3000",
+            HTTP_ORIGIN=TEST_ORIGIN,
             HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
             HTTP_ACCESS_CONTROL_REQUEST_HEADERS="content-type,idempotency-key",
         )

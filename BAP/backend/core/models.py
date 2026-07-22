@@ -174,6 +174,13 @@ class SearchSession(models.Model):
     tracking = models.JSONField(null=True, blank=True)
     tracking_error = models.JSONField(null=True, blank=True)
 
+    # §3.7 — reservation-hold abuse prevention needs a per-actor key to cap
+    # concurrent in-flight holds against. A logged-in `customer` already provides
+    # one; an anonymous session (search never required login) doesn't, so the
+    # client's IP is captured at search-trigger time as the fallback key —
+    # mirroring `rate_limit.py`'s own `REMOTE_ADDR`-keying, not a new convention.
+    client_ip = models.GenericIPAddressField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

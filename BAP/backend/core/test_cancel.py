@@ -9,12 +9,18 @@ from unittest.mock import patch
 
 import pytest
 import responses
+from django.contrib.auth import get_user_model
 from django.test import Client
 from django.urls import reverse
 
 from core import cancel_service
 from core.crypto import generate_signing_key_pair, sign_outbound_request
 from core.models import SearchSession
+
+Customer = get_user_model()
+
+# Test fixture value, not a real credential.
+TEST_PASSWORD = "a-strong-passw0rd!"  # pragma: allowlist secret
 
 
 @pytest.fixture
@@ -35,9 +41,11 @@ def bap_identity_settings(settings, tmp_path):
     yield settings
 
 
-def _session_with_confirmed_order(*, transaction_id="txn-1", bpp_id="bpp.example.com"):
+def _session_with_confirmed_order(
+    *, transaction_id="txn-1", bpp_id="bpp.example.com", customer=None
+):
     session = SearchSession.objects.create(
-        transaction_id=transaction_id, query="haircut", domain="ONDC:RET13"
+        transaction_id=transaction_id, query="haircut", domain="ONDC:RET13", customer=customer
     )
     session.selected_bpp_id = bpp_id
     session.selected_bpp_uri = f"https://{bpp_id}"
@@ -190,6 +198,73 @@ def test_cancel_result_view_returns_the_recorded_order(client):
     body = resp.json()
     assert body["cancelled_order"] == session.cancelled_order
     assert body["cancelled_error"] is None
+
+
+@pytest.mark.django_db
+def test_cancel_trigger_view_rejects_a_different_authenticated_customers_booking(
+    bap_identity_settings, client
+):
+    """SEC (§3.7's own Test Gate, literal example): an authenticated customer
+    attempting to cancel another customer's booking ID is rejected with 403, not
+    404-leaked or silently allowed."""
+    owner = Customer.objects.create_user(
+        contact="owner@example.com", name="Owner", password=TEST_PASSWORD
+    )
+    attacker = Customer.objects.create_user(
+        contact="attacker@example.com", name="Attacker", password=TEST_PASSWORD
+    )
+    _session_with_confirmed_order(customer=owner)
+
+    client.force_login(attacker)
+    resp = client.post(
+        reverse("cancel-trigger"),
+        data=json.dumps({"transaction_id": "txn-1"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.django_db
+def test_cancel_result_view_rejects_a_different_authenticated_customers_booking(client):
+    owner = Customer.objects.create_user(
+        contact="owner@example.com", name="Owner", password=TEST_PASSWORD
+    )
+    attacker = Customer.objects.create_user(
+        contact="attacker@example.com", name="Attacker", password=TEST_PASSWORD
+    )
+    _session_with_confirmed_order(customer=owner)
+
+    client.force_login(attacker)
+    resp = client.get(reverse("cancel-result", args=["txn-1"]))
+    assert resp.status_code == 403
+
+
+@pytest.mark.django_db
+def test_cancel_trigger_view_allows_the_owning_customer(bap_identity_settings, client):
+    owner = Customer.objects.create_user(
+        contact="owner@example.com", name="Owner", password=TEST_PASSWORD
+    )
+    _session_with_confirmed_order(customer=owner)
+    client.force_login(owner)
+
+    def gateway_cancel_callback(request):
+        body = json.loads(request.body)
+        return (
+            200,
+            {},
+            json.dumps({"context": body["context"], "message": {"ack": {"status": "ACK"}}}),
+        )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://gateway:8000/cancel", callback=gateway_cancel_callback
+        )
+        resp = client.post(
+            reverse("cancel-trigger"),
+            data=json.dumps({"transaction_id": "txn-1"}),
+            content_type="application/json",
+        )
+    assert resp.status_code == 202
 
 
 @pytest.mark.django_db

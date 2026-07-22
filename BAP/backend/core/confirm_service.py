@@ -26,6 +26,7 @@ from . import registry_client, trust
 from .crypto import sign_outbound_request
 from .models import SearchSession
 from .participant_keys import get_signing_keys
+from .session_authz import SessionAccessError, resolve_owned_session
 
 logger = logging.getLogger("bap")
 
@@ -37,7 +38,7 @@ class ConfirmError(Exception):
         self.status_code = status_code
 
 
-def trigger_confirm(*, transaction_id: str) -> None:
+def trigger_confirm(*, transaction_id: str, customer=None) -> None:
     """Customer-facing confirmation trigger — builds and sends the real signed
     Beckn /confirm to Gateway, targeting the same BPP a prior successful /select
     already resolved to. Requires a real successful /init to have happened first
@@ -47,11 +48,14 @@ def trigger_confirm(*, transaction_id: str) -> None:
     dropping its `quote` — the BPP recomputes pricing fresh from live state one
     final time, same Source-of-Truth principle already established at Selection
     and Initialization. Clears any previous confirm result first, so a re-confirm
-    doesn't briefly show stale data while the new one is in flight."""
+    doesn't briefly show stale data while the new one is in flight.
+
+    `customer` (§3.7): IDOR protection — raises `ConfirmError(401/403)` if this
+    transaction belongs to a different customer than the caller."""
     try:
-        session = SearchSession.objects.get(transaction_id=transaction_id)
-    except SearchSession.DoesNotExist:
-        raise ConfirmError("No such search transaction", status_code=404) from None
+        session = resolve_owned_session(transaction_id=transaction_id, requesting_customer=customer)
+    except SessionAccessError as exc:
+        raise ConfirmError(exc.message, status_code=exc.status_code) from exc
 
     if not session.init_order or not session.selected_bpp_id:
         raise ConfirmError(
@@ -107,14 +111,17 @@ def trigger_confirm(*, transaction_id: str) -> None:
         raise ConfirmError("Gateway rejected the confirm request (NACK)", status_code=502)
 
 
-def get_confirm_result(*, transaction_id: str) -> dict | None:
+def get_confirm_result(*, transaction_id: str, customer=None) -> dict | None:
     """Returns the current confirmation outcome, or None if no such search session
     exists. Both fields are None while on_confirm hasn't arrived yet — a normal,
-    honest in-progress state, not an error, same discipline as get_init_result."""
+    honest in-progress state, not an error, same discipline as get_init_result.
+    `customer` (§3.7): IDOR protection, same contract."""
     try:
-        session = SearchSession.objects.get(transaction_id=transaction_id)
-    except SearchSession.DoesNotExist:
-        return None
+        session = resolve_owned_session(transaction_id=transaction_id, requesting_customer=customer)
+    except SessionAccessError as exc:
+        if exc.status_code == 404:
+            return None
+        raise ConfirmError(exc.message, status_code=exc.status_code) from exc
     return {
         "transaction_id": session.transaction_id,
         "confirmed_order": session.confirmed_order,

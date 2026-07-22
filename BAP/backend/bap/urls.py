@@ -29,6 +29,7 @@ urlpatterns = [
         name="ondc-site-verification",
     ),
     path("on_subscribe", core_views.on_subscribe_view, name="on_subscribe"),
+    path("api/v1/auth/csrf", core_views.csrf_token_view, name="csrf-token"),
     path("api/v1/auth/signup", core_views.signup_view, name="signup"),
     path("api/v1/auth/login", core_views.login_view, name="login"),
     path("api/v1/auth/logout", core_views.logout_view, name="logout"),

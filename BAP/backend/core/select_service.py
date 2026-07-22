@@ -26,6 +26,7 @@ from . import registry_client, trust
 from .crypto import sign_outbound_request
 from .models import SearchSession
 from .participant_keys import get_signing_keys
+from .session_authz import SessionAccessError, resolve_owned_session
 
 logger = logging.getLogger("bap")
 
@@ -51,16 +52,57 @@ def _find_item_provider(session: SearchSession, item_id: str) -> tuple[str, str,
     raise SelectError(f"No such item {item_id!r} in this search's results", status_code=404)
 
 
-def trigger_select(*, transaction_id: str, item_id: str, requested_timestamp: str) -> None:
+MAX_CONCURRENT_HOLDS = 3
+
+
+def _count_in_flight_holds(*, session: SearchSession) -> int:
+    """Reservation-hold abuse prevention (§3.7): counts this same actor's OTHER
+    "in-flight" transactions — a real `selected_order` recorded, but not yet
+    `confirmed_order`/`cancelled_order` — the honest proxy available at BAP for
+    "may currently be holding a slot" (BAP has no direct signal of a hold's Redis
+    TTL expiring at BPP, only that this transaction hasn't reached a terminal
+    state yet). Keyed by `customer` when authenticated, by the session's own
+    `client_ip` (captured at search time) when anonymous — a `SearchSession`
+    with no customer and no client_ip has no real actor identity to cap against,
+    so it's excluded rather than silently capped against an empty/wrong key."""
+    holders = SearchSession.objects.filter(
+        selected_order__isnull=False, confirmed_order__isnull=True, cancelled_order__isnull=True
+    ).exclude(transaction_id=session.transaction_id)
+    if session.customer_id is not None:
+        holders = holders.filter(customer_id=session.customer_id)
+    elif session.client_ip:
+        holders = holders.filter(customer__isnull=True, client_ip=session.client_ip)
+    else:
+        return 0
+    return holders.count()
+
+
+def trigger_select(
+    *, transaction_id: str, item_id: str, requested_timestamp: str, customer=None
+) -> None:
     """Customer-facing selection trigger — builds and sends the real signed Beckn
     /select to Gateway, targeting the one specific BPP that actually offered this item.
     Clears any previous selection result on this session first, so a re-select doesn't
     briefly show stale data while the new one is in flight (the BPP-side release of
-    the prior hold happens independently, server-side, per §3.2)."""
+    the prior hold happens independently, server-side, per §3.2).
+
+    `customer` (§3.7): IDOR protection — raises `SelectError(401/403)` if this
+    transaction belongs to a different customer than the caller. Also enforces
+    `MAX_CONCURRENT_HOLDS` — a real, live-exploitable DoS otherwise: a malicious
+    actor could mass-hold every available slot across many different
+    `transaction_id`s without ever confirming, denying service to real customers
+    for up to a full hold-TTL window (§1.3)."""
     try:
-        session = SearchSession.objects.get(transaction_id=transaction_id)
-    except SearchSession.DoesNotExist:
-        raise SelectError("No such search transaction", status_code=404) from None
+        session = resolve_owned_session(transaction_id=transaction_id, requesting_customer=customer)
+    except SessionAccessError as exc:
+        raise SelectError(exc.message, status_code=exc.status_code) from exc
+
+    if _count_in_flight_holds(session=session) >= MAX_CONCURRENT_HOLDS:
+        raise SelectError(
+            "Too many concurrent reservation holds — confirm or let an existing "
+            "one expire before selecting another",
+            status_code=429,
+        )
 
     bpp_id, bpp_uri, provider_id = _find_item_provider(session, item_id)
 
@@ -115,14 +157,17 @@ def trigger_select(*, transaction_id: str, item_id: str, requested_timestamp: st
         raise SelectError("Gateway rejected the select request (NACK)", status_code=502)
 
 
-def get_selection_result(*, transaction_id: str) -> dict | None:
+def get_selection_result(*, transaction_id: str, customer=None) -> dict | None:
     """Returns the current selection outcome, or None if no such search session
     exists. Both fields are None while on_select hasn't arrived yet — a normal,
-    honest in-progress state, not an error, same discipline as get_search_results."""
+    honest in-progress state, not an error, same discipline as get_search_results.
+    `customer` (§3.7): IDOR protection, same contract as get_search_results."""
     try:
-        session = SearchSession.objects.get(transaction_id=transaction_id)
-    except SearchSession.DoesNotExist:
-        return None
+        session = resolve_owned_session(transaction_id=transaction_id, requesting_customer=customer)
+    except SessionAccessError as exc:
+        if exc.status_code == 404:
+            return None
+        raise SelectError(exc.message, status_code=exc.status_code) from exc
     return {
         "transaction_id": session.transaction_id,
         "selected_order": session.selected_order,

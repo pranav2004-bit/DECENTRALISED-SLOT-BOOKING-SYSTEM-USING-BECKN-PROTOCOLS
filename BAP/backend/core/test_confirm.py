@@ -9,12 +9,18 @@ from unittest.mock import patch
 
 import pytest
 import responses
+from django.contrib.auth import get_user_model
 from django.test import Client
 from django.urls import reverse
 
 from core import confirm_service
 from core.crypto import generate_signing_key_pair, sign_outbound_request
 from core.models import SearchSession
+
+Customer = get_user_model()
+
+# Test fixture value, not a real credential.
+TEST_PASSWORD = "a-strong-passw0rd!"  # pragma: allowlist secret
 
 
 @pytest.fixture
@@ -35,9 +41,9 @@ def bap_identity_settings(settings, tmp_path):
     yield settings
 
 
-def _session_with_init(*, transaction_id="txn-1", bpp_id="bpp.example.com"):
+def _session_with_init(*, transaction_id="txn-1", bpp_id="bpp.example.com", customer=None):
     session = SearchSession.objects.create(
-        transaction_id=transaction_id, query="haircut", domain="ONDC:RET13"
+        transaction_id=transaction_id, query="haircut", domain="ONDC:RET13", customer=customer
     )
     session.selected_order = {
         "provider": {"id": "biz-1"},
@@ -361,6 +367,40 @@ def test_confirm_result_view_returns_the_recorded_order(client):
     body = resp.json()
     assert body["confirmed_order"] == session.confirmed_order
     assert body["confirmed_error"] is None
+
+
+@pytest.mark.django_db
+def test_confirm_result_view_rejects_a_different_authenticated_customers_booking(client):
+    """SEC (§3.7): a genuinely distinct flow-type (result poll, not trigger) from
+    test_cancel.py's own IDOR coverage — proves the fix isn't limited to one
+    action type."""
+    owner = Customer.objects.create_user(
+        contact="owner@example.com", name="Owner", password=TEST_PASSWORD
+    )
+    attacker = Customer.objects.create_user(
+        contact="attacker@example.com", name="Attacker", password=TEST_PASSWORD
+    )
+    session = _session_with_init(customer=owner)
+    session.confirmed_order = {"status": "ACTIVE"}
+    session.save()
+
+    client.force_login(attacker)
+    resp = client.get(reverse("confirm-result", args=["txn-1"]))
+    assert resp.status_code == 403
+
+
+@pytest.mark.django_db
+def test_confirm_result_view_allows_the_owning_customer(client):
+    owner = Customer.objects.create_user(
+        contact="owner@example.com", name="Owner", password=TEST_PASSWORD
+    )
+    session = _session_with_init(customer=owner)
+    session.confirmed_order = {"status": "ACTIVE"}
+    session.save()
+
+    client.force_login(owner)
+    resp = client.get(reverse("confirm-result", args=["txn-1"]))
+    assert resp.status_code == 200
 
 
 @pytest.mark.django_db

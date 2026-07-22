@@ -318,3 +318,73 @@ def test_record_on_select_result_drops_a_callback_for_an_unknown_transaction():
     payload["context"]["transaction_id"] = "unknown-txn"
     # must not raise:
     select_service.record_on_select_result(payload=payload)
+
+
+@pytest.mark.django_db
+def test_trigger_select_rejects_a_new_hold_once_the_concurrent_cap_is_reached(
+    bap_identity_settings,
+):
+    """SEC (§3.7's own Test Gate): rapid-fire reservation-hold spam is throttled
+    — a malicious actor mass-holding many different transactions from the same
+    IP (anonymous, no customer) hits MAX_CONCURRENT_HOLDS and is rejected with
+    429, rather than being allowed to hold every slot indefinitely."""
+    same_ip = "203.0.113.7"
+    for i in range(select_service.MAX_CONCURRENT_HOLDS):
+        other = _session_with_result(transaction_id=f"other-txn-{i}")
+        other.client_ip = same_ip
+        other.selected_order = {"provider": {"id": "biz-1"}, "items": [{"id": "item-1"}]}
+        other.save()
+
+    under_test = _session_with_result(transaction_id="txn-under-test")
+    under_test.client_ip = same_ip
+    under_test.save()
+
+    with pytest.raises(select_service.SelectError) as exc_info:
+        select_service.trigger_select(
+            transaction_id="txn-under-test",
+            item_id="item-1",
+            requested_timestamp="2026-08-01T10:00:00+00:00",
+        )
+    assert exc_info.value.status_code == 429
+
+
+@pytest.mark.django_db
+def test_trigger_select_does_not_count_already_confirmed_or_cancelled_transactions(
+    bap_identity_settings,
+):
+    """A transaction that already reached a terminal state (confirmed or
+    cancelled) is a real past booking, not an outstanding hold — must not count
+    toward the cap."""
+    same_ip = "203.0.113.7"
+    for i in range(select_service.MAX_CONCURRENT_HOLDS):
+        other = _session_with_result(transaction_id=f"other-txn-{i}")
+        other.client_ip = same_ip
+        other.selected_order = {"provider": {"id": "biz-1"}, "items": [{"id": "item-1"}]}
+        other.confirmed_order = {"id": f"booking-{i}", "status": "ACTIVE"}
+        other.save()
+
+    under_test = _session_with_result(transaction_id="txn-under-test")
+    under_test.client_ip = same_ip
+    under_test.save()
+
+    captured_requests = []
+
+    def gateway_select_callback(request):
+        captured_requests.append(request)
+        body = json.loads(request.body)
+        return (
+            200,
+            {},
+            json.dumps({"context": body["context"], "message": {"ack": {"status": "ACK"}}}),
+        )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://gateway:8000/select", callback=gateway_select_callback
+        )
+        select_service.trigger_select(
+            transaction_id="txn-under-test",
+            item_id="item-1",
+            requested_timestamp="2026-08-01T10:00:00+00:00",
+        )
+    assert len(captured_requests) == 1

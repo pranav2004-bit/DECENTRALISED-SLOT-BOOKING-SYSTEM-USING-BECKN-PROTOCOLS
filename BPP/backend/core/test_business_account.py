@@ -120,6 +120,32 @@ def test_resource_creation_requires_login(client):
     assert resp.status_code == 401
 
 
+@pytest.mark.django_db
+def test_resource_creation_rejects_an_oversized_name(client):
+    """SEC (§3.7): rejects oversized input before it reaches the DB layer, where
+    a real Postgres varchar(255) overflow would otherwise surface as an
+    uncaught DataError -> a generic 500."""
+    _signup_and_login(client)
+    resp = _create_resource(client, name="x" * 256)
+    assert resp.status_code == 400
+    assert resp.json()["error"]["field"] == "name"
+    assert Resource.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_resource_create_is_rate_limited_per_business_account(client):
+    """SEC (§3.7's own gap-closed note): BPP's business-management endpoints
+    are session-authenticated but were previously entirely unthrottled."""
+    _signup_and_login(client)
+    for i in range(30):
+        resp = _create_resource(client, name=f"Stylist {i}")
+        assert resp.status_code == 201
+
+    resp = _create_resource(client, name="One too many")
+    assert resp.status_code == 429
+    assert resp.json()["error"]["code"] == "RATE_LIMITED"
+
+
 # --- Availability Calendar generates real Slot rows (this phase's own Test Gate wording) --------
 
 
@@ -150,6 +176,66 @@ def test_business_account_generates_real_slots_via_availability_calendar(client)
     assert slots[0].start_time.hour == 9
     assert slots[1].start_time.hour == 14
     assert all(s.capacity_remaining == 1 for s in slots)
+
+
+@pytest.mark.django_db
+def test_availability_creation_rejects_a_range_exceeding_the_max_span(client):
+    """SEC (§3.7): an unbounded date range would make generate_slots() attempt
+    to materialize an unbounded number of real Slot rows — a genuine
+    resource-exhaustion DoS, not just malformed input."""
+    _signup_and_login(client)
+    resource_id = _create_resource(client).json()["id"]
+
+    resp = client.post(
+        reverse("resource-availability-create", args=[resource_id]),
+        data={
+            "range_start": "2026-08-03T00:00:00Z",
+            "range_end": "2030-08-03T00:00:00Z",
+            "times": ["09:00"],
+        },
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert AvailabilityCalendar.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_availability_creation_rejects_a_range_end_before_range_start(client):
+    _signup_and_login(client)
+    resource_id = _create_resource(client).json()["id"]
+
+    resp = client.post(
+        reverse("resource-availability-create", args=[resource_id]),
+        data={
+            "range_start": "2026-08-03T23:59:59Z",
+            "range_end": "2026-08-03T00:00:00Z",
+            "times": ["09:00"],
+        },
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "field,value", [("slot_duration_minutes", 0), ("frequency_days", -1), ("slot_capacity", 0)]
+)
+def test_availability_creation_rejects_non_positive_numeric_fields(client, field, value):
+    _signup_and_login(client)
+    resource_id = _create_resource(client).json()["id"]
+
+    resp = client.post(
+        reverse("resource-availability-create", args=[resource_id]),
+        data={
+            "range_start": "2026-08-03T00:00:00Z",
+            "range_end": "2026-08-03T23:59:59Z",
+            "times": ["09:00"],
+            field: value,
+        },
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert AvailabilityCalendar.objects.count() == 0
 
 
 @pytest.mark.django_db

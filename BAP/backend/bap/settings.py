@@ -134,6 +134,17 @@ PASSWORD_HASHERS = [
 SESSION_ENGINE = "django.contrib.sessions.backends.cache"
 SESSION_CACHE_ALIAS = "default"
 
+# §3.7: real gap found and closed — neither was set at all, meaning both defaulted
+# to Django's own `False`, so session/CSRF cookies would be sent over plain HTTP
+# even in a real, non-DEBUG deployment. Standard Django pattern: only require
+# HTTPS-only cookies once actually deployed non-DEBUG; local/dev over plain HTTP
+# still works. `SESSION_COOKIE_HTTPONLY` is already Django's own default (True) —
+# set explicitly here to match this project's convention of not leaving
+# security-relevant settings implicit.
+SESSION_COOKIE_SECURE = not DEBUG
+SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_SECURE = not DEBUG
+
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
 USE_I18N = True

@@ -26,6 +26,7 @@ from . import registry_client, trust
 from .crypto import sign_outbound_request
 from .models import SearchSession
 from .participant_keys import get_signing_keys
+from .session_authz import SessionAccessError, resolve_owned_session
 
 logger = logging.getLogger("bap")
 
@@ -37,7 +38,7 @@ class InitError(Exception):
         self.status_code = status_code
 
 
-def trigger_init(*, transaction_id: str) -> None:
+def trigger_init(*, transaction_id: str, customer=None) -> None:
     """Customer-facing initialization trigger — builds and sends the real signed
     Beckn /init to Gateway, targeting the same BPP a prior successful /select
     already resolved to. Resends only `provider`/`items`/`fulfillments` from the
@@ -45,11 +46,14 @@ def trigger_init(*, transaction_id: str) -> None:
     pricing fresh from live state (Source-of-Truth rule, same principle §3.2
     established at Selection), not an echo of a client-held value. Clears any
     previous init result first, so a re-init doesn't briefly show stale data while
-    the new one is in flight."""
+    the new one is in flight.
+
+    `customer` (§3.7): IDOR protection — raises `InitError(401/403)` if this
+    transaction belongs to a different customer than the caller."""
     try:
-        session = SearchSession.objects.get(transaction_id=transaction_id)
-    except SearchSession.DoesNotExist:
-        raise InitError("No such search transaction", status_code=404) from None
+        session = resolve_owned_session(transaction_id=transaction_id, requesting_customer=customer)
+    except SessionAccessError as exc:
+        raise InitError(exc.message, status_code=exc.status_code) from exc
 
     if not session.selected_order or not session.selected_bpp_id:
         raise InitError(
@@ -105,15 +109,17 @@ def trigger_init(*, transaction_id: str) -> None:
         raise InitError("Gateway rejected the init request (NACK)", status_code=502)
 
 
-def get_init_result(*, transaction_id: str) -> dict | None:
+def get_init_result(*, transaction_id: str, customer=None) -> dict | None:
     """Returns the current initialization outcome, or None if no such search
     session exists. Both fields are None while on_init hasn't arrived yet — a
     normal, honest in-progress state, not an error, same discipline as
-    get_selection_result."""
+    get_selection_result. `customer` (§3.7): IDOR protection, same contract."""
     try:
-        session = SearchSession.objects.get(transaction_id=transaction_id)
-    except SearchSession.DoesNotExist:
-        return None
+        session = resolve_owned_session(transaction_id=transaction_id, requesting_customer=customer)
+    except SessionAccessError as exc:
+        if exc.status_code == 404:
+            return None
+        raise InitError(exc.message, status_code=exc.status_code) from exc
     return {
         "transaction_id": session.transaction_id,
         "init_order": session.init_order,

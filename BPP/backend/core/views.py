@@ -7,9 +7,10 @@ from django.contrib.auth import authenticate, get_user_model, login, logout, pas
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpResponse, JsonResponse
 from django.utils.dateparse import parse_datetime
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 from django_observability.errors import error_response
+from django_observability.rate_limit import by_authenticated_account, rate_limit
 from inventory_core.domain_adapter import get_adapter
 from inventory_core.models import AvailabilityCalendar, Resource
 
@@ -25,6 +26,11 @@ from . import (
     update_service,
 )
 from .catalog import visible_resources
+
+# §3.7: caps the real number of Slot rows one availability-creation call can
+# materialize — an honest, deliberately-generous ceiling (just over a year), not a
+# number derived from real production capacity data (none exists yet).
+MAX_AVAILABILITY_RANGE_DAYS = 366
 
 
 @require_http_methods(["GET"])
@@ -63,11 +69,22 @@ def _business_account_json(account) -> dict:
     }
 
 
-@csrf_exempt
+@require_http_methods(["GET"])
+@ensure_csrf_cookie
+def csrf_token_view(request):
+    """Mirrors BAP/backend/core/views.py's `csrf_token_view` exactly — see its
+    docstring for the full rationale (§3.7)."""
+    return JsonResponse({"status": "ok"}, status=200)
+
+
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=5, scope="business-signup")
 def business_signup_view(request):
     """One business-account login (livetracker2.md §2.2) — same shape as BAP's customer
-    signup (§2.1), for the same reasons (see BAP/backend/core/views.py's `signup_view`)."""
+    signup (§2.1), for the same reasons (see BAP/backend/core/views.py's `signup_view`).
+    Rate-limited (§3.7) for the same reason as BAP's signup/login — a real gap found
+    via audit: this bullet's own CSRF fix already treated this as an equally real
+    auth-form surface, rate limiting was the one piece left inconsistent."""
     try:
         payload = json.loads(request.body or b"{}")
     except json.JSONDecodeError:
@@ -85,6 +102,14 @@ def business_signup_view(request):
         return error_response("VALIDATION_ERROR", "contact is required", 400, field="contact")
     if not password:
         return error_response("VALIDATION_ERROR", "password is required", 400, field="password")
+    if len(business_name) > 255:
+        return error_response(
+            "VALIDATION_ERROR", "business_name is too long (max 255)", 400, field="business_name"
+        )
+    if len(contact) > 255:
+        return error_response(
+            "VALIDATION_ERROR", "contact is too long (max 255)", 400, field="contact"
+        )
 
     BusinessAccount = get_user_model()
     if BusinessAccount.objects.filter(contact=contact).exists():
@@ -103,8 +128,8 @@ def business_signup_view(request):
     return JsonResponse(_business_account_json(account), status=201)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=5, scope="business-login")
 def business_login_view(request):
     try:
         payload = json.loads(request.body or b"{}")
@@ -113,6 +138,9 @@ def business_login_view(request):
 
     contact = (payload.get("contact") or "").strip()
     password = payload.get("password") or ""
+
+    if len(contact) > 255:
+        return error_response("UNAUTHORIZED", "invalid contact or password", 401)
 
     account = authenticate(request, username=contact, password=password)
     if account is None:
@@ -137,6 +165,7 @@ def business_me_view(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=30, scope="resource-create", key_func=by_authenticated_account)
 def resource_create_view(request):
     """The logged-in business account creates a real `Resource` it owns (§2.2) —
     `owner_ref` is always the authenticated account's own id, never client-supplied, so a
@@ -152,6 +181,8 @@ def resource_create_view(request):
     name = (payload.get("name") or "").strip()
     if not name:
         return error_response("VALIDATION_ERROR", "name is required", 400, field="name")
+    if len(name) > 255:
+        return error_response("VALIDATION_ERROR", "name is too long (max 255)", 400, field="name")
 
     domain_data = payload.get("domain_data") or {}
     adapter = get_adapter(settings.DOMAIN_BEAUTY)
@@ -190,6 +221,9 @@ def resource_create_view(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@rate_limit(
+    limit_per_minute=30, scope="resource-availability-create", key_func=by_authenticated_account
+)
 def resource_availability_create_view(request, resource_id):
     """Creates a real `AvailabilityCalendar` for one of the logged-in business's own
     `Resource`s and generates real `Slot` rows from it (§2.2's own Test Gate wording)."""
@@ -217,18 +251,43 @@ def resource_availability_create_view(request, resource_id):
         return error_response(
             "VALIDATION_ERROR", "range_start/range_end must be valid ISO 8601 datetimes", 400
         )
+    if range_end <= range_start:
+        return error_response("VALIDATION_ERROR", "range_end must be after range_start", 400)
+    # §3.7: bound the span — an unbounded range would make generate_slots() below
+    # attempt to materialize an unbounded number of real Slot rows, a genuine
+    # resource-exhaustion DoS, not just "malformed" input.
+    if (range_end - range_start) > dt.timedelta(days=MAX_AVAILABILITY_RANGE_DAYS):
+        return error_response(
+            "VALIDATION_ERROR",
+            f"range_start/range_end span must not exceed {MAX_AVAILABILITY_RANGE_DAYS} days",
+            400,
+        )
+
+    frequency_days = payload.get("frequency_days", 1)
+    slot_duration_minutes = payload.get("slot_duration_minutes", 30)
+    slot_capacity = payload.get("slot_capacity", 1)
+    if not isinstance(frequency_days, int) or frequency_days <= 0:
+        return error_response(
+            "VALIDATION_ERROR", "frequency_days must be a positive integer", 400
+        )
+    if not isinstance(slot_duration_minutes, int) or slot_duration_minutes <= 0:
+        return error_response(
+            "VALIDATION_ERROR", "slot_duration_minutes must be a positive integer", 400
+        )
+    if not isinstance(slot_capacity, int) or slot_capacity <= 0:
+        return error_response("VALIDATION_ERROR", "slot_capacity must be a positive integer", 400)
 
     try:
         calendar = AvailabilityCalendar.objects.create(
             resource=resource,
-            frequency=dt.timedelta(days=payload.get("frequency_days", 1)),
+            frequency=dt.timedelta(days=frequency_days),
             range_start=range_start,
             range_end=range_end,
             days=payload.get("days", ""),
             times=payload.get("times", []),
             holidays=payload.get("holidays", []),
-            slot_duration=dt.timedelta(minutes=payload.get("slot_duration_minutes", 30)),
-            slot_capacity=payload.get("slot_capacity", 1),
+            slot_duration=dt.timedelta(minutes=slot_duration_minutes),
+            slot_capacity=slot_capacity,
         )
         slots = calendar.generate_slots()
     except DjangoValidationError as exc:

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import environ
+from corsheaders.defaults import default_headers as CORS_DEFAULT_HEADERS
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR.parent.parent / "shared"))
@@ -22,6 +23,13 @@ REDIS_URL = env("REDIS_URL")
 DEBUG = env.bool("DJANGO_DEBUG", default=False)
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
+# django-cors-headers' own DEFAULT_HEADERS (accept/authorization/content-type/etc.) doesn't
+# include this project's own custom `Idempotency-Key` request header (§3.6's
+# django_observability.idempotency.IDEMPOTENCY_HEADER, read by confirm_trigger_view) — a
+# real gap found live in §3.9's own browser verification: the browser's CORS preflight
+# correctly refused to allow the actual POST /api/v1/confirm through once BAP/web started
+# sending that header, since it was never granted here.
+CORS_ALLOW_HEADERS = [*CORS_DEFAULT_HEADERS, "idempotency-key"]
 LOG_LEVEL = env("LOG_LEVEL", default="INFO")
 
 REGISTRY_BASE_URL = env("REGISTRY_BASE_URL")
@@ -57,6 +65,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "channels",
+    "corsheaders",
     "django_observability",
     "core",
 ]
@@ -68,6 +77,7 @@ ASGI_APPLICATION = "bap.asgi.application"
 
 MIDDLEWARE = [
     "django_observability.middleware.CorrelationIdMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",

@@ -26,6 +26,7 @@ from . import (
     update_service,
 )
 from .catalog import visible_resources
+from .catalog_cache import invalidate_beauty_catalog_cache
 
 # §3.7: caps the real number of Slot rows one availability-creation call can
 # materialize — an honest, deliberately-generous ceiling (just over a year), not a
@@ -216,6 +217,9 @@ def resource_create_view(request):
         price_currency=payload.get("price_currency", "INR"),
         price_value=price_value,
     )
+    # §3.8: a new Resource is real, visible catalog content — invalidate the
+    # cached search catalog so it doesn't stay stale until the TTL safety net.
+    invalidate_beauty_catalog_cache()
     return JsonResponse({"id": str(resource.id), "name": resource.name}, status=201)
 
 

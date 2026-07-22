@@ -14,3 +14,7 @@ class CoreConfig(AppConfig):
         from .beauty_adapter import BeautyDomainAdapter
 
         register_adapter(settings.DOMAIN_BEAUTY, BeautyDomainAdapter())
+
+        # §3.8: connects the catalog-cache invalidation signal handlers (imported
+        # for its side effect of running the module-level @receiver decorators).
+        from . import signals  # noqa: F401

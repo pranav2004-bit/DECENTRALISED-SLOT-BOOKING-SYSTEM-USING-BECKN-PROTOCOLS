@@ -21,7 +21,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from . import registry_client, trust
-from .catalog import build_beauty_catalog
+from .catalog_cache import get_cached_beauty_catalog
 from .crypto import sign_outbound_request
 from .participant_keys import get_signing_keys
 
@@ -65,13 +65,19 @@ def validate_and_ack_search(
 
 
 def dispatch_on_search(*, payload: dict) -> None:
-    """Builds the real Beauty catalog (§2.3's build_beauty_catalog(), untouched) and
-    sends it as a real, signed /on_search callback to Gateway (not directly to the
-    BAP — protocol_compliance_notes_v1.1.md §H.4: on_search routes back through
-    Gateway). Fire-and-forget: failures are logged, not raised, same discipline as
-    Gateway's own dispatch_search/relay_on_search."""
+    """Builds the real Beauty catalog and sends it as a real, signed /on_search
+    callback to Gateway (not directly to the BAP — protocol_compliance_notes_v1.1.md
+    §H.4: on_search routes back through Gateway). Fire-and-forget: failures are
+    logged, not raised, same discipline as Gateway's own dispatch_search/
+    relay_on_search.
+
+    §3.8: reads through `catalog_cache.get_cached_beauty_catalog()` (Redis-backed)
+    instead of calling `build_beauty_catalog()` directly — a real, repeated DB read
+    every search previously re-ran unconditionally. `confirm` and every other
+    booking-mutation path never consults this cache (see catalog_cache.py's module
+    docstring)."""
     context = payload["context"]
-    catalog = build_beauty_catalog()
+    catalog = get_cached_beauty_catalog()
 
     on_search_context = build_context(
         domain=context["domain"],

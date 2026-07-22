@@ -19,6 +19,9 @@ from core.models import SearchSession
 
 Customer = get_user_model()
 
+# Test fixture value, not a real credential.
+TEST_PASSWORD = "a-strong-passw0rd!"  # pragma: allowlist secret
+
 
 @pytest.fixture
 def client():
@@ -205,10 +208,10 @@ def test_cancel_trigger_view_rejects_a_different_authenticated_customers_booking
     attempting to cancel another customer's booking ID is rejected with 403, not
     404-leaked or silently allowed."""
     owner = Customer.objects.create_user(
-        contact="owner@example.com", name="Owner", password="a-strong-pw!"
+        contact="owner@example.com", name="Owner", password=TEST_PASSWORD
     )
     attacker = Customer.objects.create_user(
-        contact="attacker@example.com", name="Attacker", password="a-strong-pw!"
+        contact="attacker@example.com", name="Attacker", password=TEST_PASSWORD
     )
     _session_with_confirmed_order(customer=owner)
 
@@ -224,10 +227,10 @@ def test_cancel_trigger_view_rejects_a_different_authenticated_customers_booking
 @pytest.mark.django_db
 def test_cancel_result_view_rejects_a_different_authenticated_customers_booking(client):
     owner = Customer.objects.create_user(
-        contact="owner@example.com", name="Owner", password="a-strong-pw!"
+        contact="owner@example.com", name="Owner", password=TEST_PASSWORD
     )
     attacker = Customer.objects.create_user(
-        contact="attacker@example.com", name="Attacker", password="a-strong-pw!"
+        contact="attacker@example.com", name="Attacker", password=TEST_PASSWORD
     )
     _session_with_confirmed_order(customer=owner)
 
@@ -239,7 +242,7 @@ def test_cancel_result_view_rejects_a_different_authenticated_customers_booking(
 @pytest.mark.django_db
 def test_cancel_trigger_view_allows_the_owning_customer(bap_identity_settings, client):
     owner = Customer.objects.create_user(
-        contact="owner@example.com", name="Owner", password="a-strong-pw!"
+        contact="owner@example.com", name="Owner", password=TEST_PASSWORD
     )
     _session_with_confirmed_order(customer=owner)
     client.force_login(owner)

@@ -19,6 +19,9 @@ from core.models import SearchSession
 
 Customer = get_user_model()
 
+# Test fixture value, not a real credential.
+TEST_PASSWORD = "a-strong-passw0rd!"  # pragma: allowlist secret
+
 
 @pytest.fixture
 def client():
@@ -372,10 +375,10 @@ def test_confirm_result_view_rejects_a_different_authenticated_customers_booking
     test_cancel.py's own IDOR coverage — proves the fix isn't limited to one
     action type."""
     owner = Customer.objects.create_user(
-        contact="owner@example.com", name="Owner", password="a-strong-pw!"
+        contact="owner@example.com", name="Owner", password=TEST_PASSWORD
     )
     attacker = Customer.objects.create_user(
-        contact="attacker@example.com", name="Attacker", password="a-strong-pw!"
+        contact="attacker@example.com", name="Attacker", password=TEST_PASSWORD
     )
     session = _session_with_init(customer=owner)
     session.confirmed_order = {"status": "ACTIVE"}
@@ -389,7 +392,7 @@ def test_confirm_result_view_rejects_a_different_authenticated_customers_booking
 @pytest.mark.django_db
 def test_confirm_result_view_allows_the_owning_customer(client):
     owner = Customer.objects.create_user(
-        contact="owner@example.com", name="Owner", password="a-strong-pw!"
+        contact="owner@example.com", name="Owner", password=TEST_PASSWORD
     )
     session = _session_with_init(customer=owner)
     session.confirmed_order = {"status": "ACTIVE"}

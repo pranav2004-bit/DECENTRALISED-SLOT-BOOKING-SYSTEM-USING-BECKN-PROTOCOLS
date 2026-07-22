@@ -13,9 +13,12 @@ from core.session_authz import SessionAccessError, resolve_owned_session
 
 Customer = get_user_model()
 
+# Test fixture value, not a real credential.
+TEST_PASSWORD = "a-strong-passw0rd!"  # pragma: allowlist secret
+
 
 def _customer(*, contact):
-    return Customer.objects.create_user(contact=contact, name="Jane Doe", password="a-strong-pw!")
+    return Customer.objects.create_user(contact=contact, name="Jane Doe", password=TEST_PASSWORD)
 
 
 @pytest.mark.django_db

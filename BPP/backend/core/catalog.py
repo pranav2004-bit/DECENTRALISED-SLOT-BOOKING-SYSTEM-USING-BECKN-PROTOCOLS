@@ -54,7 +54,7 @@ def _business_to_provider(business: BusinessAccount) -> dict:
     level here instead of a flat Resource list."""
     items = [
         _resource_to_item(r)
-        for r in Resource.objects.filter(owner_ref=str(business.id)).order_by("name")
+        for r in Resource.objects.filter(owner_ref=str(business.id)).order_by("name", "id")
     ]
     return {
         "id": str(business.id),
@@ -74,10 +74,22 @@ def build_beauty_catalog() -> dict:
     `fulfillments`/`payments`/`offers` (real, optional `Catalog` fields) are deliberately
     omitted — no fulfillment/payment/offer data exists yet to populate them with, and a
     real schema field left out is honest; a guessed one wouldn't be.
+
+    Deterministically ordered (`.order_by("id")` here, `.order_by("name", "id")` on each
+    provider's own items in `_business_to_provider`) — without it, Postgres doesn't
+    guarantee row order across repeated identical queries, so two consecutive calls with
+    genuinely unchanged data could return the same providers/items in a different list
+    order and compare unequal by `==`. Found live via §3.11's new catalog-cache
+    reconciliation sweep (`catalog_cache.reconcile_beauty_catalog_cache()`), which rebuilds
+    this fresh on a real schedule and compares it to the cached version — the ordering
+    nondeterminism was making it log a "correction" on almost every tick even though
+    nothing had actually changed, a noisy false signal for an operator watching for real
+    drift, not a correctness bug (the cache always ended up matching the latest build
+    either way).
     """
     providers = [
         _business_to_provider(business)
-        for business in BusinessAccount.objects.filter(is_active=True)
+        for business in BusinessAccount.objects.filter(is_active=True).order_by("id")
         if Resource.objects.filter(owner_ref=str(business.id)).exists()
     ]
     return {

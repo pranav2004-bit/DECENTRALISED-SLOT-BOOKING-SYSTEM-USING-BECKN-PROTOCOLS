@@ -113,6 +113,30 @@ def test_business_with_no_resources_is_excluded_from_the_catalog():
 
 
 @pytest.mark.django_db
+def test_consecutive_builds_against_unchanged_data_return_identically_ordered_results():
+    """A real ordering-determinism regression test — before this fix, `build_beauty_
+    catalog()`'s two queries (businesses, and each business's own resources) had no
+    explicit `.order_by()`, so Postgres didn't guarantee the same row order across
+    repeated identical queries: two consecutive calls against genuinely unchanged data
+    could return the same providers/items in a different list order and compare unequal
+    by `==`. Found live via §3.11's catalog-cache reconciliation sweep logging a false
+    "corrected" on almost every tick. Multiple businesses/resources here to give any
+    real nondeterminism room to actually surface, not just one of each."""
+    for i in range(5):
+        business = BusinessAccount.objects.create_user(
+            contact=f"salon{i}@example.com", business_name=f"Salon {i}", password=TEST_PASSWORD
+        )
+        for j in range(3):
+            Resource.objects.create(owner_ref=str(business.id), name=f"Stylist {j}")
+
+    first = build_beauty_catalog()
+    second = build_beauty_catalog()
+    third = build_beauty_catalog()
+
+    assert first == second == third
+
+
+@pytest.mark.django_db
 def test_a_malformed_catalog_fails_contract_validation():
     """Proves the schema actually catches non-conformance, not just passes trivially —
     the same NEG discipline as shared/testing/test_contract_reference.py's reference

@@ -24,7 +24,6 @@ from beckn_transaction import (
     validate_context,
 )
 from django.conf import settings
-from django_observability.context import correlation_id_var
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request

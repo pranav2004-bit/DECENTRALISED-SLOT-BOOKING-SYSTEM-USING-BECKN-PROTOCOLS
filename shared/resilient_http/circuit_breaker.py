@@ -4,8 +4,11 @@ to stop hammering a downstream that's already failing, per livetracker1.md's
 resilience requirements (Phase 1.2/1.3/1.4 HTTP Client Service).
 """
 
+import logging
 import threading
 import time
+
+logger = logging.getLogger("resilient_http")
 
 
 class CircuitOpenError(Exception):
@@ -74,6 +77,18 @@ class RedisCircuitBreaker:
     failure_threshold failures, and even then only that one worker failed fast
     while the others kept retrying into the full timeout. Sharing state via Redis
     means one worker's failures count toward every worker's decision.
+
+    Fails open on its OWN Redis unavailability (livetracker2.md §3.11 follow-up,
+    found live: killing an app's Redis didn't just break that app's own Redis-backed
+    features — it crashed *every* inbound request with a raw, unhandled 500, because
+    this breaker's `before_call()` couldn't even decide whether to attempt the real
+    downstream call without Redis answering first). A circuit breaker exists to stop
+    a failing *downstream* from taking the whole system down with it; it must not
+    become a second single point of failure for its own dependency. `redis` is
+    imported lazily inside each method, not at module level — this module is
+    imported unconditionally by every app via `resilient_http.client`, including
+    Registry, which has no `redis` dependency at all and only ever constructs the
+    plain in-memory `CircuitBreaker` above, never this class.
     """
 
     CLOSED = "closed"
@@ -98,7 +113,22 @@ class RedisCircuitBreaker:
 
     @property
     def state(self) -> str:
-        opened_at = self._redis.get(self._opened_at_key)
+        """Reports CLOSED (never raises) if Redis itself is unreachable — see the
+        class docstring's "fails open" note. A stale/wrong "the breaker is closed"
+        read is the safe direction to be wrong in here: it lets the real downstream
+        call proceed (and fail with its own real, honest error if it's also down),
+        rather than crashing the caller's entire request over the breaker's own
+        bookkeeping being unavailable."""
+        import redis
+
+        try:
+            opened_at = self._redis.get(self._opened_at_key)
+        except redis.exceptions.RedisError:
+            logger.warning(
+                "RedisCircuitBreaker(%s): Redis unavailable, failing open (treating as CLOSED)",
+                self._failures_key,
+            )
+            return self.CLOSED
         if opened_at is None:
             return self.CLOSED
         if time.time() - float(opened_at) >= self.reset_timeout_seconds:
@@ -113,11 +143,27 @@ class RedisCircuitBreaker:
             )
 
     def record_success(self) -> None:
-        self._redis.delete(self._failures_key, self._opened_at_key)
+        import redis
+
+        try:
+            self._redis.delete(self._failures_key, self._opened_at_key)
+        except redis.exceptions.RedisError:
+            logger.warning(
+                "RedisCircuitBreaker(%s): Redis unavailable, could not record success",
+                self._failures_key,
+            )
 
     def record_failure(self) -> None:
-        current_state = self.state
-        count = self._redis.incr(self._failures_key)
-        self._redis.expire(self._failures_key, self._key_ttl_seconds)
-        if current_state == self.HALF_OPEN or count >= self.failure_threshold:
-            self._redis.set(self._opened_at_key, time.time(), ex=self._key_ttl_seconds)
+        import redis
+
+        try:
+            current_state = self.state
+            count = self._redis.incr(self._failures_key)
+            self._redis.expire(self._failures_key, self._key_ttl_seconds)
+            if current_state == self.HALF_OPEN or count >= self.failure_threshold:
+                self._redis.set(self._opened_at_key, time.time(), ex=self._key_ttl_seconds)
+        except redis.exceptions.RedisError:
+            logger.warning(
+                "RedisCircuitBreaker(%s): Redis unavailable, could not record failure",
+                self._failures_key,
+            )

@@ -3,6 +3,7 @@ import json
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
+from django_observability.context import correlation_id_var
 
 from . import onboarding_service, routing
 
@@ -189,7 +190,9 @@ def confirm_view(request):
     )
     if status_code == 200:
         routing.dispatch_confirm_in_background(
-            payload=payload, authorization_header=authorization_header
+            payload=payload,
+            authorization_header=authorization_header,
+            correlation_id=correlation_id_var.get(),
         )
     return JsonResponse(response_body, status=status_code)
 
@@ -277,7 +280,9 @@ def cancel_view(request):
     )
     if status_code == 200:
         routing.dispatch_cancel_in_background(
-            payload=payload, authorization_header=authorization_header
+            payload=payload,
+            authorization_header=authorization_header,
+            correlation_id=correlation_id_var.get(),
         )
     return JsonResponse(response_body, status=status_code)
 
@@ -321,7 +326,9 @@ def update_view(request):
     )
     if status_code == 200:
         routing.dispatch_update_in_background(
-            payload=payload, authorization_header=authorization_header
+            payload=payload,
+            authorization_header=authorization_header,
+            correlation_id=correlation_id_var.get(),
         )
     return JsonResponse(response_body, status=status_code)
 

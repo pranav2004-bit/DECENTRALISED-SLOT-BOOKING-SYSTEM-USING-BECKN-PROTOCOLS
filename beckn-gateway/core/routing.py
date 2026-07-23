@@ -24,6 +24,7 @@ from beckn_transaction import (
     validate_context,
 )
 from django.conf import settings
+from django_observability.context import correlation_id_var
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
@@ -647,7 +648,9 @@ def validate_and_ack_on_confirm(
     return build_ack_response(context=context), 200
 
 
-def dispatch_confirm(*, payload: dict, authorization_header: str) -> None:
+def dispatch_confirm(
+    *, payload: dict, authorization_header: str, correlation_id: str | None = None
+) -> None:
     """Forwards a customer's confirmation to the ONE specific BPP already chosen at
     Selection — same targeted-forward pattern as dispatch_init, not a broadcast.
 
@@ -689,6 +692,9 @@ def dispatch_confirm(*, payload: dict, authorization_header: str) -> None:
         "Content-Type": "application/json",
         "Authorization": authorization_header,
         "X-Gateway-Authorization": gateway_signature,
+        # §3.10: forwarded on so BPP's own CorrelationIdMiddleware picks up the same
+        # id BAP originally minted, instead of starting a fresh, disconnected one.
+        "X-Correlation-Id": correlation_id or "",
     }
     try:
         client = registry_client.get_participant_client(bpp_id)
@@ -698,12 +704,18 @@ def dispatch_confirm(*, payload: dict, authorization_header: str) -> None:
         logger.exception("dispatch_confirm: forwarding to %s failed", bpp_confirm_url)
 
 
-def dispatch_confirm_in_background(*, payload: dict, authorization_header: str) -> None:
+def dispatch_confirm_in_background(
+    *, payload: dict, authorization_header: str, correlation_id: str | None = None
+) -> None:
     """Fires dispatch_confirm on a daemon thread — same fire-and-forget entry point
     pattern as dispatch_init_in_background."""
     thread = threading.Thread(
         target=dispatch_confirm,
-        kwargs={"payload": payload, "authorization_header": authorization_header},
+        kwargs={
+            "payload": payload,
+            "authorization_header": authorization_header,
+            "correlation_id": correlation_id,
+        },
         daemon=True,
     )
     thread.start()
@@ -982,7 +994,9 @@ def validate_and_ack_on_cancel(
     return build_ack_response(context=context), 200
 
 
-def dispatch_cancel(*, payload: dict, authorization_header: str) -> None:
+def dispatch_cancel(
+    *, payload: dict, authorization_header: str, correlation_id: str | None = None
+) -> None:
     """Forwards a customer's cancellation to the ONE specific BPP already
     chosen at Selection — same targeted-forward pattern as dispatch_confirm.
 
@@ -1023,6 +1037,7 @@ def dispatch_cancel(*, payload: dict, authorization_header: str) -> None:
         "Content-Type": "application/json",
         "Authorization": authorization_header,
         "X-Gateway-Authorization": gateway_signature,
+        "X-Correlation-Id": correlation_id or "",
     }
     try:
         client = registry_client.get_participant_client(bpp_id)
@@ -1032,12 +1047,18 @@ def dispatch_cancel(*, payload: dict, authorization_header: str) -> None:
         logger.exception("dispatch_cancel: forwarding to %s failed", bpp_cancel_url)
 
 
-def dispatch_cancel_in_background(*, payload: dict, authorization_header: str) -> None:
+def dispatch_cancel_in_background(
+    *, payload: dict, authorization_header: str, correlation_id: str | None = None
+) -> None:
     """Fires dispatch_cancel on a daemon thread — same fire-and-forget entry
     point pattern as dispatch_confirm_in_background."""
     thread = threading.Thread(
         target=dispatch_cancel,
-        kwargs={"payload": payload, "authorization_header": authorization_header},
+        kwargs={
+            "payload": payload,
+            "authorization_header": authorization_header,
+            "correlation_id": correlation_id,
+        },
         daemon=True,
     )
     thread.start()
@@ -1149,7 +1170,9 @@ def validate_and_ack_on_update(
     return build_ack_response(context=context), 200
 
 
-def dispatch_update(*, payload: dict, authorization_header: str) -> None:
+def dispatch_update(
+    *, payload: dict, authorization_header: str, correlation_id: str | None = None
+) -> None:
     """Forwards a customer's reschedule request to the ONE specific BPP already
     chosen at Selection — same targeted-forward pattern as dispatch_confirm.
 
@@ -1190,6 +1213,7 @@ def dispatch_update(*, payload: dict, authorization_header: str) -> None:
         "Content-Type": "application/json",
         "Authorization": authorization_header,
         "X-Gateway-Authorization": gateway_signature,
+        "X-Correlation-Id": correlation_id or "",
     }
     try:
         client = registry_client.get_participant_client(bpp_id)
@@ -1199,12 +1223,18 @@ def dispatch_update(*, payload: dict, authorization_header: str) -> None:
         logger.exception("dispatch_update: forwarding to %s failed", bpp_update_url)
 
 
-def dispatch_update_in_background(*, payload: dict, authorization_header: str) -> None:
+def dispatch_update_in_background(
+    *, payload: dict, authorization_header: str, correlation_id: str | None = None
+) -> None:
     """Fires dispatch_update on a daemon thread — same fire-and-forget entry
     point pattern as dispatch_confirm_in_background."""
     thread = threading.Thread(
         target=dispatch_update,
-        kwargs={"payload": payload, "authorization_header": authorization_header},
+        kwargs={
+            "payload": payload,
+            "authorization_header": authorization_header,
+            "correlation_id": correlation_id,
+        },
         daemon=True,
     )
     thread.start()

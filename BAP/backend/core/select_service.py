@@ -24,6 +24,7 @@ from django.utils import timezone
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
+from .metrics import record_select_succeeded
 from .models import SearchSession
 from .participant_keys import get_signing_keys
 from .session_authz import SessionAccessError, resolve_owned_session
@@ -239,6 +240,7 @@ def record_on_select_result(*, payload: dict) -> None:
         # unique across different BPPs.
         session.selected_bpp_id = context.get("bpp_id", "")
         session.selected_bpp_uri = context.get("bpp_uri", "")
+        record_select_succeeded()
     session.save(
         update_fields=[
             "selected_order",

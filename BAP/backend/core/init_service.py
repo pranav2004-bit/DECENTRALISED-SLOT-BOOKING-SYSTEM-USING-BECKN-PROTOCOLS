@@ -24,6 +24,7 @@ from django.utils import timezone
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
+from .metrics import record_init_succeeded
 from .models import SearchSession
 from .participant_keys import get_signing_keys
 from .session_authz import SessionAccessError, resolve_owned_session
@@ -186,4 +187,5 @@ def record_on_init_result(*, payload: dict) -> None:
     else:
         session.init_order = payload["message"]["order"]
         session.init_error = None
+        record_init_succeeded()
     session.save(update_fields=["init_order", "init_error", "updated_at"])

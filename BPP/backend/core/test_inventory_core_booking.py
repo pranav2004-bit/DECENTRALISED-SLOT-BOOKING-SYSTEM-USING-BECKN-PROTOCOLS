@@ -16,7 +16,7 @@ import redis
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.utils import timezone
-from inventory_core.models import Booking, Resource, Slot
+from inventory_core.models import Booking, BookingAuditLogEntry, Resource, Slot
 from inventory_core.reservation import (
     ReservationHold,
     cancel_booking,
@@ -396,3 +396,99 @@ def test_reschedule_active_booking_rejects_the_same_slot(resource, redis_client)
 
     with pytest.raises(ValidationError):
         reschedule_active_booking(booking.id, slot.id)
+
+
+# --- BookingAuditLogEntry + correlation_id (livetracker2.md §3.10) -----------------------------
+
+
+@pytest.mark.django_db
+def test_confirm_hold_records_a_real_audit_log_entry_with_correlation_id(resource, redis_client):
+    slot = _make_slot(resource, capacity=1)
+    booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30)
+
+    fake_bus = type("FakeBus", (), {"publish": lambda self, *a, **kw: None})()
+    confirm_hold(
+        booking.id, redis_client=redis_client, event_bus=fake_bus, correlation_id="corr-abc-123"
+    )
+
+    entry = BookingAuditLogEntry.objects.get(booking_id_text=str(booking.id))
+    assert entry.event_type == "BookingConfirmed"
+    assert entry.correlation_id == "corr-abc-123"
+    assert entry.booking_id == booking.id
+
+
+@pytest.mark.django_db
+def test_confirm_hold_without_an_event_bus_records_no_audit_entry(resource, redis_client):
+    """`event_bus=None` (the default) means "no business-event observability wired
+    for this call" — both the event publish and the audit-log write are gated on
+    the same flag, not two independent ones (see reservation.py's own docstring)."""
+    slot = _make_slot(resource, capacity=1)
+    booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30)
+
+    confirm_hold(booking.id, redis_client=redis_client)
+
+    assert not BookingAuditLogEntry.objects.filter(booking_id_text=str(booking.id)).exists()
+
+
+@pytest.mark.django_db
+def test_cancel_booking_records_a_real_audit_log_entry(resource, redis_client):
+    slot = _make_slot(resource, capacity=1)
+    booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30)
+    confirm_hold(booking.id, redis_client=redis_client)
+
+    fake_bus = type("FakeBus", (), {"publish": lambda self, *a, **kw: None})()
+    cancel_booking(booking.id, event_bus=fake_bus, correlation_id="corr-cancel-1")
+
+    entry = BookingAuditLogEntry.objects.get(
+        booking_id_text=str(booking.id), event_type="BookingCancelled"
+    )
+    assert entry.correlation_id == "corr-cancel-1"
+    assert entry.detail["reason"] == "customer_cancel"
+
+
+@pytest.mark.django_db
+def test_reschedule_active_booking_records_a_real_audit_log_entry(resource, redis_client):
+    old_slot = _make_slot(resource, capacity=1)
+    new_slot = Slot.objects.create(
+        resource=resource,
+        start_time=old_slot.start_time + dt.timedelta(hours=1),
+        end_time=old_slot.end_time + dt.timedelta(hours=1),
+        capacity_total=1,
+        capacity_remaining=1,
+    )
+    booking = hold_slot(
+        old_slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30
+    )
+    confirm_hold(booking.id, redis_client=redis_client)
+
+    fake_bus = type("FakeBus", (), {"publish": lambda self, *a, **kw: None})()
+    reschedule_active_booking(
+        booking.id, new_slot.id, event_bus=fake_bus, correlation_id="corr-update-1"
+    )
+
+    entry = BookingAuditLogEntry.objects.get(
+        booking_id_text=str(booking.id), event_type="BookingRescheduled"
+    )
+    assert entry.correlation_id == "corr-update-1"
+    assert entry.detail["new_slot_id"] == str(new_slot.id)
+
+
+@pytest.mark.django_db
+def test_release_expired_hold_records_an_audit_entry_with_no_correlation_id(
+    resource, redis_client
+):
+    """Opportunistic expiry (§1.3) has no single customer action to honestly
+    attribute a correlation id to — `correlation_id` stays `None` by design, not
+    an oversight (see release_expired_hold's own docstring)."""
+    slot = _make_slot(resource, capacity=1)
+    booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=1)
+    time_module.sleep(1.5)
+
+    fake_bus = type("FakeBus", (), {"publish": lambda self, *a, **kw: None})()
+    released = release_expired_hold(booking.id, redis_client=redis_client, event_bus=fake_bus)
+
+    assert released is True
+    entry = BookingAuditLogEntry.objects.get(booking_id_text=str(booking.id))
+    assert entry.event_type == "BookingCancelled"
+    assert entry.correlation_id is None
+    assert entry.detail["reason"] == "hold_expired"

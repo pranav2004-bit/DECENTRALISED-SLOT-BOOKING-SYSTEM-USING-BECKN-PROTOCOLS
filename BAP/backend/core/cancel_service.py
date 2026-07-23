@@ -23,6 +23,7 @@ from beckn_transaction import (
 )
 from django.conf import settings
 from django.utils import timezone
+from django_observability.context import correlation_id_var
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
@@ -97,7 +98,11 @@ def trigger_cancel(
         response = registry_client.get_gateway_client().post(
             gateway_cancel_url,
             data=body,
-            headers={"Content-Type": "application/json", "Authorization": auth_header},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": auth_header,
+                "X-Correlation-Id": correlation_id_var.get() or "",
+            },
         )
         response.raise_for_status()
     except Exception as exc:

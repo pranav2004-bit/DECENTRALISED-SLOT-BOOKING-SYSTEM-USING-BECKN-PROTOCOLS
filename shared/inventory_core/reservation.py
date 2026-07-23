@@ -23,6 +23,7 @@ of this module already does on the hot path.
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
+from .audit import log_booking_audit_event
 from .events import BookingEvent, SlotEvent, publish_event
 from .models import Booking, Slot
 
@@ -112,7 +113,7 @@ def _restore_capacity(slot: Slot, quantity: int) -> None:
     slot.save(update_fields=["capacity_remaining", "status", "updated_at"])
 
 
-def release_expired_hold(booking_id, *, redis_client, event_bus=None) -> bool:
+def release_expired_hold(booking_id, *, redis_client, event_bus=None, correlation_id=None) -> bool:
     """If `booking_id`'s Redis TTL hold has expired (or was never active) and the `Booking` is
     still `HELD`, atomically cancels the `Booking` and restores the `Slot`'s held capacity —
     the "HELD slot with an expired TTL auto-returns to AVAILABLE" behavior §1.3's Test Gate asks
@@ -120,7 +121,12 @@ def release_expired_hold(booking_id, *, redis_client, event_bus=None) -> bool:
     booking was already resolved (never raises for either ordinary outcome).
 
     `event_bus` is optional (`None` by default) — pass a real `EventBus` to also publish
-    `SlotEvent.RELEASED` + `BookingEvent.CANCELLED` (§1.4) when a release actually happens.
+    `SlotEvent.RELEASED` + `BookingEvent.CANCELLED` (§1.4) when a release actually happens, and
+    to record a `BookingAuditLogEntry` (§3.10) alongside it — both are real business-event
+    observability, gated on the same flag rather than adding a second one. `correlation_id` is
+    genuinely optional here (default `None`): this release is opportunistic, detected as a side
+    effect of some *other*, unrelated request touching this slot (§1.3's own docstring), so there
+    is no single customer action whose id would honestly describe it.
     """
     try:
         booking = Booking.objects.select_related("slot").get(pk=booking_id)
@@ -141,11 +147,18 @@ def release_expired_hold(booking_id, *, redis_client, event_bus=None) -> bool:
     if event_bus is not None:
         publish_event(event_bus, SlotEvent.RELEASED, slot_id=str(booking.slot_id))
         publish_event(event_bus, BookingEvent.CANCELLED, booking_id=str(booking_id))
+        log_booking_audit_event(
+            booking=booking,
+            booking_id=str(booking_id),
+            event_type=BookingEvent.CANCELLED,
+            detail={"reason": "hold_expired", "slot_id": str(booking.slot_id)},
+            correlation_id=correlation_id,
+        )
 
     return True
 
 
-def release_hold_now(booking_id, *, redis_client, event_bus=None) -> bool:
+def release_hold_now(booking_id, *, redis_client, event_bus=None, correlation_id=None) -> bool:
     """Releases a `HELD` booking immediately, regardless of whether its Redis TTL has
     actually expired yet — the deliberate counterpart to `release_expired_hold`, which
     only acts once the TTL is already gone. Needed for §3.2's real re-selection case: a
@@ -174,11 +187,18 @@ def release_hold_now(booking_id, *, redis_client, event_bus=None) -> bool:
     if event_bus is not None:
         publish_event(event_bus, SlotEvent.RELEASED, slot_id=str(booking.slot_id))
         publish_event(event_bus, BookingEvent.CANCELLED, booking_id=str(booking_id))
+        log_booking_audit_event(
+            booking=booking,
+            booking_id=str(booking_id),
+            event_type=BookingEvent.CANCELLED,
+            detail={"reason": "superseded_by_reselect", "slot_id": str(booking.slot_id)},
+            correlation_id=correlation_id,
+        )
 
     return True
 
 
-def confirm_hold(booking_id, *, redis_client, event_bus=None) -> Booking:
+def confirm_hold(booking_id, *, redis_client, event_bus=None, correlation_id=None) -> Booking:
     """Transitions a `HELD` booking to `ACTIVE` (the real confirm business-flow itself is
     Phase 3's job — this is just the state-machine + Redis-cleanup half of it) and clears its
     Redis TTL key, since an `ACTIVE` booking is no longer time-limited. Raises `ValidationError`
@@ -199,7 +219,11 @@ def confirm_hold(booking_id, *, redis_client, event_bus=None) -> Booking:
     the already-`ACTIVE` state and returns without re-transitioning or re-publishing.
 
     `event_bus` is optional (`None` by default) — pass a real `EventBus` to also publish
-    `SlotEvent.CONFIRMED` + `BookingEvent.CONFIRMED` (§1.4) on a genuine (non-idempotent) success.
+    `SlotEvent.CONFIRMED` + `BookingEvent.CONFIRMED` (§1.4) on a genuine (non-idempotent) success,
+    and to record a `BookingAuditLogEntry` (§3.10) alongside it. `correlation_id` (§3.10) is the
+    real `X-Correlation-Id` of the customer's `/confirm` action that reached this call — the
+    caller (BPP's `dispatch_on_confirm`) is responsible for capturing it before spawning its
+    background-dispatch thread, since a `ContextVar` doesn't cross a manually-created thread.
     """
     with transaction.atomic():
         booking = Booking.objects.select_for_update().get(pk=booking_id)
@@ -215,11 +239,18 @@ def confirm_hold(booking_id, *, redis_client, event_bus=None) -> Booking:
     if event_bus is not None:
         publish_event(event_bus, SlotEvent.CONFIRMED, slot_id=str(booking.slot_id))
         publish_event(event_bus, BookingEvent.CONFIRMED, booking_id=str(booking_id))
+        log_booking_audit_event(
+            booking=booking,
+            booking_id=str(booking_id),
+            event_type=BookingEvent.CONFIRMED,
+            detail={"slot_id": str(booking.slot_id)},
+            correlation_id=correlation_id,
+        )
 
     return booking
 
 
-def cancel_booking(booking_id, *, event_bus=None) -> Booking:
+def cancel_booking(booking_id, *, event_bus=None, correlation_id=None) -> Booking:
     """Cancels an already-`ACTIVE` (confirmed) booking (livetracker2.md §3.5) — a
     real `/cancel`, distinct from `release_hold_now`'s pre-order `HELD` release: a
     still-`HELD` hold was never actually offered to the customer as a confirmed,
@@ -230,6 +261,9 @@ def cancel_booking(booking_id, *, event_bus=None) -> Booking:
     Race-safe by the same `select_for_update()` discipline as `confirm_hold`
     (§3.4) — two concurrent cancel attempts on the same booking can't both pass
     the "is this ACTIVE" check and each fire a duplicate `BookingCancelled`.
+
+    `correlation_id` (§3.10): the real `X-Correlation-Id` of the customer's
+    `/cancel` action, threaded through the same way as `confirm_hold`'s.
     """
     with transaction.atomic():
         booking = Booking.objects.select_for_update().get(pk=booking_id)
@@ -245,11 +279,20 @@ def cancel_booking(booking_id, *, event_bus=None) -> Booking:
     if event_bus is not None:
         publish_event(event_bus, SlotEvent.RELEASED, slot_id=str(booking.slot_id))
         publish_event(event_bus, BookingEvent.CANCELLED, booking_id=str(booking_id))
+        log_booking_audit_event(
+            booking=booking,
+            booking_id=str(booking_id),
+            event_type=BookingEvent.CANCELLED,
+            detail={"reason": "customer_cancel", "slot_id": str(booking.slot_id)},
+            correlation_id=correlation_id,
+        )
 
     return booking
 
 
-def reschedule_active_booking(booking_id, new_slot_id, *, event_bus=None) -> Booking:
+def reschedule_active_booking(
+    booking_id, new_slot_id, *, event_bus=None, correlation_id=None
+) -> Booking:
     """Moves an already-`ACTIVE` booking from its current `Slot` to a different
     one on the same `Resource` (livetracker2.md §3.5's `/update` reschedule),
     atomically: claims capacity on the new slot (raising cleanly if unavailable),
@@ -299,6 +342,13 @@ def reschedule_active_booking(booking_id, new_slot_id, *, event_bus=None) -> Boo
         publish_event(event_bus, SlotEvent.RELEASED, slot_id=str(old_slot_id))
         publish_event(event_bus, SlotEvent.RESCHEDULED, slot_id=str(new_slot_id))
         publish_event(event_bus, BookingEvent.RESCHEDULED, booking_id=str(booking_id))
+        log_booking_audit_event(
+            booking=booking,
+            booking_id=str(booking_id),
+            event_type=BookingEvent.RESCHEDULED,
+            detail={"old_slot_id": str(old_slot_id), "new_slot_id": str(new_slot_id)},
+            correlation_id=correlation_id,
+        )
 
     booking.refresh_from_db()
     return booking

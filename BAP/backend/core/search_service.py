@@ -23,6 +23,7 @@ from django.utils import timezone
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
+from .metrics import record_search_triggered
 from .models import SearchSession
 from .participant_keys import get_signing_keys
 from .session_authz import SessionAccessError, resolve_owned_session
@@ -86,6 +87,8 @@ def trigger_search(*, query: str, domain: str, customer=None, client_ip: str | N
     ack_status = response.json().get("message", {}).get("ack", {}).get("status")
     if ack_status != "ACK":
         raise SearchError("Gateway rejected the search request (NACK)", status_code=502)
+
+    record_search_triggered()
 
     SearchSession.objects.create(
         transaction_id=transaction_id,

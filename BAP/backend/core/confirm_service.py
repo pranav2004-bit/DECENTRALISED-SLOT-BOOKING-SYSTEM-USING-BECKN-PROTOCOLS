@@ -21,9 +21,11 @@ from beckn_transaction import (
 )
 from django.conf import settings
 from django.utils import timezone
+from django_observability.context import correlation_id_var
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
+from .metrics import record_confirm_succeeded
 from .models import SearchSession
 from .participant_keys import get_signing_keys
 from .session_authz import SessionAccessError, resolve_owned_session
@@ -100,7 +102,13 @@ def trigger_confirm(*, transaction_id: str, customer=None) -> None:
         response = registry_client.get_gateway_client().post(
             gateway_confirm_url,
             data=body,
-            headers={"Content-Type": "application/json", "Authorization": auth_header},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": auth_header,
+                # §3.10: forwarded so Gateway/BPP's own CorrelationIdMiddleware picks up
+                # this same id on the next hop instead of minting an unrelated one.
+                "X-Correlation-Id": correlation_id_var.get() or "",
+            },
         )
         response.raise_for_status()
     except Exception as exc:
@@ -188,4 +196,5 @@ def record_on_confirm_result(*, payload: dict) -> None:
     else:
         session.confirmed_order = payload["message"]["order"]
         session.confirmed_error = None
+        record_confirm_succeeded()
     session.save(update_fields=["confirmed_order", "confirmed_error", "updated_at"])

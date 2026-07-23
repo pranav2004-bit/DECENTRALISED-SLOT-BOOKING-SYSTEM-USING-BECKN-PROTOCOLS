@@ -292,6 +292,36 @@ class Booking(models.Model):
         self.save(update_fields=["fulfillment_status", "updated_at"])
 
 
+class BookingAuditLogEntry(models.Model):
+    """Append-only audit trail of booking-lifecycle events (livetracker2.md §3.10),
+    mirroring Registry's own `AuditLogEntry` (`registry/core/models.py`) field-for-field
+    — same pattern reused, not reinvented. Never updated or deleted after creation,
+    enforced by convention (no update/delete call sites) and by admin readonly config.
+
+    Lives here, in `inventory_core`, not in BPP's own `core/models.py`: `Booking` is
+    already a domain-agnostic `inventory_core` concept shared across future
+    Healthcare/Automotive domains, not Beauty-specific, so its audit trail belongs
+    alongside it, consistent with every other `inventory_core` model.
+    """
+
+    booking = models.ForeignKey(
+        Booking, on_delete=models.SET_NULL, null=True, related_name="audit_entries"
+    )
+    booking_id_text = models.CharField(
+        max_length=64, db_index=True
+    )  # kept even if booking is deleted
+    event_type = models.CharField(max_length=50)
+    detail = models.JSONField(default=dict, blank=True)
+    correlation_id = models.CharField(max_length=64, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.created_at} {self.booking_id_text} {self.event_type}"
+
+
 class AvailabilityCalendar(models.Model):
     """A recurring schedule + exceptions/holidays that generates real `Slot` rows for a
     `Resource`. Field shapes are the confirmed real `Time`/`Schedule` schemas

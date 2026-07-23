@@ -31,6 +31,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from django_observability.context import correlation_id_var
 from inventory_core.models import Booking, Slot
 from inventory_core.reservation import reschedule_active_booking
 
@@ -126,14 +127,17 @@ def _on_update_context(*, request_context: dict) -> dict:
     )
 
 
-def dispatch_on_update(*, payload: dict) -> None:
+def dispatch_on_update(*, payload: dict, correlation_id: str | None = None) -> None:
     """Resolves the real Booking referenced by `fulfillments[0].id`, verifies
     it's held by *this* transaction, resolves the newly-requested time to a real
     `Slot` on the SAME resource (Source-of-Truth rule, same principle §3.2
     established), and delegates the actual slot move to
     `reschedule_active_booking()`. Sends the resulting /on_update (a real
     rescheduled Order, or a real error) to Gateway. Fire-and-forget: failures
-    are logged, not raised."""
+    are logged, not raised.
+
+    `correlation_id` (§3.10): same explicit-threading pattern as
+    `confirm_service.dispatch_on_confirm`."""
     context = payload["context"]
     order = payload["message"]["order"]
     booking_id = _extract_booking_id(order)
@@ -170,7 +174,10 @@ def dispatch_on_update(*, payload: dict) -> None:
             else:
                 try:
                     rescheduled_booking = reschedule_active_booking(
-                        booking.id, new_slot.id, event_bus=get_event_bus()
+                        booking.id,
+                        new_slot.id,
+                        event_bus=get_event_bus(),
+                        correlation_id=correlation_id,
                     )
                 except ValidationError:
                     error = {
@@ -228,8 +235,15 @@ def dispatch_on_update(*, payload: dict) -> None:
 def dispatch_on_update_in_background(*, payload: dict) -> None:
     """Fires dispatch_on_update on a daemon thread — the actual fire-and-forget
     entry point the view uses. Kept separate so tests can call dispatch_on_update
-    directly and synchronously without racing a thread."""
+    directly and synchronously without racing a thread.
+
+    Captures `correlation_id_var` here, in the real request-handling thread,
+    before spawning the background thread (§3.10) — same pattern as
+    `confirm_service.dispatch_on_confirm_in_background`."""
+    correlation_id = correlation_id_var.get()
     thread = threading.Thread(
-        target=dispatch_on_update, kwargs={"payload": payload}, daemon=True
+        target=dispatch_on_update,
+        kwargs={"payload": payload, "correlation_id": correlation_id},
+        daemon=True,
     )
     thread.start()

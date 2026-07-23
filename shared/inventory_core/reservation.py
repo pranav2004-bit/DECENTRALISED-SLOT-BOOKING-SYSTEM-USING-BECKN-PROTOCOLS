@@ -16,8 +16,15 @@ keyspace-notification events. That would require enabling keyspace notifications
 perpetual listener process — real operational complexity this project doesn't have infrastructure
 for yet (no task queue/worker process exists in any of the four apps). The TTL key itself is the
 actual source of truth for "is this hold still active"; the DB-side reconciliation
-(`release_expired_hold`) just needs to run before the result is trusted, which every real caller
-of this module already does on the hot path.
+(`release_expired_hold`) needs to run before the result is trusted.
+
+**Correction (livetracker2.md §3.11):** the paragraph above describes the intended design, but
+until this phase `release_expired_hold()` had zero real callers anywhere (confirmed by grep) —
+`confirm_hold()` detected an expired hold and raised without ever releasing it, so a `HELD`
+reservation nobody re-touched leaked its slot capacity forever. `confirm_hold()` now actually
+calls `release_expired_hold()` on expiry detection, closing the on-touch loop this docstring
+always claimed existed. A genuinely-scheduled periodic sweep (`reconciliation.py`,
+`sweep_expired_holds()`) is the remaining safety net for holds nobody ever touches again.
 """
 
 from django.core.exceptions import ValidationError
@@ -127,19 +134,29 @@ def release_expired_hold(booking_id, *, redis_client, event_bus=None, correlatio
     genuinely optional here (default `None`): this release is opportunistic, detected as a side
     effect of some *other*, unrelated request touching this slot (§1.3's own docstring), so there
     is no single customer action whose id would honestly describe it.
+
+    Race-safe (§3.11): the status check and the release happen under one `select_for_update()`
+    on the `Booking` row, held for the whole function — not a plain unlocked read followed by a
+    separately-locked write. Needed once this function gained two real, genuinely concurrent
+    callers (the on-touch path in `confirm_hold` plus the new scheduled sweep,
+    `reconciliation.sweep_expired_holds`): without the lock, two callers racing to release the
+    *same* expired booking could both pass an unlocked "is this still HELD" check and both
+    restore capacity — a real double-credit, masked only by luck for a fully-held slot, not for
+    one with headroom below `capacity_total`. Was harmless before this phase (zero real callers
+    to race), not harmless now.
     """
-    try:
-        booking = Booking.objects.select_related("slot").get(pk=booking_id)
-    except Booking.DoesNotExist:
-        return False
-
-    if booking.status != Booking.Status.HELD:
-        return False
-
-    if ReservationHold(redis_client=redis_client).is_active(booking_id):
-        return False
-
     with transaction.atomic():
+        try:
+            booking = Booking.objects.select_for_update().select_related("slot").get(pk=booking_id)
+        except Booking.DoesNotExist:
+            return False
+
+        if booking.status != Booking.Status.HELD:
+            return False
+
+        if ReservationHold(redis_client=redis_client).is_active(booking_id):
+            return False
+
         booking.transition_status(Booking.Status.CANCELLED)
         with Slot.objects.lock_for_mutation(booking.slot_id) as slot:
             _restore_capacity(slot, booking.quantity)
@@ -168,16 +185,19 @@ def release_hold_now(booking_id, *, redis_client, event_bus=None, correlation_id
     `release_expired_hold`, minus the `is_active()` gate, plus an explicit
     `ReservationHold.clear()` so the now-stale Redis key doesn't linger either. Returns
     `True` if it performed a release, `False` if the booking wasn't `HELD` (never raises
-    for that ordinary outcome)."""
-    try:
-        booking = Booking.objects.select_related("slot").get(pk=booking_id)
-    except Booking.DoesNotExist:
-        return False
+    for that ordinary outcome).
 
-    if booking.status != Booking.Status.HELD:
-        return False
-
+    Race-safe (§3.11), same reasoning and pattern as `release_expired_hold`: the status
+    check and the release happen under one `select_for_update()` on the `Booking` row."""
     with transaction.atomic():
+        try:
+            booking = Booking.objects.select_for_update().select_related("slot").get(pk=booking_id)
+        except Booking.DoesNotExist:
+            return False
+
+        if booking.status != Booking.Status.HELD:
+            return False
+
         booking.transition_status(Booking.Status.CANCELLED)
         with Slot.objects.lock_for_mutation(booking.slot_id) as slot:
             _restore_capacity(slot, booking.quantity)
@@ -224,16 +244,30 @@ def confirm_hold(booking_id, *, redis_client, event_bus=None, correlation_id=Non
     real `X-Correlation-Id` of the customer's `/confirm` action that reached this call — the
     caller (BPP's `dispatch_on_confirm`) is responsible for capturing it before spawning its
     background-dispatch thread, since a `ContextVar` doesn't cross a manually-created thread.
+
+    §3.11: an expired hold now also actually releases the slot's capacity via
+    `release_expired_hold`, not just raises — closing the real leak an expired `HELD` booking
+    used to leave behind (confirmed live: previously nothing restored capacity on this path,
+    the slot stayed leaked until something else happened to call the same, then-uncalled-anywhere
+    function). Done as a separate call *after* this function's own `select_for_update()` block
+    commits, not nested inside it — nesting would put the release under this call's own
+    transaction, and this call's subsequent `raise` would roll the whole thing back, undoing the
+    just-performed release along with it.
     """
     with transaction.atomic():
         booking = Booking.objects.select_for_update().get(pk=booking_id)
         if booking.status == Booking.Status.ACTIVE:
             return booking
-        if not ReservationHold(redis_client=redis_client).is_active(booking_id):
-            raise ValidationError(
-                f"cannot confirm booking {booking_id}: its reservation hold has already expired."
-            )
-        booking.transition_status(Booking.Status.ACTIVE)
+        hold_is_active = ReservationHold(redis_client=redis_client).is_active(booking_id)
+        if hold_is_active:
+            booking.transition_status(Booking.Status.ACTIVE)
+    if not hold_is_active:
+        release_expired_hold(
+            booking_id, redis_client=redis_client, event_bus=event_bus, correlation_id=correlation_id
+        )
+        raise ValidationError(
+            f"cannot confirm booking {booking_id}: its reservation hold has already expired."
+        )
     ReservationHold(redis_client=redis_client).clear(booking_id)
 
     if event_bus is not None:

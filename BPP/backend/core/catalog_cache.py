@@ -47,3 +47,19 @@ def invalidate_beauty_catalog_cache() -> None:
     """Write-through invalidation — called at the exact two real mutation points
     (see module docstring), not on a schedule."""
     cache.delete(CACHE_KEY)
+
+
+def reconcile_beauty_catalog_cache() -> bool:
+    """Periodic reconciliation (livetracker2.md §3.11, corrected target — see the tracker's
+    own audit finding 4): rebuilds the catalog fresh from Postgres and compares it against
+    whatever is currently cached, overwriting the cache if they differ. Catches the case the
+    TTL is already a safety net for (some future mutation path added and forgetting to call
+    `invalidate_beauty_catalog_cache()`) but corrects it immediately instead of waiting up to
+    `CACHE_TTL_SECONDS`. Returns `True` if the cache was missing or drifted and got corrected,
+    `False` if it already matched (the ordinary, healthy case)."""
+    fresh = build_beauty_catalog()
+    cached = cache.get(CACHE_KEY)
+    if cached == fresh:
+        return False
+    cache.set(CACHE_KEY, fresh, timeout=CACHE_TTL_SECONDS)
+    return True

@@ -150,7 +150,14 @@ def test_publish_event_always_carries_a_version_field(bus):
 
 @pytest.mark.django_db
 def test_generate_slots_publishes_slot_created_events(resource, bus):
-    range_start = timezone.now()
+    # Anchored to midnight today, not `timezone.now()` directly: `generate_slots()`
+    # iterates by *calendar day* between `range_start.date()` and `range_end.date()`
+    # inclusive (by design — see its own docstring/EDGE-gate rationale), so
+    # `now() + 1 hour` genuinely spans two different calendar dates whenever the test
+    # happens to run within an hour of midnight, generating 2 slots instead of the 1
+    # this test expects — a real, reproducible flake this fix closes, not a change to
+    # generate_slots()'s own correct behavior.
+    range_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
     calendar = AvailabilityCalendar.objects.create(
         resource=resource,
         frequency=dt.timedelta(days=1),

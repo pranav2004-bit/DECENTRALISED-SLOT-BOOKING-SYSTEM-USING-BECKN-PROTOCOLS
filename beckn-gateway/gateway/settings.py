@@ -13,7 +13,10 @@ sys.path.insert(0, str(BASE_DIR.parent / "shared"))
 
 env = environ.Env(
     DJANGO_DEBUG=(bool, False),
-    CACHE_ENABLED=(bool, False),
+    # livetracker2.md §3.11: on by default — search now puts Gateway on continuous
+    # customer-facing traffic, so its Redis-backed circuit breaker needs to be active
+    # by default too, matching BAP/BPP's own unconditional Redis dependency.
+    CACHE_ENABLED=(bool, True),
 )
 env_file = BASE_DIR / ".env"
 if env_file.exists():
@@ -27,7 +30,7 @@ LOG_LEVEL = env("LOG_LEVEL", default="INFO")
 
 REGISTRY_BASE_URL = env("REGISTRY_BASE_URL")
 REGISTRY_LOOKUP_TIMEOUT_MS = env.int("REGISTRY_LOOKUP_TIMEOUT_MS", default=3000)
-CACHE_ENABLED = env.bool("CACHE_ENABLED", default=False)
+CACHE_ENABLED = env.bool("CACHE_ENABLED", default=True)
 # Only meaningful when CACHE_ENABLED — see core/registry_client.py for why the
 # Redis-backed circuit breaker fix is opt-in here but not for BAP/BPP.
 REDIS_URL = env("REDIS_URL", default="")

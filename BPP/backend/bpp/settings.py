@@ -27,6 +27,12 @@ REDIS_URL = env("REDIS_URL")
 # precision this stage doesn't have data to support).
 RESERVATION_HOLD_TTL_SECONDS = env.int("RESERVATION_HOLD_TTL_SECONDS", default=600)
 
+# livetracker2.md §3.11: how often the real background reconciliation loop (expired-hold
+# sweep + catalog-cache drift check, core/reconciliation.py) runs. 60s is a conventional
+# starting point for a correctness safety net, not a real-traffic-tuned value — same
+# honesty already applied to RESERVATION_HOLD_TTL_SECONDS above.
+RECONCILIATION_INTERVAL_SECONDS = env.int("RECONCILIATION_INTERVAL_SECONDS", default=60)
+
 DEBUG = env.bool("DJANGO_DEBUG", default=False)
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])

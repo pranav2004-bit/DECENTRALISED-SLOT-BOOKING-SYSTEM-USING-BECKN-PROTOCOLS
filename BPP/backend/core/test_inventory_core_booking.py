@@ -257,6 +257,28 @@ def test_confirm_hold_rejects_an_already_expired_hold(resource, redis_client):
 
 
 @pytest.mark.django_db
+def test_confirm_hold_on_an_expired_booking_actually_restores_slot_capacity(resource, redis_client):
+    """livetracker2.md §3.11 finding 1's real Test Gate: before this phase, a confirm attempt
+    against an expired hold raised without ever releasing it — the slot's capacity stayed
+    leaked at 0 forever, confirmed live by direct code read (release_expired_hold had zero
+    production callers). confirm_hold now actually recovers the capacity on this exact path,
+    not just on some future unrelated release call."""
+    slot = _make_slot(resource, capacity=1)
+    booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=1)
+
+    time_module.sleep(1.5)
+
+    with pytest.raises(ValidationError):
+        confirm_hold(booking.id, redis_client=redis_client)
+
+    slot.refresh_from_db()
+    assert slot.status == Slot.Status.AVAILABLE
+    assert slot.capacity_remaining == slot.capacity_total
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.CANCELLED
+
+
+@pytest.mark.django_db
 def test_confirm_hold_is_idempotent_for_an_already_active_booking(resource, redis_client):
     """livetracker2.md §3.4's real gap, closed before implementing Confirm: retrying the
     identical confirm request against an already-ACTIVE booking must not raise and must not
@@ -491,4 +513,63 @@ def test_release_expired_hold_records_an_audit_entry_with_no_correlation_id(
     entry = BookingAuditLogEntry.objects.get(booking_id_text=str(booking.id))
     assert entry.event_type == "BookingCancelled"
     assert entry.correlation_id is None
+    assert entry.detail["reason"] == "hold_expired"
+
+
+# --- sweep_expired_holds (livetracker2.md §3.11) --------------------------------------------
+
+
+@pytest.mark.django_db
+def test_sweep_expired_holds_releases_only_the_ones_that_actually_expired(resource, redis_client):
+    """The real safety net for a hold nobody ever touches again — the customer just closes
+    the tab, so nothing else would ever call release_expired_hold for it. A still-active hold
+    in the same sweep must be left alone."""
+    slot_expired = _make_slot(resource, capacity=1)
+    slot_active = _make_slot(resource, capacity=1)
+    expired_booking = hold_slot(
+        slot_expired.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=1
+    )
+    active_booking = hold_slot(
+        slot_active.id, holder_ref="cust-2", redis_client=redis_client, ttl_seconds=30
+    )
+    time_module.sleep(1.5)
+
+    from inventory_core.reconciliation import sweep_expired_holds
+
+    released_count = sweep_expired_holds(redis_client=redis_client)
+
+    assert released_count == 1
+    expired_booking.refresh_from_db()
+    assert expired_booking.status == Booking.Status.CANCELLED
+    slot_expired.refresh_from_db()
+    assert slot_expired.capacity_remaining == 1
+    active_booking.refresh_from_db()
+    assert active_booking.status == Booking.Status.HELD
+    slot_active.refresh_from_db()
+    assert slot_active.capacity_remaining == 0
+
+
+@pytest.mark.django_db
+def test_sweep_expired_holds_returns_zero_when_nothing_is_held(resource, redis_client):
+    from inventory_core.reconciliation import sweep_expired_holds
+
+    assert sweep_expired_holds(redis_client=redis_client) == 0
+
+
+@pytest.mark.django_db
+def test_sweep_expired_holds_publishes_real_events_when_given_an_event_bus(resource, redis_client):
+    slot = _make_slot(resource, capacity=1)
+    booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=1)
+    time_module.sleep(1.5)
+
+    published = []
+    fake_bus = type("FakeBus", (), {"publish": lambda self, *a, **kw: published.append(a)})()
+
+    from inventory_core.reconciliation import sweep_expired_holds
+
+    released_count = sweep_expired_holds(redis_client=redis_client, event_bus=fake_bus)
+
+    assert released_count == 1
+    assert len(published) == 2  # SlotReleased + BookingCancelled
+    entry = BookingAuditLogEntry.objects.get(booking_id_text=str(booking.id))
     assert entry.detail["reason"] == "hold_expired"

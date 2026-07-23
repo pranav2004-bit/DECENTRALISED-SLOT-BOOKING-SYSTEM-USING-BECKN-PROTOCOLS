@@ -20,6 +20,7 @@ from core.catalog_cache import (
     CACHE_KEY,
     get_cached_beauty_catalog,
     invalidate_beauty_catalog_cache,
+    reconcile_beauty_catalog_cache,
 )
 
 BusinessAccount = get_user_model()
@@ -155,6 +156,43 @@ def _seed_realistic_catalog(*, business_count=40, resources_per_business=3):
             for j in range(resources_per_business)
         ]
     )
+
+
+@pytest.mark.django_db
+def test_reconcile_corrects_a_cache_entry_deliberately_corrupted_out_of_band():
+    """livetracker2.md §3.11's exact Test Gate wording: deliberately corrupt a cache entry
+    out-of-band, confirm the (here, directly-invoked) reconciliation run detects and corrects
+    it — real drift the write-through invalidation triggers never see, e.g. a future mutation
+    path that forgets to call `invalidate_beauty_catalog_cache()`."""
+    _business_with_resource()
+    get_cached_beauty_catalog()
+    cache.set(CACHE_KEY, {"providers": [{"this": "is deliberately corrupted, out-of-band"}]})
+
+    corrected = reconcile_beauty_catalog_cache()
+
+    assert corrected is True
+    assert cache.get(CACHE_KEY) == build_beauty_catalog()
+
+
+@pytest.mark.django_db
+def test_reconcile_is_a_noop_when_the_cache_already_matches_reality():
+    _business_with_resource()
+    get_cached_beauty_catalog()
+
+    corrected = reconcile_beauty_catalog_cache()
+
+    assert corrected is False
+
+
+@pytest.mark.django_db
+def test_reconcile_populates_a_missing_cache_entry_too():
+    _business_with_resource()
+    assert cache.get(CACHE_KEY) is None
+
+    corrected = reconcile_beauty_catalog_cache()
+
+    assert corrected is True
+    assert cache.get(CACHE_KEY) == build_beauty_catalog()
 
 
 @pytest.mark.django_db

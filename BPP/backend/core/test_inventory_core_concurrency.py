@@ -14,6 +14,7 @@ committing Postgres connection, per the tracker's own "not a theoretical claim" 
 
 import datetime as dt
 import threading
+import time as time_module
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -24,7 +25,12 @@ from django.db import IntegrityError, connection, transaction
 from django.db.transaction import TransactionManagementError
 from django.utils import timezone
 from inventory_core.models import Booking, Resource, Slot
-from inventory_core.reservation import confirm_hold, hold_slot, reschedule_active_booking
+from inventory_core.reservation import (
+    confirm_hold,
+    hold_slot,
+    release_expired_hold,
+    reschedule_active_booking,
+)
 
 
 @pytest.fixture
@@ -154,6 +160,66 @@ def test_concurrent_confirm_on_the_same_booking_fires_exactly_one_event(django_d
     booking.refresh_from_db()
     assert booking.status == Booking.Status.ACTIVE
     # SlotConfirmed + BookingConfirmed, published exactly once each — never once per thread.
+    assert len(published) == 2
+
+
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_release_expired_hold_on_the_same_booking_does_not_double_credit_capacity(
+    django_db_blocker,
+):
+    """livetracker2.md §3.11 finding 2's real Test Gate: `release_expired_hold()` gained two
+    genuine concurrent callers this phase (`confirm_hold`'s on-touch path + the new scheduled
+    sweep) — a real double-submit race on the SAME expired booking must restore capacity
+    exactly once, not once per racing caller. Uses a slot with real headroom below
+    `capacity_total` (3 total, 1 held, so 2 already free) — the old unlocked-status-check bug
+    would have double-credited here (ending above the real total), a case the previous
+    `_restore_capacity` clamp only accidentally masked for a fully-held (capacity_total=1)
+    slot, not this one."""
+    with django_db_blocker.unblock():
+        resource = Resource.objects.create(owner_ref="biz-1", name="Stylist A")
+        slot = _make_slot(resource, capacity=3)
+        redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=1)
+
+    time_module.sleep(1.5)
+
+    published = []
+    publish_lock = threading.Lock()
+
+    class FakeBus:
+        def publish(self, *args, **kwargs):
+            with publish_lock:
+                published.append(args)
+
+    fake_bus = FakeBus()
+    n_attempts = 8
+    results: list[bool] = []
+    errors: list[Exception] = []
+
+    def attempt():
+        try:
+            results.append(
+                release_expired_hold(booking.id, redis_client=redis_client, event_bus=fake_bus)
+            )
+        except Exception as exc:  # noqa: BLE001 - captured for assertion, not swallowed
+            errors.append(exc)
+        finally:
+            connection.close()
+
+    with ThreadPoolExecutor(max_workers=n_attempts) as executor:
+        futures = [executor.submit(attempt) for _ in range(n_attempts)]
+        for future in futures:
+            future.result()
+
+    assert errors == []
+    assert results.count(True) == 1
+    assert results.count(False) == n_attempts - 1
+
+    slot.refresh_from_db()
+    assert slot.capacity_remaining == 3
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.CANCELLED
+    # SlotReleased + BookingCancelled, published exactly once each — never once per thread.
     assert len(published) == 2
 
 

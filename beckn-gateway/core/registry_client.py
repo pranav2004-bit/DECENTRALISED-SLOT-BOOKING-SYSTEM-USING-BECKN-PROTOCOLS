@@ -11,12 +11,15 @@ requires SubscriberAuth via a signed Authorization header", the same rule BAP/BP
 X-Gateway-Authorization is for Phase 3's actual search-routing work (livetracker2.md),
 not this.
 
-The circuit breaker is Redis-backed (Phase 4.2 follow-up) only when CACHE_ENABLED —
-unlike BAP/BPP, Gateway's Redis (gateway-cache) is an optional [BETA] service, not
-started by default (see docker-compose.yml's `with-gateway-cache` profile). Without it,
-this falls back to the in-memory CircuitBreaker exactly as before — the real
-cross-worker-consistency bug confirmed live in Phase 4.2 (a stopped Registry took ~19s
-to fail on every request, never failing fast) is only fixed when the cache is enabled.
+The circuit breaker is Redis-backed (Phase 4.2 follow-up) only when CACHE_ENABLED. Still
+gated on the flag (not hardcoded), but the flag itself now defaults to `true` and
+`gateway-cache` is an always-on `docker-compose.yml` service (livetracker2.md §3.11's
+explicit decision — `search`, §3.1, put Gateway on continuous customer-facing traffic,
+matching BAP's/BPP's own unconditional Redis dependency instead of the old opt-in
+`[BETA]`/`with-gateway-cache`-profile default from Phase 4.2). With `CACHE_ENABLED=false`
+this still falls back to the in-memory `CircuitBreaker` as before — the real
+cross-worker-consistency bug confirmed live in Phase 4.2 (a stopped Registry took ~19s to
+fail on every request, never failing fast) is only fixed when the cache is enabled.
 """
 
 import json

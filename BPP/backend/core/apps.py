@@ -18,3 +18,10 @@ class CoreConfig(AppConfig):
         # §3.8: connects the catalog-cache invalidation signal handlers (imported
         # for its side effect of running the module-level @receiver decorators).
         from . import signals  # noqa: F401
+
+        # §3.11: starts the real periodic reconciliation loop (expired-hold sweep +
+        # catalog-cache drift check). No-ops under settings.TESTING — see
+        # reconciliation.py's own docstring for why.
+        from .reconciliation import start_reconciliation_loop
+
+        start_reconciliation_loop()

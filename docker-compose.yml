@@ -66,10 +66,20 @@ services:
 
   gateway-cache:
     image: redis:7-alpine
-    profiles: ["with-gateway-cache"]  # optional per beckn_gateway_details_v1.1.md §4 — not started by
-    # default. When enabled (CACHE_ENABLED=true), also backs the shared circuit-breaker state fix
-    # (livetracker1.md Phase 4.2) — without it, Gateway's circuit breaker falls back to in-memory,
-    # per-worker state and won't fail fast across gunicorn's workers during a Registry outage.
+    # livetracker2.md §3.11: promoted from the optional with-gateway-cache profile to an
+    # always-on service — no longer gated behind CACHE_ENABLED's old opt-in default. `search`
+    # (§3.1) now puts Gateway on continuous, customer-facing traffic just like BAP/BPP, so its
+    # circuit breaker (livetracker1.md Phase 4.2's RedisCircuitBreaker) needs to be on by
+    # default too, matching BAP's/BPP's own unconditional Redis dependency instead of leaving
+    # Gateway as the one inconsistent app. Backs the shared circuit-breaker state fix — without
+    # it, Gateway's breaker falls back to in-memory, per-worker state and won't fail fast across
+    # gunicorn's workers during a Registry outage (confirmed live in Phase 4.2 and re-confirmed
+    # in §3.11 with the new default).
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # --- Applications ---
   # registry, beckn-gateway, bap-backend, bpp-backend build from the repo root (context: .)
@@ -92,7 +102,10 @@ services:
       dockerfile: beckn-gateway/Dockerfile
     env_file: ./beckn-gateway/.env
     depends_on:
-      - registry
+      registry:
+        condition: service_started
+      gateway-cache:
+        condition: service_healthy
     ports:
       - "8003:8000"
 

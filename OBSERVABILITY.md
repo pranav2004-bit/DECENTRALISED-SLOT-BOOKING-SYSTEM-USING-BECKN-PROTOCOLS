@@ -25,6 +25,8 @@ Additional fields (e.g. `subscriber_id`, `transaction_id`, `duration_ms`) may be
 - If present, it is passed through unchanged to downstream calls and included in all logs for that request.
 - This is distinct from Beckn's own `transaction_id`/`message_id` (protocol-level, in the `context` object per [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) §D.3) — `X-Correlation-Id` is our internal debugging aid across service boundaries; log both when both are present on a request.
 
+**Real gap found and closed for `confirm`/`cancel`/`update` (livetracker2.md §3.10):** this document specified downstream propagation from Phase 0, but a direct audit found BAP's outbound calls to Gateway and Gateway's relay to BPP never actually set the header — each hop silently minted its own disconnected id. Now genuinely forwarded end-to-end for these three actions (the ones whose dispatch also writes to the new booking-lifecycle audit log, see `RUNBOOK.md`), and threaded from BPP's request-handling thread into its background dispatch and the event layer (`ContextVar`s don't cross a manually-created `threading.Thread`, so the id is captured and passed explicitly, not re-read from context inside the spawned thread). `search`/`select`/`init` still mint a fresh id per hop as before — genuinely lower-value to fix, since neither writes to the audit log this correlates with.
+
 ## Health & Readiness Endpoints
 
 Every backend app (Registry, Gateway, BAP backend, BPP backend) exposes:
@@ -38,11 +40,15 @@ Frontend apps (BAP/web, BPP/web) expose the same `/health` (liveness only — no
 
 **`GET /metrics`** — Prometheus text exposition format, on every backend app. Minimum metrics: request count and latency histogram per route, error count per route, and (where applicable) DB connection pool utilization.
 
+**Business metrics (livetracker2.md §3.10):** BAP exposes `bap_booking_funnel_total{stage=...}` (search-to-confirm conversion funnel) and BPP exposes `bpp_booking_lifecycle_total{event=...}` (confirmed/cancelled/hold-created/hold-expired) — real, Redis-backed counters (`core/metrics.py` in each app), not the in-process pattern Registry's own `core/metrics.py` uses. See `RUNBOOK.md`'s "Beauty Booking Business Metrics & Alerting Thresholds" table for the full metric list and suggested alert thresholds.
+
 ## Distributed Tracing
 
 `[MVP]`/`[PILOT]`: correlation-ID-based log correlation (above) is sufficient — searching logs by `correlation_id` across services reconstructs a request's path.
 
 `[BETA]`+: adopt W3C Trace Context (`traceparent` header) and OpenTelemetry SDK once request volume/complexity justifies dedicated tracing infrastructure (Jaeger/Tempo/etc.). Not built now — this is a deliberate no-over-engineering call, not an oversight; revisit when Phase 1–4 foundation work is done and business-workflow trackers begin generating real multi-hop traffic worth visualizing.
+
+**Evaluated for real, not left as a silent forward reference (livetracker2.md §3.10):** this tracker's Phase 3 does satisfy the *literal* trigger condition above — `search`→`select`→`init`→`confirm` each genuinely hop BAP→Gateway→BPP→Gateway→BAP, real multi-hop traffic, not trust-layer plumbing. **Decision: re-deferred, but for a concrete, traffic-volume-tied reason, not a repeat of the original text.** The trigger condition's own qualifier is "worth visualizing" — and at this project's current actual traffic (manual/dev-session testing, effectively one transaction in flight at a time, never real concurrent pilot users), correlation-ID log-stitching genuinely stays tractable: §3.10 closed the one real gap that would have undermined it (the id wasn't forwarded across the BAP→Gateway→BPP hop chain at all before this phase — see `BAP/backend/core/confirm_service.py`/`beckn-gateway/core/routing.py`), and a human can `grep` one `correlation_id` across 3 services' logs by hand at this volume without needing a trace visualizer. Dedicated tracing infrastructure (Jaeger/Tempo, SDK instrumentation, a 5th service to operate) earns its real complexity budget specifically once there's enough *concurrent* overlapping multi-hop traffic that manual log-correlation stops being tractable — real pilot users placing bookings simultaneously, not a single tester's session. That hasn't happened yet. Revisit at that point, not before.
 
 ## Alerting (forward reference)
 

@@ -166,6 +166,9 @@ OBSERVABILITY_READINESS_CHECKS = [
     ("cache", "django_observability.checks.cache_check"),
 ]
 
+# §3.10: real booking-lifecycle counters, Redis-backed — see core/metrics.py.
+EXTRA_METRICS_PROVIDERS = ["core.metrics.render_metrics"]
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

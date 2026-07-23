@@ -92,6 +92,125 @@
       ],
       "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
       "description": "No fixed alert threshold set yet (RUNBOOK.md) — no real traffic baseline exists at foundation stage. Watch for trend, not an absolute number."
+    },
+    {
+      "id": 6,
+      "title": "Beauty Booking — Success Rate (livetracker2.md §3.10)",
+      "type": "gauge",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "expr": "sum(bpp_booking_lifecycle_total{event=\"confirmed\"}) / (sum(bpp_booking_lifecycle_total{event=\"confirmed\"}) + sum(bpp_booking_lifecycle_total{event=\"hold_expired\"}))",
+          "legendFormat": "booking success rate",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.8 },
+              { "color": "green", "value": 0.95 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "Directly measures project_details.md's own 95% booking-success-rate KPI. Denominator is confirm attempts that reached a determinable outcome (confirmed vs. hold-expired-before-confirm), not every search — most searches never reach /confirm at all, which is normal browsing, not a failure. Green threshold set at the KPI's own 95% floor; RUNBOOK.md has no tighter number yet, no real traffic baseline exists."
+    },
+    {
+      "id": 7,
+      "title": "Beauty Booking — Reservation-Hold Expiry Rate",
+      "type": "gauge",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 20 },
+      "targets": [
+        {
+          "expr": "sum(bpp_booking_lifecycle_total{event=\"hold_expired\"}) / sum(bpp_booking_lifecycle_total{event=\"hold_created\"})",
+          "legendFormat": "hold expiry rate",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.2 },
+              { "color": "red", "value": 0.4 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "Share of real HELD reservations whose Redis TTL lapsed before the customer confirmed (a real, live-exploitable-DoS-relevant signal per §3.7's own hold-cap work). No real-traffic baseline exists yet — thresholds are conservative starting guesses, not a derived number, same honesty rule as §3.8's latency panel."
+    },
+    {
+      "id": 8,
+      "title": "Beauty Booking — Cancellation Rate",
+      "type": "gauge",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 20 },
+      "targets": [
+        {
+          "expr": "sum(bpp_booking_lifecycle_total{event=\"cancelled\"}) / sum(bpp_booking_lifecycle_total{event=\"confirmed\"})",
+          "legendFormat": "cancellation rate",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.15 },
+              { "color": "red", "value": 0.3 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "Confirmed bookings later cancelled via a real /cancel. No real-traffic baseline exists yet — same honesty rule as the hold-expiry panel."
+    },
+    {
+      "id": 9,
+      "title": "Beauty Booking — Search-to-Confirm Conversion Funnel",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 28 },
+      "targets": [
+        {
+          "expr": "bap_booking_funnel_total{stage=\"search_triggered\"}",
+          "legendFormat": "1. search triggered",
+          "refId": "A"
+        },
+        {
+          "expr": "bap_booking_funnel_total{stage=\"select_succeeded\"}",
+          "legendFormat": "2. select succeeded",
+          "refId": "B"
+        },
+        {
+          "expr": "bap_booking_funnel_total{stage=\"init_succeeded\"}",
+          "legendFormat": "3. init succeeded (quotation shown)",
+          "refId": "C"
+        },
+        {
+          "expr": "bap_booking_funnel_total{stage=\"confirm_succeeded\"}",
+          "legendFormat": "4. confirm succeeded (booked)",
+          "refId": "D"
+        }
+      ],
+      "description": "Real, monotonically-decreasing funnel of successful stage progressions (not raw attempts) across a full booking journey, per BAP's own real counters (§3.10). Each bar is a genuine outcome recorded by that stage's own on_X callback handler, not the trigger call alone."
     }
   ]
 }

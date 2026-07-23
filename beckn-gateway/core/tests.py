@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 import responses
@@ -1564,7 +1564,9 @@ def test_confirm_view_acks_immediately_for_a_validly_signed_request(mock_dispatc
         "context": payload["context"],
         "message": {"ack": {"status": "ACK"}},
     }
-    mock_dispatch.assert_called_once_with(payload=payload, authorization_header=header)
+    mock_dispatch.assert_called_once_with(
+        payload=payload, authorization_header=header, correlation_id=ANY
+    )
 
 
 def test_dispatch_confirm_forwards_to_the_specific_bpp_with_both_signatures(settings):
@@ -1615,6 +1617,50 @@ def test_dispatch_confirm_forwards_to_the_specific_bpp_with_both_signatures(sett
     assert forwarded.headers["Authorization"] == original_auth_header
     assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
     assert "gateway.local" in forwarded.headers["X-Gateway-Authorization"]
+
+
+def test_dispatch_confirm_forwards_the_real_correlation_id_to_bpp(settings):
+    """livetracker2.md §3.10: a real gap found live — Gateway never forwarded
+    X-Correlation-Id when relaying to BPP, so BPP's own CorrelationIdMiddleware
+    always minted a fresh, disconnected id regardless of what BAP sent. Confirmed
+    fixed: the exact id passed to dispatch_confirm is forwarded unchanged."""
+    settings.SUBSCRIBER_ID = "gateway.local"
+    settings.UNIQUE_KEY_ID = "key1"
+    payload = _build_confirm_context()
+
+    captured_requests = []
+
+    def lookup_callback(request):
+        return (
+            200,
+            {},
+            json.dumps(
+                [
+                    {
+                        "subscriber_id": "bpp.example.com",
+                        "url": "https://bpp.example.com",
+                        "status": "SUBSCRIBED",
+                    }
+                ]
+            ),
+        )
+
+    def bpp_confirm_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(responses.POST, "http://registry:8000/lookup", callback=lookup_callback)
+        rsps.add_callback(
+            responses.POST, "https://bpp.example.com/confirm", callback=bpp_confirm_callback
+        )
+        routing.dispatch_confirm(
+            payload=payload,
+            authorization_header='Signature keyId="bap.example.com|key-1|ed25519",...',
+            correlation_id="corr-real-hop-1",
+        )
+
+    assert captured_requests[0].headers["X-Correlation-Id"] == "corr-real-hop-1"
 
 
 def test_dispatch_confirm_does_not_forward_when_bpp_no_longer_subscribed():
@@ -2194,7 +2240,9 @@ def test_cancel_view_acks_immediately_for_a_validly_signed_request(mock_dispatch
         "context": payload["context"],
         "message": {"ack": {"status": "ACK"}},
     }
-    mock_dispatch.assert_called_once_with(payload=payload, authorization_header=header)
+    mock_dispatch.assert_called_once_with(
+        payload=payload, authorization_header=header, correlation_id=ANY
+    )
 
 
 def test_dispatch_cancel_forwards_to_the_specific_bpp_with_both_signatures(settings):
@@ -2470,7 +2518,9 @@ def test_update_view_acks_immediately_for_a_validly_signed_request(mock_dispatch
         "context": payload["context"],
         "message": {"ack": {"status": "ACK"}},
     }
-    mock_dispatch.assert_called_once_with(payload=payload, authorization_header=header)
+    mock_dispatch.assert_called_once_with(
+        payload=payload, authorization_header=header, correlation_id=ANY
+    )
 
 
 def test_dispatch_update_forwards_to_the_specific_bpp_with_both_signatures(settings):

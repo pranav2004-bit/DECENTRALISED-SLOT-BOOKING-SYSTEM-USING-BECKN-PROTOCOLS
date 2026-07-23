@@ -31,12 +31,14 @@ from beckn_transaction import (
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.utils import timezone
+from django_observability.context import correlation_id_var
 from inventory_core.models import Booking
 from inventory_core.reservation import confirm_hold
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
 from .events import get_event_bus
+from .metrics import record_booking_confirmed, record_hold_expired
 from .participant_keys import get_signing_keys
 
 logger = logging.getLogger("bpp")
@@ -120,7 +122,7 @@ def _on_confirm_context(*, request_context: dict) -> dict:
     )
 
 
-def dispatch_on_confirm(*, payload: dict) -> None:
+def dispatch_on_confirm(*, payload: dict, correlation_id: str | None = None) -> None:
     """Resolves the real Booking referenced by `fulfillments[0].id`, verifies it's
     held by *this* transaction (same IDOR-safe check as §3.3's /init), then
     delegates the real `HELD` -> `ACTIVE` transition + capacity commit to
@@ -128,7 +130,13 @@ def dispatch_on_confirm(*, payload: dict) -> None:
     double-submit here never double-confirms or double-fires `BookingConfirmed`.
     Sends the resulting /on_confirm (a real confirmed Order, or a real error) to
     Gateway. Fire-and-forget: failures are logged, not raised, same discipline as
-    dispatch_on_init."""
+    dispatch_on_init.
+
+    `correlation_id` (§3.10): the real `X-Correlation-Id` of the request that
+    triggered this dispatch, captured by the caller in the request-handling
+    thread — a `ContextVar` doesn't cross the background thread
+    `dispatch_on_confirm_in_background` spawns, so it's threaded through
+    explicitly rather than re-read from `correlation_id_var` here."""
     context = payload["context"]
     order = payload["message"]["order"]
     booking_id = _extract_booking_id(order)
@@ -150,14 +158,25 @@ def dispatch_on_confirm(*, payload: dict) -> None:
     else:
         try:
             confirmed_booking = confirm_hold(
-                booking.id, redis_client=_redis_client(), event_bus=get_event_bus()
+                booking.id,
+                redis_client=_redis_client(),
+                event_bus=get_event_bus(),
+                correlation_id=correlation_id,
             )
         except ValidationError:
+            # The real, already-firing production signal that a hold expired
+            # before the customer could confirm it (§3.10) — `confirm_hold()`
+            # raises exactly this when `is_active()` is false, the one place
+            # an expiry actually becomes observable today (see core/metrics.py's
+            # module docstring for why this is used instead of the currently
+            # dead `release_expired_hold()`).
+            record_hold_expired()
             error = {
                 "code": "SLOT_UNAVAILABLE",
                 "message": "This booking's hold is no longer active",
             }
         else:
+            record_booking_confirmed()
             resource = confirmed_booking.slot.resource
             resolved_order = {
                 "id": str(confirmed_booking.id),
@@ -230,8 +249,15 @@ def dispatch_on_confirm(*, payload: dict) -> None:
 def dispatch_on_confirm_in_background(*, payload: dict) -> None:
     """Fires dispatch_on_confirm on a daemon thread — the actual fire-and-forget
     entry point the view uses. Kept separate so tests can call dispatch_on_confirm
-    directly and synchronously without racing a thread."""
+    directly and synchronously without racing a thread.
+
+    Captures `correlation_id_var` here, in the real request-handling thread,
+    before spawning the background thread (§3.10) — the one correct place to
+    read it, since it wouldn't be visible inside the spawned thread itself."""
+    correlation_id = correlation_id_var.get()
     thread = threading.Thread(
-        target=dispatch_on_confirm, kwargs={"payload": payload}, daemon=True
+        target=dispatch_on_confirm,
+        kwargs={"payload": payload, "correlation_id": correlation_id},
+        daemon=True,
     )
     thread.start()

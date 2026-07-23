@@ -35,6 +35,7 @@ from inventory_core.reservation import hold_slot, release_hold_now
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
+from .metrics import record_hold_created
 from .participant_keys import get_signing_keys
 
 logger = logging.getLogger("bpp")
@@ -186,6 +187,7 @@ def dispatch_on_select(*, payload: dict) -> None:
                         "message": "Slot no longer available",
                     }
                 else:
+                    record_hold_created()
                     resolved_order = {
                         "provider": {"id": resource.owner_ref},
                         "items": [{"id": str(resource.id)}],

@@ -189,6 +189,41 @@ def test_trigger_confirm_targets_the_same_bpp_from_init_and_sends_a_real_signed_
 
 
 @pytest.mark.django_db
+def test_trigger_confirm_forwards_the_real_inbound_correlation_id_to_gateway(
+    bap_identity_settings, client
+):
+    """livetracker2.md §3.10: a real gap found live — BAP never forwarded
+    X-Correlation-Id on its outbound call to Gateway, so every hop minted its
+    own disconnected id. Confirmed fixed: the exact inbound id is echoed
+    unchanged on the outbound request, not silently dropped or regenerated."""
+    _session_with_init()
+    captured_requests = []
+
+    def gateway_confirm_callback(request):
+        captured_requests.append(request)
+        body = json.loads(request.body)
+        return (
+            200,
+            {},
+            json.dumps({"context": body["context"], "message": {"ack": {"status": "ACK"}}}),
+        )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://gateway:8000/confirm", callback=gateway_confirm_callback
+        )
+        resp = client.post(
+            reverse("confirm-trigger"),
+            data=json.dumps({"transaction_id": "txn-1"}),
+            content_type="application/json",
+            HTTP_X_CORRELATION_ID="corr-real-inbound-1",
+        )
+
+    assert resp.status_code == 202
+    assert captured_requests[0].headers["X-Correlation-Id"] == "corr-real-inbound-1"
+
+
+@pytest.mark.django_db
 def test_trigger_confirm_is_idempotent_on_repeat_with_the_same_key(bap_identity_settings, client):
     """FUNC (§3.6): a flaky-connection retry of the confirm POST, carrying the same
     real Idempotency-Key header, must not fire a second real Beckn /confirm at

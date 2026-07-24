@@ -5,6 +5,7 @@
 | Stack | Framework | Notes |
 |---|---|---|
 | Python (registry, beckn-gateway, BAP/backend, BPP/backend) | `pytest` + `pytest-django` | Config in each app's `pyproject.toml` (`[tool.pytest.ini_options]`) |
+| Python (`shared/beckn_crypto`, `shared/beckn_transaction`, `shared/event_bus`, `shared/resilient_http`) | plain `pytest`, no Django | Each is framework-free by design (any of the four apps can use it identically) and has its own `tests.py`, run directly with `pytest tests.py` from inside that library's own directory — a dedicated CI job (`test-shared-python` in `.github/workflows/ci.yml`) runs all four, since none of them live inside any single app's own working directory and were found live (`livetracker2.md`'s Phase 3.11 follow-up fixes) to never be discovered by any per-app `pytest` run otherwise |
 | TypeScript/Next.js (BAP/web, BPP/web) | `Vitest` | Faster than Jest for this project's scale; swap is low-cost later if needed |
 
 ## Frontend Component Testing
@@ -49,6 +50,8 @@ Introduced in `livetracker2.md` Phase 1.2 for `shared/inventory_core`'s atomic c
 - **Re-run before trusting.** Both the concurrent-write and TTL-timing tests were re-run multiple times (5x and 3x respectively) during development specifically to rule out flakiness before being counted as passing — a single green run of a timing/concurrency test is weaker evidence than for ordinary deterministic tests, and treated that way.
 
 See `BPP/backend/core/test_inventory_core_concurrency.py` and `test_inventory_core_booking.py` for the reference implementation of this pattern.
+
+**This pattern also caught a real, previously-latent bug outside `inventory_core`** (`livetracker2.md`'s Phase 3.11 follow-up fixes): `participant_keys.py`'s lazy signing-key generation (BPP/BAP/beckn-gateway) raced under genuine concurrent first callers — `functools.lru_cache` doesn't guarantee only one thread runs the wrapped function on a cache miss, and the file-write itself wasn't atomic. A dedicated `ThreadPoolExecutor`-based test (25 real threads racing `_load_or_generate()` against the same fresh key path, `test_participant_keys.py` in all three apps) reproduced the race deterministically and, on a first fix attempt, caught that the fix's own double-checked-locking approach still had the identical gap — the same "assert the aggregate outcome across every thread, not just that it ran" discipline this section already establishes, applied to a bug this pattern wasn't originally written for.
 
 ## Load Testing
 

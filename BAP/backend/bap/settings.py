@@ -23,6 +23,18 @@ REDIS_URL = env("REDIS_URL")
 DEBUG = env.bool("DJANGO_DEBUG", default=False)
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
+# Phase 3 Exit (livetracker2.md): a real gap found live — §3.7's session-cookie auth
+# (IDOR protection, hold-abuse cap) was unreachable from BAP/web, since a cross-origin
+# fetch (:3000 -> :8001) neither sends nor receives cookies without both sides opting in.
+# `credentials: 'include'` was added on the frontend (lib/api-client.ts); this is the
+# matching backend half, without which the browser would silently strip the Set-Cookie
+# response and refuse to attach cookies to the next request.
+CORS_ALLOW_CREDENTIALS = True
+# Django rejects a cross-origin cookie-authenticated POST unless the request's Origin
+# header matches an entry here (distinct from CORS_ALLOWED_ORIGINS, which only governs
+# whether the browser's JS may read the response — this governs whether Django's own
+# CSRF check accepts the request at all).
+CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 # django-cors-headers' own DEFAULT_HEADERS (accept/authorization/content-type/etc.) doesn't
 # include this project's own custom `Idempotency-Key` request header (§3.6's
 # django_observability.idempotency.IDEMPOTENCY_HEADER, read by confirm_trigger_view) — a

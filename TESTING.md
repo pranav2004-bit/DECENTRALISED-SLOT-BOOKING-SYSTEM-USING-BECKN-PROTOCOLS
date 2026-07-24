@@ -61,6 +61,7 @@ See `BPP/backend/core/test_inventory_core_concurrency.py` and `test_inventory_co
 
 - **SCA** (dependency vulnerabilities) and **SAST** (static code analysis) run in CI on every PR — see [.github/workflows/ci.yml](.github/workflows/ci.yml) and [SECURITY.md](SECURITY.md).
 - **DAST baseline**: OWASP ZAP baseline scan against a running instance, introduced once Phase 1 apps actually serve HTTP (not meaningful against no running service). Tracked for Phase 2.5 (Registry Security Hardening) and Phase 4.3 (Security Penetration Pass).
+- **Live manual verification of business-layer security controls** (`livetracker2.md` §3.7, re-run at Phase 3 Exit): the automated SEC test suite (`test_session_authz.py`, `test_rate_limit.py`, `test_customer_auth.py`) proves the logic in isolation; it's supplemented by real `curl` attempts against the running Docker stack — two genuinely distinct logged-in customers attempting cross-access on a real `transaction_id` (expect 403), an unauthenticated request against an owned session (expect 401), 6 rapid real login attempts against a 5/min limit (expect 429 on the 6th), and a real CSRF-token-less POST (expect Django's own 403 "CSRF cookie not set"). Unit tests can assert the function returns the right status code; only a live run proves the middleware chain, session cookie, and Redis-backed limiter are actually wired together correctly end-to-end in the deployed app, not just in a test client.
 
 ## Coverage Policy
 

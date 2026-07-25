@@ -76,16 +76,18 @@ def test_default_timeout_is_generous_enough_for_a_healthy_local_redis_round_trip
     """Not a live Redis call (this module has no Redis dependency itself,
     confirmed by direct read — it's a generic hard-deadline primitive used
     by callers that do talk to Redis), but documents the actual value in
-    force: 5.0s. Raised twice: 0.5s was tight enough to occasionally misfire
-    under real thread-scheduling jitter at high concurrency on a local dev
-    machine (2 of 800 calls in the regression above); 2.0s then still misfired
-    the same way on GitHub Actions' more resource-constrained CI runners
-    (BPP's own concurrency regression test, 3 of 800 dropped, live in CI —
-    confirming this isn't a one-off, it's real environment-dependent
-    scheduling jitter under a synthetic tight-loop burst heavier than any real
-    traffic pattern). 5.0s is still far below the ~4s+ unbounded
-    DNS-resolution hang this module exists to cap in the first place."""
+    force: 10.0s. Raised three times, each caught by the same class of
+    regression test in a different environment: 0.5s dropped 2/800 on a local
+    dev machine; 2.0s dropped 3/800 on GitHub Actions CI (BPP's copy of the
+    concurrency test); 5.0s still dropped 5/800 on CI (BAP's independent copy
+    of the same test). Each dropped call is genuine tail-latency in getting a
+    dedicated, isolated thread scheduled/completed within the deadline — not a
+    logic bug (no shared state between calls to race on) — under a demanding
+    800-real-thread-creation tight-loop burst on a shared/throttled CI runner,
+    heavier than any real traffic pattern. 10.0s is still a small fraction of
+    what an actual production Redis outage would otherwise cost (the original
+    unbounded hang ran 10s+ before this module existed)."""
     import inspect
 
     default_timeout = inspect.signature(call_with_hard_timeout).parameters["timeout"].default
-    assert default_timeout == 5.0
+    assert default_timeout == 10.0

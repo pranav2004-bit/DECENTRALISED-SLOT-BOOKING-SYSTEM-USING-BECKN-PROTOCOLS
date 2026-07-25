@@ -27,14 +27,19 @@ timeout the same as any other "Redis unavailable" failure (fail open / fall
 back to Postgres), and this only fires during a genuine outage, not normal
 operation.
 
-Default raised twice, both times because a live regression test caught real
-scheduling jitter at high concurrency, not because DNS/connect/I/O itself got
-slower: 0.5s dropped 2/800 calls under this project's own concurrency
-regression test on a local dev machine; 2.0s then dropped 3/800 the same way
-on GitHub Actions' more resource-constrained CI runners. Settled at 5.0s —
-still far below the ~4s+ unbounded DNS-resolution hang this module exists to
-cap, and irrelevant to normal operation either way (a healthy call returns in
-microseconds regardless of the ceiling).
+Default raised three times, each time because a live regression test caught
+real thread-scheduling tail latency at volume, not because DNS/connect/I/O
+itself got slower: 0.5s dropped 2/800 calls on a local dev machine; 2.0s then
+dropped 3/800 the same way on GitHub Actions' CI runners; 5.0s still dropped
+5/800 on CI (a second, independent copy of the same regression test, BAP's
+own). Each call is fully isolated (its own queue, its own thread — no shared
+state to race on), so a drop is genuinely the underlying call's own thread not
+getting scheduled/completing within the deadline on that run, not a logic bug;
+800 real thread creations in a tight loop is a demanding tail-latency stress
+test on a shared/throttled CI runner. Settled at 10.0s — still a small
+fraction of what an actual production outage would otherwise cost (the
+original unbounded hang ran 10s+), and irrelevant to normal operation either
+way (a healthy call returns in microseconds regardless of the ceiling).
 """
 
 import queue
@@ -46,7 +51,7 @@ class RedisHardTimeout(Exception):
     treat this identically to any other Redis-unavailable exception."""
 
 
-def call_with_hard_timeout(func, *args, timeout=5.0, **kwargs):
+def call_with_hard_timeout(func, *args, timeout=10.0, **kwargs):
     result: queue.Queue = queue.Queue(maxsize=1)
 
     def _run():

@@ -25,8 +25,13 @@ COPY shared/beckn_transaction ./shared/beckn_transaction
 COPY shared/inventory_core ./shared/inventory_core
 COPY shared/realtime ./shared/realtime
 COPY shared/testing/contract_schemas ./shared/testing/contract_schemas
+COPY shared/redis_safe ./shared/redis_safe
 COPY BPP/backend/ ./BPP/backend/
-RUN chown -R app:app /app
+# Phase 3 Exit fix (livetracker2.md, 2026-07-24) — see BAP/backend/Dockerfile's
+# identical comment: /app/data/secrets must already exist, app-owned, in the image
+# before it's first mounted as a named volume, or the non-root runtime user can't
+# write its own key file into the daemon-created, root-owned empty volume.
+RUN mkdir -p /app/data/secrets && chown -R app:app /app
 USER app
 WORKDIR /app/BPP/backend
 

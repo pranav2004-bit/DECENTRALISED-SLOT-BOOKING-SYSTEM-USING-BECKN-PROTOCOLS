@@ -41,7 +41,7 @@ def get_client() -> ResilientHttpClient:
         if settings.CACHE_ENABLED and settings.REDIS_URL:
             import redis
 
-            redis_client = redis.Redis.from_url(settings.REDIS_URL)
+            redis_client = redis.Redis.from_url(settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5)
         _client = ResilientHttpClient(
             timeout_seconds=settings.REGISTRY_LOOKUP_TIMEOUT_MS / 1000,
             redis_client=redis_client,
@@ -68,7 +68,7 @@ def get_participant_client(subscriber_id: str) -> ResilientHttpClient:
         if settings.CACHE_ENABLED and settings.REDIS_URL:
             import redis
 
-            redis_client = redis.Redis.from_url(settings.REDIS_URL)
+            redis_client = redis.Redis.from_url(settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5)
         client = ResilientHttpClient(
             timeout_seconds=settings.REGISTRY_LOOKUP_TIMEOUT_MS / 1000,
             redis_client=redis_client,

@@ -5,14 +5,17 @@ docstring for why Slot-level events were never the real trigger.
 """
 
 import time
+from unittest.mock import patch
 
 import pytest
+import redis.exceptions
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.db import connection
 from django.test import Client
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
+from django_redis.exceptions import ConnectionInterrupted
 from inventory_core.models import Resource
 
 from core.catalog import build_beauty_catalog
@@ -225,3 +228,54 @@ def test_cached_search_is_measurably_faster_than_the_equivalent_uncached_db_quer
         f"speedup: {uncached_median / cached_median:.1f}x"
     )
     assert cached_median < uncached_median
+
+
+@pytest.mark.django_db
+def test_get_cached_catalog_falls_back_to_a_fresh_build_when_redis_is_unreachable():
+    """Real gap found and closed at Phase 3 Exit (livetracker2.md, 2026-07-24, live
+    "kill Redis" re-test): `cache.get()` had no error handling — a genuine Redis
+    outage raised an uncaught `ConnectionInterrupted`, which live-testing showed as
+    `/search` hanging until Gateway's own client-side timeout gave up. The Phase
+    3.11 circuit-breaker fail-open fix never covered this code path — a completely
+    separate Redis client (Django's cache framework, not `resilient_http`'s
+    breaker). Must degrade to "slower, always-correct" (fresh from Postgres),
+    never to "broken.\""""
+    _business_with_resource()
+    with patch("core.catalog_cache.cache.get", side_effect=ConnectionInterrupted("down")):
+        result = get_cached_beauty_catalog()
+    assert result == build_beauty_catalog()
+
+
+@pytest.mark.django_db
+def test_get_cached_catalog_does_not_raise_if_the_cache_write_fails_after_a_fresh_build():
+    _business_with_resource()
+    with patch("core.catalog_cache.cache.set", side_effect=ConnectionInterrupted("down")):
+        result = get_cached_beauty_catalog()  # must not raise
+    assert result == build_beauty_catalog()
+
+
+def test_invalidate_does_not_raise_when_redis_is_unreachable():
+    with patch("core.catalog_cache.cache.delete", side_effect=ConnectionInterrupted("down")):
+        invalidate_beauty_catalog_cache()  # must not raise
+
+
+@pytest.mark.django_db
+def test_reconcile_skips_the_tick_cleanly_when_redis_is_unreachable():
+    _business_with_resource()
+    with patch("core.catalog_cache.cache.get", side_effect=ConnectionInterrupted("down")):
+        corrected = reconcile_beauty_catalog_cache()  # must not raise
+    assert corrected is False
+
+
+@pytest.mark.django_db
+def test_get_cached_catalog_falls_back_on_the_raw_redis_connection_error_too():
+    """`cache.set()` was observed live raising the raw
+    `redis.exceptions.ConnectionError` instead of `ConnectionInterrupted` — a
+    genuinely different exception class (confirmed: `ConnectionInterrupted` is not
+    a `RedisError` subclass). Both must be caught, not just one."""
+    _business_with_resource()
+    with patch(
+        "core.catalog_cache.cache.set", side_effect=redis.exceptions.ConnectionError("down")
+    ):
+        result = get_cached_beauty_catalog()  # must not raise
+    assert result == build_beauty_catalog()

@@ -21,7 +21,13 @@ COPY shared/django_observability ./shared/django_observability
 COPY shared/resilient_http ./shared/resilient_http
 COPY shared/beckn_crypto ./shared/beckn_crypto
 COPY shared/testing/contract_schemas ./shared/testing/contract_schemas
+COPY shared/redis_safe ./shared/redis_safe
 COPY registry/ ./registry/
+# Phase 3 Exit fix (livetracker2.md, 2026-07-24) — see BAP/backend/Dockerfile's
+# identical comment. Registry's own key path is /run/secrets (outside /app, unlike
+# the other three apps' /app/data/secrets), so it needs its own explicit mkdir+chown
+# rather than being covered by the `chown -R app:app /app` below.
+RUN mkdir -p /run/secrets && chown -R app:app /run/secrets
 RUN chown -R app:app /app
 USER app
 WORKDIR /app/registry

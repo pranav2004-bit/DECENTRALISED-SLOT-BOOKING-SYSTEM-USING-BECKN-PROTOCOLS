@@ -45,7 +45,7 @@ logger = logging.getLogger("bpp")
 
 
 def _redis_client() -> redis.Redis:
-    return redis.Redis.from_url(settings.REDIS_URL)
+    return redis.Redis.from_url(settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5)
 
 
 def _extract_booking_id(order: dict) -> str:

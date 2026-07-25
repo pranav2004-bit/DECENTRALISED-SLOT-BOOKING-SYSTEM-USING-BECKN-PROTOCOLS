@@ -8,6 +8,8 @@ import logging
 import threading
 import time
 
+from redis_safe import RedisHardTimeout, call_with_hard_timeout
+
 logger = logging.getLogger("resilient_http")
 
 
@@ -122,8 +124,8 @@ class RedisCircuitBreaker:
         import redis
 
         try:
-            opened_at = self._redis.get(self._opened_at_key)
-        except redis.exceptions.RedisError:
+            opened_at = call_with_hard_timeout(self._redis.get, self._opened_at_key)
+        except (redis.exceptions.RedisError, RedisHardTimeout):
             logger.warning(
                 "RedisCircuitBreaker(%s): Redis unavailable, failing open (treating as CLOSED)",
                 self._failures_key,
@@ -146,8 +148,8 @@ class RedisCircuitBreaker:
         import redis
 
         try:
-            self._redis.delete(self._failures_key, self._opened_at_key)
-        except redis.exceptions.RedisError:
+            call_with_hard_timeout(self._redis.delete, self._failures_key, self._opened_at_key)
+        except (redis.exceptions.RedisError, RedisHardTimeout):
             logger.warning(
                 "RedisCircuitBreaker(%s): Redis unavailable, could not record success",
                 self._failures_key,
@@ -158,11 +160,13 @@ class RedisCircuitBreaker:
 
         try:
             current_state = self.state
-            count = self._redis.incr(self._failures_key)
-            self._redis.expire(self._failures_key, self._key_ttl_seconds)
+            count = call_with_hard_timeout(self._redis.incr, self._failures_key)
+            call_with_hard_timeout(self._redis.expire, self._failures_key, self._key_ttl_seconds)
             if current_state == self.HALF_OPEN or count >= self.failure_threshold:
-                self._redis.set(self._opened_at_key, time.time(), ex=self._key_ttl_seconds)
-        except redis.exceptions.RedisError:
+                call_with_hard_timeout(
+                    self._redis.set, self._opened_at_key, time.time(), ex=self._key_ttl_seconds
+                )
+        except (redis.exceptions.RedisError, RedisHardTimeout):
             logger.warning(
                 "RedisCircuitBreaker(%s): Redis unavailable, could not record failure",
                 self._failures_key,

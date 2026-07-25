@@ -122,11 +122,23 @@ WSGI_APPLICATION = "bpp.wsgi.application"
 DATABASES = {"default": env.db_url_config(DATABASE_URL)}
 DATABASES["default"]["CONN_MAX_AGE"] = env.int("DB_CONN_MAX_AGE", default=60)
 
+# Real gap found and closed at Phase 3 Exit (livetracker2.md, 2026-07-24, live "kill
+# Redis" re-test, third pass): the fail-open exception handling added to
+# rate_limit.py/metrics.py/catalog_cache.py couldn't help if the underlying redis-py
+# client never actually raised — with no socket timeout configured, a connection
+# attempt to a stopped-but-not-yet-DNS-removed container was observed hanging on the
+# OS-level TCP timeout (tens of seconds) before any exception fired, live-confirmed via
+# Daphne's own "took too long to shut down and was killed" log line on `/search`. A
+# short, explicit `socket_connect_timeout`/`socket_timeout` makes a real Redis outage
+# fail fast enough for the exception handling to actually run.
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
         "LOCATION": REDIS_URL,
-        "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            "CONNECTION_POOL_KWARGS": {"socket_connect_timeout": 0.5, "socket_timeout": 0.5},
+        },
     }
 }
 

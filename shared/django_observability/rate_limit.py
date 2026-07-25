@@ -14,11 +14,28 @@ framework, unlike Registry's default, is genuinely Redis-backed without any extr
 wiring.
 """
 
+import logging
 from functools import wraps
 
+import redis.exceptions
 from django.core.cache import cache
+from django_redis.exceptions import ConnectionInterrupted
+
+from redis_safe import RedisHardTimeout, call_with_hard_timeout
 
 from .errors import error_response
+
+logger = logging.getLogger("django_observability")
+
+# `cache.get()`/`cache.incr()` raise django_redis's own `ConnectionInterrupted` on a
+# connection failure, but `cache.set()` was observed live raising the raw
+# `redis.exceptions.ConnectionError` instead — confirmed the two are unrelated
+# exception classes (`ConnectionInterrupted` is not a `RedisError` subclass), so both
+# must be caught (Phase 3 Exit fix, livetracker2.md 2026-07-24, second pass).
+# `RedisHardTimeout` covers a third failure mode found later the same day: DNS
+# resolution against a stopped-but-present container isn't bounded by either
+# exception class above (see shared/redis_safe.py).
+_REDIS_UNAVAILABLE = (ConnectionInterrupted, redis.exceptions.RedisError, RedisHardTimeout)
 
 
 def _client_ip_key(request) -> str:
@@ -50,10 +67,26 @@ def rate_limit(*, limit_per_minute: int, scope: str, key_func=_client_ip_key):
         def wrapped(request, *args, **kwargs):
             key = f"ratelimit:{scope}:{key_func(request)}"
             try:
-                count = cache.incr(key)
-            except ValueError:
-                cache.set(key, 1, timeout=60)
-                count = 1
+                try:
+                    count = call_with_hard_timeout(cache.incr, key)
+                except ValueError:
+                    call_with_hard_timeout(cache.set, key, 1, timeout=60)
+                    count = 1
+            except _REDIS_UNAVAILABLE:
+                # Real gap found and closed at Phase 3 Exit (livetracker2.md, 2026-07-24,
+                # live "kill Redis" re-test): only `ValueError` (django_redis's own
+                # "key doesn't exist yet" signal) was being caught here — a genuine Redis
+                # connection failure raises `ConnectionInterrupted` instead, which was
+                # uncaught and crashed/hung every rate-limited endpoint, including
+                # `/search` itself. Fails open (same rationale as `RedisCircuitBreaker`,
+                # shared/resilient_http/circuit_breaker.py): the rate limiter's own
+                # dependency failing must not become a second single point of failure for
+                # the request it exists to protect.
+                logger.warning(
+                    "rate_limit: Redis unreachable for scope=%s, failing open (request not rate-limited)",
+                    scope,
+                )
+                return view_func(request, *args, **kwargs)
             if count > limit_per_minute:
                 return error_response(
                     "RATE_LIMITED",

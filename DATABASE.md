@@ -1,6 +1,6 @@
 # Shared Database Layer
 
-Covers the three PostgreSQL databases (Registry, BAP, BPP — Gateway is stateless, per [beckn_gateway_details_v1.1.md](beckn-gateway/beckn_gateway_details_v1.1.md) §4) at foundation stage, per [livetracker1.md](livetracker1.md) Phase 1.5.
+Covers the three PostgreSQL databases (Registry, BAP, BPP — Gateway is stateless, per [beckn_gateway_details_v1.1.md](beckn-gateway/beckn_gateway_details_v1.1.md) §4) at foundation stage, per [livetracker1.md](livetracker1.md) Phase 1.5, plus Redis (added below, Phase 3 Exit — a real, previously-unaddressed gap: this document's own title and scope line never covered it, and no other repo document did either, despite BAP/BPP/Gateway all depending on Redis for real functionality since Phase 1.3).
 
 ## Migrations
 
@@ -25,7 +25,7 @@ Dry-run performed in Phase 1.5 against the Registry database:
 5. Restored: `pg_restore --no-owner --role=registry registry_backup.dump`.
 6. Queried the restored database via the Django ORM and confirmed the test record was present and correct.
 
-This is a genuine, executed proof that backup → restore → data-integrity-intact works end to end for this stack — not an assumption. The same procedure applies to BAP and BPP's databases (identical PostgreSQL setup, same Django migration framework).
+This is a genuine, executed proof that backup → restore → data-integrity-intact works end to end for this stack — not an assumption. BPP's own schema was independently re-verified the same way in Phase 1.5 Exit (`livetracker2.md`), after its tables had actually changed from Registry's. **BAP's was independently re-verified too, only at Phase 3 Exit (`livetracker2.md`, 2026-07-24)** — a real gap found by direct audit: this section previously claimed the Registry procedure "applies to" BAP "identically" without ever having actually run it there, an unproven-by-analogy claim in a document that otherwise prides itself on "verified for real, not just documented." Closed for real: `pg_dump -F c` of BAP's live database (17 real customer rows, including two accounts created live during that session's own end-to-end walkthrough), restored into a completely fresh, independent `postgres:16-alpine` container via `pg_restore --no-owner --role=bap`, queried directly and confirmed both named accounts present with correct data. Same procedure, same tooling, genuinely re-run per app now — not asserted by extension.
 
 ## Seed / Fixture Data Strategy
 
@@ -45,3 +45,15 @@ This is a genuine, executed proof that backup → restore → data-integrity-int
 ## Secrets
 
 Database credentials are sourced from environment variables (`DATABASE_URL`), never hardcoded — per [SECURITY.md](SECURITY.md). Local-dev placeholder passwords (`registry:registry`, `bap:bap`, `bpp:bpp`) are intentionally simple and are not real secrets — reviewed and confirmed in `.secrets.baseline` (see [ENVIRONMENTS.md](ENVIRONMENTS.md) for the `detect-secrets` audit process that established this).
+
+## Redis Persistence (real gap found and closed, Phase 3 Exit, 2026-07-24)
+
+Three Redis instances (`bap-cache`, `bpp-cache`, `gateway-cache`, plain `redis:7-alpine`, no `docker-compose.yml` volume mount for any of them) hold real data with genuinely different loss tolerances, never previously distinguished in writing anywhere in this repo:
+
+- **Sessions, `django-redis` cache, rate-limit counters, business metrics counters (`shared/django_observability`), circuit-breaker state (`shared/resilient_http`):** fine to lose. Sessions force a re-login; cache/counters/breaker state all regenerate from the next real request. No fix needed, by design.
+- **`ReservationHold` TTL keys (`shared/inventory_core/reservation.py`, BPP's `bpp-cache`):** losing these on a crash just means active holds vanish early — the existing reconciliation sweep (`livetracker2.md` §3.11) and the slot's own real `capacity_remaining` in Postgres are the source of truth either way; a lost hold key is indistinguishable from a naturally-expired one. Acceptable, not a gap.
+- **`event_bus` queue + DLQ (`shared/event_bus`, BAP's/BPP's `bap-cache`/`bpp-cache`):** genuinely different — a Redis crash here loses real, not-yet-processed internal events (audit-log writes, metrics increments already fired but their downstream consumers not yet run). This is a real, accepted-at-`[MVP]` reliability gap, not a "fine to lose" one, and had never been written down anywhere before this entry.
+
+**Decision, not a fix:** stock `redis:7-alpine`'s own default RDB snapshotting is already active inside each container, but writes to `/data`, which isn't a persisted volume here either — so today a container recreate loses it regardless. Deliberately **not** adding persistent volumes + AOF for these Redis instances now: doing so would mean deciding on an AOF fsync policy, testing real crash-recovery behavior, and reasoning about replay-on-restart semantics for `event_bus` specifically — a real, non-trivial reliability project of its own, not a documentation fix, and not justified by this project's current dev/single-session traffic (the same "no real concurrent traffic yet" reasoning `OBSERVABILITY.md` already uses to defer distributed tracing). Revisit at `[BETA]`, when real concurrent pilot traffic makes an actual lost-event incident possible rather than theoretical.
+
+**Note — this section is about data loss, not availability.** A separate, distinct question (can callers keep working *while* Redis is unreachable, regardless of what it loses) was found to have its own real gap — a Redis-outage hang that could take 10+ seconds and force-kill the request — root-caused and fixed at Phase 3 Exit (2026-07-25) via `shared/redis_safe.py`'s hard wall-clock deadline. See `RUNBOOK.md`'s "Beauty Business-Layer Resilience & Failure Injection" section for the full investigation and fix.

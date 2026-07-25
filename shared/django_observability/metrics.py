@@ -12,7 +12,25 @@ counter names and wires increments at its own real trigger points; this module
 only owns "how a counter is stored/read/rendered," not what any app counts.
 """
 
+import logging
+
+import redis.exceptions
 from django.core.cache import cache
+from django_redis.exceptions import ConnectionInterrupted
+
+from redis_safe import RedisHardTimeout, call_with_hard_timeout
+
+logger = logging.getLogger("django_observability")
+
+# `cache.get()`/`cache.incr()` raise django_redis's own `ConnectionInterrupted` on a
+# connection failure, but `cache.set()` was observed live raising the raw
+# `redis.exceptions.ConnectionError` instead — confirmed the two are unrelated
+# exception classes (`ConnectionInterrupted` is not a `RedisError` subclass), so both
+# must be caught (Phase 3 Exit fix, livetracker2.md 2026-07-24, second pass).
+# `RedisHardTimeout` covers a third failure mode found later the same day: DNS
+# resolution against a stopped-but-present container isn't bounded by either
+# exception class above (see shared/redis_safe.py).
+_REDIS_UNAVAILABLE = (ConnectionInterrupted, redis.exceptions.RedisError, RedisHardTimeout)
 
 # A long-lived running total, not a rate-limit window — 30 days is generous
 # headroom for this project's current dev/pilot scale, revisited if this ever
@@ -24,15 +42,31 @@ def increment_counter(key: str, amount: int = 1) -> None:
     """Atomic Redis `INCR` via Django's cache framework (`django_redis` maps
     `cache.incr()` to a real Redis `INCR`, not a read-modify-write) — correct
     under real concurrent writers from independent processes, the actual
-    property this section's Test Gate cares about."""
+    property this section's Test Gate cares about.
+
+    Real gap found and closed at Phase 3 Exit (livetracker2.md, 2026-07-24, live
+    "kill Redis" re-test): a genuine Redis connection failure raises
+    `ConnectionInterrupted`, not the `ValueError` this function already handled —
+    left uncaught, incrementing a counter (a non-critical observability
+    side-effect called from real request-handling code, e.g. BAP's search-trigger
+    success path) could crash the actual customer-facing request it's attached
+    to. A dropped counter increment during a Redis outage is acceptable (see
+    DATABASE.md's Redis Persistence section); crashing the request over it is not."""
     try:
-        cache.incr(key, amount)
-    except ValueError:
-        cache.set(key, amount, timeout=_COUNTER_TTL_SECONDS)
+        try:
+            call_with_hard_timeout(cache.incr, key, amount)
+        except ValueError:
+            call_with_hard_timeout(cache.set, key, amount, timeout=_COUNTER_TTL_SECONDS)
+    except _REDIS_UNAVAILABLE:
+        logger.warning("metrics: Redis unreachable, dropping increment for %s", key)
 
 
 def get_counter(key: str) -> int:
-    return cache.get(key, 0)
+    try:
+        return call_with_hard_timeout(cache.get, key, 0)
+    except _REDIS_UNAVAILABLE:
+        logger.warning("metrics: Redis unreachable, reporting 0 for %s", key)
+        return 0
 
 
 def render_counter_family(

@@ -118,15 +118,17 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        lib: [beckn_crypto, beckn_transaction, event_bus, resilient_http]
-    # These 4 shared/ libraries are framework-free (no Django — confirmed directly in each
+        lib: [beckn_crypto, beckn_transaction, event_bus, resilient_http, redis_safe]
+    # These 5 shared/ libraries are framework-free (no Django — confirmed directly in each
     # tests.py's own imports) but live outside every app's own working directory, so none of
     # the per-app test-python job's pytest runs above ever discover or execute them — a real
     # gap found live while adding new tests to resilient_http/tests.py (livetracker2.md's
     # Phase 3.11 follow-up fixes) and confirming they'd actually run anywhere in CI, not just
     # manually inside a container. event_bus and resilient_http need a real Redis for their
     # Redis-backed tests (TEST_REDIS_URL, the exact env var name both files' own fixtures
-    # already read); beckn_crypto and beckn_transaction don't touch Redis at all.
+    # already read); beckn_crypto, beckn_transaction, and redis_safe don't touch Redis at all
+    # (redis_safe is a generic hard-deadline primitive, confirmed by direct read to have no
+    # Redis import of its own — callers elsewhere wire it to real Redis clients).
     services:
       redis:
         image: redis:7-alpine

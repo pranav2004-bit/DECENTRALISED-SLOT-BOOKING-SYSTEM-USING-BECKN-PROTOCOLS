@@ -5,12 +5,15 @@ Test Gate wording ("rapid-fire ... spam is throttled").
 """
 
 import json
+from unittest.mock import patch
 
 import pytest
+import redis.exceptions
 from django.core.cache import cache
 from django.http import JsonResponse
 from django.test import RequestFactory
 from django_observability.rate_limit import rate_limit
+from django_redis.exceptions import ConnectionInterrupted
 
 
 @pytest.fixture(autouse=True)
@@ -56,3 +59,36 @@ def test_rate_limit_is_scoped_per_client_ip():
 
     other_client = factory.post("/dummy", REMOTE_ADDR="10.0.0.2")
     assert _dummy_view(other_client).status_code == 200
+
+
+def test_rate_limit_fails_open_when_redis_itself_is_unreachable():
+    """Real gap found and closed at Phase 3 Exit (livetracker2.md, 2026-07-24, live
+    "kill Redis" re-test): only `ValueError` was ever caught here — a genuine Redis
+    connection failure raises `ConnectionInterrupted` instead, which was uncaught and
+    crashed/hung every rate-limited endpoint, including `/search` itself. The request
+    must go through, not fail, when the rate limiter's own dependency is down."""
+    factory = RequestFactory()
+    request = factory.post("/dummy")
+    with patch(
+        "django_observability.rate_limit.cache.incr", side_effect=ConnectionInterrupted("down")
+    ):
+        response = _dummy_view(request)
+    assert response.status_code == 200
+
+
+def test_rate_limit_fails_open_on_the_raw_redis_connection_error_too():
+    """`cache.incr()`'s fallback path (`cache.set()`, on a cache-miss `ValueError`)
+    was observed live raising the raw `redis.exceptions.ConnectionError` instead of
+    `ConnectionInterrupted` — a genuinely different exception class, confirmed not a
+    subclass of the other. Both must fail open, not just one."""
+    factory = RequestFactory()
+    request = factory.post("/dummy")
+    with (
+        patch("django_observability.rate_limit.cache.incr", side_effect=ValueError()),
+        patch(
+            "django_observability.rate_limit.cache.set",
+            side_effect=redis.exceptions.ConnectionError("down"),
+        ),
+    ):
+        response = _dummy_view(request)
+    assert response.status_code == 200

@@ -123,11 +123,18 @@ WSGI_APPLICATION = "bap.wsgi.application"
 DATABASES = {"default": env.db_url_config(DATABASE_URL)}
 DATABASES["default"]["CONN_MAX_AGE"] = env.int("DB_CONN_MAX_AGE", default=60)
 
+# Real gap found and closed at Phase 3 Exit (livetracker2.md, 2026-07-24, live "kill
+# Redis" re-test, third pass) — see BPP/backend/bpp/settings.py's identical comment:
+# no socket timeout meant a real Redis outage could hang on the OS-level TCP timeout
+# before any exception fired, defeating the fail-open handling added elsewhere.
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
         "LOCATION": REDIS_URL,
-        "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            "CONNECTION_POOL_KWARGS": {"socket_connect_timeout": 0.5, "socket_timeout": 0.5},
+        },
     }
 }
 

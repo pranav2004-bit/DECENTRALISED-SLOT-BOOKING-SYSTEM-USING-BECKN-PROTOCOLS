@@ -23,8 +23,15 @@ COPY shared/event_bus ./shared/event_bus
 COPY shared/beckn_crypto ./shared/beckn_crypto
 COPY shared/beckn_transaction ./shared/beckn_transaction
 COPY shared/realtime ./shared/realtime
+COPY shared/redis_safe ./shared/redis_safe
 COPY BAP/backend/ ./BAP/backend/
-RUN chown -R app:app /app
+# Phase 3 Exit fix (livetracker2.md, 2026-07-24): /app/data/secrets is now a named
+# Docker volume (persisted signing/encryption keys, see docker-compose.yml). A fresh
+# named volume is created root-owned by the Docker daemon on first mount — Docker
+# only copies the *image's* existing ownership/content into it, so this directory
+# must already exist in the image, owned by `app`, before that first mount, or the
+# non-root runtime user gets a real PermissionError writing its own key file.
+RUN mkdir -p /app/data/secrets && chown -R app:app /app
 USER app
 WORKDIR /app/BAP/backend
 

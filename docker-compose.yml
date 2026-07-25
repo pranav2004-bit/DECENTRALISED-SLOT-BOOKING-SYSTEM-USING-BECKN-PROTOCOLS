@@ -90,6 +90,13 @@ services:
       context: .
       dockerfile: registry/Dockerfile
     env_file: ./registry/.env
+    # Real gap found and fixed at Phase 3 Exit (livetracker2.md, 2026-07-24): this
+    # path was never a persisted volume, so every container recreate silently wiped
+    # Registry's own signing/encryption identity, and every dependent participant's
+    # trust relationship with it — the exact "Using ephemeral Registry ... key pair"
+    # warning seen repeatedly in this session's own live testing.
+    volumes:
+      - registry-secrets:/run/secrets
     depends_on:
       registry-db:
         condition: service_healthy
@@ -101,6 +108,11 @@ services:
       context: .
       dockerfile: beckn-gateway/Dockerfile
     env_file: ./beckn-gateway/.env
+    # Same fix as registry above — Gateway's key wipe on recreate is the exact,
+    # repeatedly-hit "re-run onboarding for all three" recovery procedure documented
+    # in RUNBOOK.md; this volume is what actually closes that gap going forward.
+    volumes:
+      - gateway-secrets:/app/data/secrets
     depends_on:
       registry:
         condition: service_started
@@ -114,6 +126,9 @@ services:
       context: .
       dockerfile: BAP/backend/Dockerfile
     env_file: ./BAP/backend/.env
+    # Same fix as registry/beckn-gateway above.
+    volumes:
+      - bap-secrets:/app/data/secrets
     depends_on:
       bap-db:
         condition: service_healthy
@@ -141,6 +156,9 @@ services:
       context: .
       dockerfile: BPP/backend/Dockerfile
     env_file: ./BPP/backend/.env
+    # Same fix as registry/beckn-gateway/bap-backend above.
+    volumes:
+      - bpp-secrets:/app/data/secrets
     depends_on:
       bpp-db:
         condition: service_healthy
@@ -199,3 +217,13 @@ volumes:
   bpp-db-data:
   prometheus-data:
   grafana-data:
+  # Signing/encryption key persistence (Phase 3 Exit fix, livetracker2.md 2026-07-24)
+  # — see the `registry`/`beckn-gateway`/`bap-backend`/`bpp-backend` service comments
+  # above for why. Local named volumes only, matching the existing *-db-data pattern;
+  # a real deployment still needs an actual secrets manager (SECURITY.md's own
+  # documented `[ENT]` HSM/KMS item) — this only fixes the dev/CI container-recreate
+  # data-loss problem, not production key custody.
+  registry-secrets:
+  gateway-secrets:
+  bap-secrets:
+  bpp-secrets:

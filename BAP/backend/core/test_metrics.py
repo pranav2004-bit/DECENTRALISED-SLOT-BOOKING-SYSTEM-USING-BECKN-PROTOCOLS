@@ -3,9 +3,13 @@ counters. Real cache (BAP's own `django_redis`-configured `django.core.cache`),
 not mocked."""
 
 import threading
+from unittest.mock import patch
 
 import pytest
+import redis.exceptions
 from django.core.cache import cache
+from django_observability import metrics as shared_metrics
+from django_redis.exceptions import ConnectionInterrupted
 
 from . import metrics
 
@@ -55,3 +59,38 @@ def test_two_real_concurrent_processes_produce_one_correct_combined_total():
 
     rendered = "\n".join(metrics.render_metrics())
     assert f'stage="search_triggered"}} {iterations * 4}' in rendered
+
+
+def test_increment_counter_does_not_raise_when_redis_is_unreachable():
+    """Real gap found and closed at Phase 3 Exit (livetracker2.md, 2026-07-24, live
+    "kill Redis" re-test): only `ValueError` was caught here — a genuine Redis
+    connection failure raises `ConnectionInterrupted` instead, left uncaught. This
+    is called from real request-handling code (e.g. the search-trigger success
+    path) — a dropped metrics increment must never crash the actual customer
+    request it's attached to."""
+    with patch(
+        "django_observability.metrics.cache.incr", side_effect=ConnectionInterrupted("down")
+    ):
+        shared_metrics.increment_counter("some:key")  # must not raise
+
+
+def test_get_counter_returns_zero_when_redis_is_unreachable():
+    with patch(
+        "django_observability.metrics.cache.get", side_effect=ConnectionInterrupted("down")
+    ):
+        assert shared_metrics.get_counter("some:key") == 0
+
+
+def test_increment_counter_does_not_raise_on_the_raw_redis_connection_error_too():
+    """`cache.incr()`'s fallback path (`cache.set()`, on a cache-miss `ValueError`)
+    was observed live raising the raw `redis.exceptions.ConnectionError` instead of
+    `ConnectionInterrupted` — a genuinely different exception class. Both must be
+    swallowed, not just one."""
+    with (
+        patch("django_observability.metrics.cache.incr", side_effect=ValueError()),
+        patch(
+            "django_observability.metrics.cache.set",
+            side_effect=redis.exceptions.ConnectionError("down"),
+        ),
+    ):
+        shared_metrics.increment_counter("some:key")  # must not raise

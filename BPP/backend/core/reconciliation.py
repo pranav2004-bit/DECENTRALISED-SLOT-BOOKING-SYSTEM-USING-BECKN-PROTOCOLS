@@ -33,7 +33,9 @@ _started_lock = threading.Lock()
 
 
 def _run_once() -> None:
-    redis_client = redis.Redis.from_url(settings.REDIS_URL)
+    redis_client = redis.Redis.from_url(
+        settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5
+    )
     event_bus = get_event_bus()
 
     try:

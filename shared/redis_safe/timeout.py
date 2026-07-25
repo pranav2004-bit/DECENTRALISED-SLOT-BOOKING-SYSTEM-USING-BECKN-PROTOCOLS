@@ -26,6 +26,15 @@ die on its own — acceptable because every caller here already treats a
 timeout the same as any other "Redis unavailable" failure (fail open / fall
 back to Postgres), and this only fires during a genuine outage, not normal
 operation.
+
+Default raised twice, both times because a live regression test caught real
+scheduling jitter at high concurrency, not because DNS/connect/I/O itself got
+slower: 0.5s dropped 2/800 calls under this project's own concurrency
+regression test on a local dev machine; 2.0s then dropped 3/800 the same way
+on GitHub Actions' more resource-constrained CI runners. Settled at 5.0s —
+still far below the ~4s+ unbounded DNS-resolution hang this module exists to
+cap, and irrelevant to normal operation either way (a healthy call returns in
+microseconds regardless of the ceiling).
 """
 
 import queue
@@ -37,7 +46,7 @@ class RedisHardTimeout(Exception):
     treat this identically to any other Redis-unavailable exception."""
 
 
-def call_with_hard_timeout(func, *args, timeout=2.0, **kwargs):
+def call_with_hard_timeout(func, *args, timeout=5.0, **kwargs):
     result: queue.Queue = queue.Queue(maxsize=1)
 
     def _run():

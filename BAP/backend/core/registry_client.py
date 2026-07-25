@@ -37,7 +37,9 @@ def get_client() -> ResilientHttpClient:
             timeout_seconds=settings.HTTP_CLIENT_TIMEOUT_MS / 1000,
             max_retries=settings.HTTP_CLIENT_MAX_RETRIES,
             circuit_breaker_threshold=settings.HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD,
-            redis_client=redis.Redis.from_url(settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5),
+            redis_client=redis.Redis.from_url(
+                settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5
+            ),
             circuit_breaker_key="bap-registry-client",
         )
     return _client
@@ -58,7 +60,9 @@ def get_gateway_client() -> ResilientHttpClient:
             timeout_seconds=settings.HTTP_CLIENT_TIMEOUT_MS / 1000,
             max_retries=settings.HTTP_CLIENT_MAX_RETRIES,
             circuit_breaker_threshold=settings.HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD,
-            redis_client=redis.Redis.from_url(settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5),
+            redis_client=redis.Redis.from_url(
+                settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5
+            ),
             circuit_breaker_key="bap-gateway-client",
         )
     return _gateway_client

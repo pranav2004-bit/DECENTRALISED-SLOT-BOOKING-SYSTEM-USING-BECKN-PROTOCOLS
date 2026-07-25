@@ -69,7 +69,9 @@ def test_rate_limit_fails_open_when_redis_itself_is_unreachable():
     must go through, not fail, when the rate limiter's own dependency is down."""
     factory = RequestFactory()
     request = factory.post("/dummy")
-    with patch("django_observability.rate_limit.cache.incr", side_effect=ConnectionInterrupted("down")):
+    with patch(
+        "django_observability.rate_limit.cache.incr", side_effect=ConnectionInterrupted("down")
+    ):
         response = _dummy_view(request)
     assert response.status_code == 200
 

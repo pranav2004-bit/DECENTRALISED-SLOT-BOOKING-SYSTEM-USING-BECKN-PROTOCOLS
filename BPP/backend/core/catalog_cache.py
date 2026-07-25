@@ -28,7 +28,6 @@ import logging
 import redis.exceptions
 from django.core.cache import cache
 from django_redis.exceptions import ConnectionInterrupted
-
 from redis_safe import RedisHardTimeout, call_with_hard_timeout
 
 from .catalog import build_beauty_catalog
@@ -76,7 +75,9 @@ def get_cached_beauty_catalog() -> dict:
     try:
         call_with_hard_timeout(cache.set, CACHE_KEY, catalog, timeout=CACHE_TTL_SECONDS)
     except _REDIS_UNAVAILABLE:
-        logger.warning("catalog_cache: Redis unreachable, could not persist the freshly-built catalog")
+        logger.warning(
+            "catalog_cache: Redis unreachable, could not persist the freshly-built catalog"
+        )
     return catalog
 
 

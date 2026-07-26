@@ -1,19 +1,28 @@
-"""Real /track and /on_track business logic (livetracker2.md Phase 3.5). Same
-synchronous-ACK/background-dispatch split as every other action.
+"""Real /track and /on_track business logic (livetracker2.md Phase 3.5, deepened
+in §4.2). Same synchronous-ACK/background-dispatch split as every other action.
 
 Wire shape confirmed before implementing (§L.4/§L.5): /track's REQUEST carries
 `message.order_id` + `callback_url` (accepted but not acted on differently —
 this project keeps the existing Gateway-relay pattern for every action, rather
 than a direct push to `callback_url`). **`/on_track`'s message carries
 `tracking` ($ref `Tracking.yaml`), NOT an `Order`** — a real, material
-correction from this phase's own research: `Tracking.status`'s real enum is
+correction from Phase 3.5's own research: `Tracking.status`'s real enum is
 `active`/`inactive` (whether a *live position feed* exists), not the
 `SCHEDULED`/`IN_PROGRESS`/`COMPLETED` fulfillment-progress values §3.5's
 original wording assumed. Genuine live-location tracking is not meaningful for
-a walk-in Beauty appointment (correctly deferred to Phase 4.2's Automotive
-technician-dispatch case) — so this always, honestly, reports `"inactive"`.
-Real fulfillment-progress exposure is `/status`'s job (`status_service.py`),
-not duplicated here.
+a walk-in Beauty appointment or a Healthcare consultation, so those domains
+always, honestly, report `"inactive"`.
+
+§4.2's real depth for Automotive (technician dispatch, the case §3.5
+deliberately deferred): `status` reflects the real, already-tracked
+`Booking.fulfillment_status` — `"active"` once a technician is genuinely
+`IN_PROGRESS` on this booking, `"inactive"` otherwise (`SCHEDULED`/`COMPLETED`/
+`NO_SHOW`). No `location`/`url` are populated even for Automotive — this
+project has no real GPS/live-position data source, and inventing coordinates
+would be dishonest fabrication, not "depth"; `status` alone, backed by a real
+existing field, is the genuine signal available today. Real fulfillment-
+progress detail beyond that remains `/status`'s job (`status_service.py`), not
+duplicated here.
 """
 
 import json
@@ -33,6 +42,7 @@ from inventory_core.models import Booking
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
+from .models import BusinessAccount
 from .participant_keys import get_signing_keys
 
 logger = logging.getLogger("bpp")
@@ -101,9 +111,14 @@ def _on_track_context(*, request_context: dict) -> dict:
 
 def dispatch_on_track(*, payload: dict) -> None:
     """Resolves the real Booking referenced by `message.order_id`, verifies it's
-    held by *this* transaction, then returns a real (always-`inactive`)
-    `Tracking` object via /on_track — read-only, no state mutation.
-    Fire-and-forget: failures are logged, not raised."""
+    held by *this* transaction, then returns a real `Tracking` object via
+    /on_track — read-only, no state mutation. Fire-and-forget: failures are
+    logged, not raised.
+
+    §4.2: `status` is domain-aware — Beauty/Healthcare always report
+    `"inactive"` (unchanged, honest — no live feed exists for either), while
+    Automotive reports `"active"`/`"inactive"` off the booking's own real
+    `fulfillment_status` (see module docstring)."""
     context = payload["context"]
     order_id = payload["message"]["order_id"]
 
@@ -111,7 +126,7 @@ def dispatch_on_track(*, payload: dict) -> None:
     resolved_tracking = None
 
     try:
-        booking = Booking.objects.get(pk=order_id)
+        booking = Booking.objects.select_related("slot__resource").get(pk=order_id)
     except (Booking.DoesNotExist, ValueError):
         booking = None
 
@@ -120,7 +135,12 @@ def dispatch_on_track(*, payload: dict) -> None:
     elif booking.holder_ref != context["transaction_id"]:
         error = {"code": "SLOT_UNAVAILABLE", "message": "No matching booking for this order"}
     else:
-        resolved_tracking = {"status": "inactive"}
+        business = BusinessAccount.objects.get(id=booking.slot.resource.owner_ref)
+        if business.domain_code == settings.DOMAIN_AUTOMOTIVE:
+            is_active = booking.fulfillment_status == Booking.FulfillmentStatus.IN_PROGRESS
+            resolved_tracking = {"status": "active" if is_active else "inactive"}
+        else:
+            resolved_tracking = {"status": "inactive"}
 
     on_track_context = _on_track_context(request_context=context)
     on_track_message: dict = {

@@ -27,6 +27,8 @@ always claimed existed. A genuinely-scheduled periodic sweep (`reconciliation.py
 `sweep_expired_holds()`) is the remaining safety net for holds nobody ever touches again.
 """
 
+import uuid
+
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
@@ -61,6 +63,104 @@ class ReservationHold:
 
     def clear(self, booking_id) -> None:
         self._redis.delete(self._key(booking_id))
+
+
+def find_group_bookings(booking: Booking) -> list[Booking]:
+    """Returns every `Booking` sharing `booking`'s own `booking_group_id`
+    (`domain_data`), including `booking` itself, ordered by id for deterministic
+    handling by callers — or just `[booking]` if it has no group id (the ordinary
+    single-resource case every domain before §4.2 used exclusively).
+
+    §4.2's multi-resource booking support (e.g. Automotive's bay+mechanic pair,
+    held together by `hold_multi_resource_booking` below): lets a caller
+    confirm/cancel every resource in a genuine multi-resource booking together,
+    without `confirm_service.py`/`cancel_service.py` (or any other call site)
+    needing its own awareness of whether a given booking is part of a group —
+    they just call this first and act on whatever it returns.
+    """
+    group_id = (booking.domain_data or {}).get("booking_group_id")
+    if not group_id:
+        return [booking]
+    return list(Booking.objects.filter(domain_data__booking_group_id=group_id).order_by("id"))
+
+
+def hold_multi_resource_booking(
+    slot_ids,
+    *,
+    holder_ref: str,
+    redis_client,
+    ttl_seconds: float,
+    event_bus=None,
+) -> list[Booking] | None:
+    """§4.2's genuine multi-resource booking primitive: atomically holds one unit of
+    capacity across *every* slot in `slot_ids` (each on a different `Resource` —
+    e.g. Automotive's bay + mechanic, both needed simultaneously for one real
+    customer booking), succeeding only if **every** slot has capacity, failing
+    cleanly (returns `None`, nothing held, nothing partially decremented) the
+    moment even one doesn't — never a partial hold left dangling.
+
+    All slots are locked inside **one** `transaction.atomic()` block, in a
+    deterministic order (sorted by id, not the order passed in) — the exact
+    deadlock-avoidance precedent already established by `reschedule_active_booking`
+    above: two concurrent multi-resource holds racing over the same set of slots,
+    submitted in different orders, could otherwise deadlock against each other.
+    Capacity is only checked (never mutated) in a first pass over the locked
+    slots — if any lacks capacity, this returns before mutating anything, so the
+    transaction has nothing to roll back and no torn state is possible either way.
+
+    Returns the new `Booking` rows (all `HELD`, one per slot, quantity 1, sharing
+    a fresh `booking_group_id` in `domain_data` — the same domain_data-linking
+    convention as Beauty's `create_combo_booking`, not a schema change), in the
+    **same order as `slot_ids`** (not the internal locking order) — or `None` if
+    any slot lacked capacity. `event_bus` is optional (`None` by default) — pass a
+    real `EventBus` to also publish one `SlotEvent.RESERVED` per held slot.
+    """
+    slot_ids = list(slot_ids)
+    sorted_ids = sorted(slot_ids, key=str)
+    group_id = str(uuid.uuid4())
+
+    with transaction.atomic():
+        locked = {}
+        for sid in sorted_ids:
+            with Slot.objects.lock_for_mutation(sid) as slot:
+                if slot.status not in (Slot.Status.AVAILABLE, Slot.Status.HELD):
+                    return None
+                if slot.capacity_remaining < 1:
+                    return None
+                locked[str(sid)] = slot
+
+        bookings_by_slot = {}
+        for sid in sorted_ids:
+            slot = locked[str(sid)]
+            slot.capacity_remaining -= 1
+            if slot.capacity_remaining == 0:
+                slot.status = Slot.Status.HELD
+            slot.save(update_fields=["capacity_remaining", "status", "updated_at"])
+            bookings_by_slot[str(sid)] = Booking.objects.create(
+                slot=slot,
+                holder_ref=holder_ref,
+                quantity=1,
+                domain_data={"booking_group_id": group_id},
+            )
+
+    bookings = [bookings_by_slot[str(sid)] for sid in slot_ids]
+
+    hold = ReservationHold(redis_client=redis_client)
+    for booking in bookings:
+        hold.start(booking.id, ttl_seconds=ttl_seconds)
+
+    if event_bus is not None:
+        for slot_id, booking in zip(slot_ids, bookings, strict=True):
+            publish_event(
+                event_bus,
+                SlotEvent.RESERVED,
+                slot_id=str(slot_id),
+                booking_id=str(booking.id),
+                holder_ref=holder_ref,
+                quantity=1,
+            )
+
+    return bookings
 
 
 def hold_slot(

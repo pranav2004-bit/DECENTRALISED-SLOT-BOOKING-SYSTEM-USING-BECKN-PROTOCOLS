@@ -2,6 +2,11 @@
 catalog cache and its write-through invalidation on the two real triggers (Resource
 creation, BusinessAccount active-status changes) — see catalog_cache.py's module
 docstring for why Slot-level events were never the real trigger.
+
+§4.1: every call here is explicit about `settings.DOMAIN_BEAUTY` — the cache is now
+per-domain, so these tests exercise the Beauty domain specifically, not "the" cache.
+Domain-isolation itself (a Healthcare entry never affecting Beauty's) is proven in
+test_catalog.py instead, alongside the Healthcare adapter tests.
 """
 
 import time
@@ -9,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 import redis.exceptions
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.db import connection
@@ -18,17 +24,20 @@ from django.urls import reverse
 from django_redis.exceptions import ConnectionInterrupted
 from inventory_core.models import Resource
 
-from core.catalog import build_beauty_catalog
+from core.catalog import build_catalog
 from core.catalog_cache import (
-    CACHE_KEY,
-    get_cached_beauty_catalog,
-    invalidate_beauty_catalog_cache,
-    reconcile_beauty_catalog_cache,
+    _cache_key,
+    get_cached_catalog,
+    invalidate_catalog_cache,
+    reconcile_catalog_cache,
 )
 
 BusinessAccount = get_user_model()
 
 TEST_PASSWORD = "a-strong-passw0rd!"  # pragma: allowlist secret
+
+DOMAIN = settings.DOMAIN_BEAUTY
+CACHE_KEY = _cache_key(DOMAIN)
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +54,7 @@ def client():
 
 def _business_with_resource(*, business_name="Glow Salon", contact="owner@example.com"):
     business = BusinessAccount.objects.create_user(
-        contact=contact, business_name=business_name, password=TEST_PASSWORD
+        contact=contact, business_name=business_name, password=TEST_PASSWORD, domain_code=DOMAIN
     )
     Resource.objects.create(
         owner_ref=str(business.id),
@@ -56,32 +65,32 @@ def _business_with_resource(*, business_name="Glow Salon", contact="owner@exampl
 
 
 @pytest.mark.django_db
-def test_get_cached_beauty_catalog_matches_the_real_uncached_build():
+def test_get_cached_catalog_matches_the_real_uncached_build():
     _business_with_resource()
-    assert get_cached_beauty_catalog() == build_beauty_catalog()
+    assert get_cached_catalog(DOMAIN) == build_catalog(DOMAIN)
 
 
 @pytest.mark.django_db
 def test_second_call_is_served_from_cache_without_hitting_the_database():
     """LOAD (§3.8's own Test Gate): a cached read genuinely skips the DB query
-    `build_beauty_catalog()` would otherwise run — not just "returns the same
+    `build_catalog()` would otherwise run — not just "returns the same
     data faster by coincidence"."""
     _business_with_resource()
-    get_cached_beauty_catalog()  # first call: cold, populates the cache
+    get_cached_catalog(DOMAIN)  # first call: cold, populates the cache
 
     with CaptureQueriesContext(connection) as ctx:
-        get_cached_beauty_catalog()
+        get_cached_catalog(DOMAIN)
     assert len(ctx.captured_queries) == 0
 
 
 @pytest.mark.django_db
 def test_invalidate_forces_the_next_call_to_hit_the_database_again():
     _business_with_resource()
-    get_cached_beauty_catalog()
-    invalidate_beauty_catalog_cache()
+    get_cached_catalog(DOMAIN)
+    invalidate_catalog_cache(DOMAIN)
 
     with CaptureQueriesContext(connection) as ctx:
-        get_cached_beauty_catalog()
+        get_cached_catalog(DOMAIN)
     assert len(ctx.captured_queries) > 0
 
 
@@ -91,7 +100,7 @@ def test_creating_a_resource_via_the_real_endpoint_invalidates_the_cache(client)
     searching right after a business adds a new service must see it, not a
     stale pre-creation catalog."""
     business = _business_with_resource(contact="first@example.com")
-    stale = get_cached_beauty_catalog()
+    stale = get_cached_catalog(DOMAIN)
     assert len(stale["providers"][0]["items"]) == 1
 
     client.force_login(business)
@@ -102,7 +111,7 @@ def test_creating_a_resource_via_the_real_endpoint_invalidates_the_cache(client)
     )
     assert resp.status_code == 201
 
-    fresh = get_cached_beauty_catalog()
+    fresh = get_cached_catalog(DOMAIN)
     assert len(fresh["providers"][0]["items"]) == 2
 
 
@@ -111,7 +120,7 @@ def test_saving_a_business_account_invalidates_the_cache():
     """Catches Django-admin-driven `is_active` toggles, which never go through
     application view code (§2.2's own established deactivation mechanism)."""
     business = _business_with_resource()
-    get_cached_beauty_catalog()
+    get_cached_catalog(DOMAIN)
     assert cache.get(CACHE_KEY) is not None
 
     business.is_active = False
@@ -123,12 +132,12 @@ def test_saving_a_business_account_invalidates_the_cache():
 @pytest.mark.django_db
 def test_deactivating_a_business_account_removes_it_from_the_next_catalog_build():
     business = _business_with_resource()
-    get_cached_beauty_catalog()
+    get_cached_catalog(DOMAIN)
 
     business.is_active = False
     business.save()
 
-    fresh = get_cached_beauty_catalog()
+    fresh = get_cached_catalog(DOMAIN)
     assert fresh["providers"] == []
 
 
@@ -144,6 +153,7 @@ def _seed_realistic_catalog(*, business_count=40, resources_per_business=3):
                 contact=f"business-{i}@example.com",
                 business_name=f"Salon {i}",
                 password="unusable",  # pragma: allowlist secret
+                domain_code=DOMAIN,
             )
             for i in range(business_count)
         ]
@@ -166,23 +176,23 @@ def test_reconcile_corrects_a_cache_entry_deliberately_corrupted_out_of_band():
     """livetracker2.md §3.11's exact Test Gate wording: deliberately corrupt a cache entry
     out-of-band, confirm the (here, directly-invoked) reconciliation run detects and corrects
     it — real drift the write-through invalidation triggers never see, e.g. a future mutation
-    path that forgets to call `invalidate_beauty_catalog_cache()`."""
+    path that forgets to call `invalidate_catalog_cache()`."""
     _business_with_resource()
-    get_cached_beauty_catalog()
+    get_cached_catalog(DOMAIN)
     cache.set(CACHE_KEY, {"providers": [{"this": "is deliberately corrupted, out-of-band"}]})
 
-    corrected = reconcile_beauty_catalog_cache()
+    corrected = reconcile_catalog_cache(DOMAIN)
 
     assert corrected is True
-    assert cache.get(CACHE_KEY) == build_beauty_catalog()
+    assert cache.get(CACHE_KEY) == build_catalog(DOMAIN)
 
 
 @pytest.mark.django_db
 def test_reconcile_is_a_noop_when_the_cache_already_matches_reality():
     _business_with_resource()
-    get_cached_beauty_catalog()
+    get_cached_catalog(DOMAIN)
 
-    corrected = reconcile_beauty_catalog_cache()
+    corrected = reconcile_catalog_cache(DOMAIN)
 
     assert corrected is False
 
@@ -192,10 +202,10 @@ def test_reconcile_populates_a_missing_cache_entry_too():
     _business_with_resource()
     assert cache.get(CACHE_KEY) is None
 
-    corrected = reconcile_beauty_catalog_cache()
+    corrected = reconcile_catalog_cache(DOMAIN)
 
     assert corrected is True
-    assert cache.get(CACHE_KEY) == build_beauty_catalog()
+    assert cache.get(CACHE_KEY) == build_catalog(DOMAIN)
 
 
 @pytest.mark.django_db
@@ -210,15 +220,15 @@ def test_cached_search_is_measurably_faster_than_the_equivalent_uncached_db_quer
     uncached_times = []
     for _ in range(5):
         start = time.perf_counter()
-        build_beauty_catalog()
+        build_catalog(DOMAIN)
         uncached_times.append(time.perf_counter() - start)
     uncached_median = sorted(uncached_times)[len(uncached_times) // 2]
 
-    get_cached_beauty_catalog()  # warm the cache once
+    get_cached_catalog(DOMAIN)  # warm the cache once
     cached_times = []
     for _ in range(5):
         start = time.perf_counter()
-        get_cached_beauty_catalog()
+        get_cached_catalog(DOMAIN)
         cached_times.append(time.perf_counter() - start)
     cached_median = sorted(cached_times)[len(cached_times) // 2]
 
@@ -242,28 +252,28 @@ def test_get_cached_catalog_falls_back_to_a_fresh_build_when_redis_is_unreachabl
     never to "broken.\""""
     _business_with_resource()
     with patch("core.catalog_cache.cache.get", side_effect=ConnectionInterrupted("down")):
-        result = get_cached_beauty_catalog()
-    assert result == build_beauty_catalog()
+        result = get_cached_catalog(DOMAIN)
+    assert result == build_catalog(DOMAIN)
 
 
 @pytest.mark.django_db
 def test_get_cached_catalog_does_not_raise_if_the_cache_write_fails_after_a_fresh_build():
     _business_with_resource()
     with patch("core.catalog_cache.cache.set", side_effect=ConnectionInterrupted("down")):
-        result = get_cached_beauty_catalog()  # must not raise
-    assert result == build_beauty_catalog()
+        result = get_cached_catalog(DOMAIN)  # must not raise
+    assert result == build_catalog(DOMAIN)
 
 
 def test_invalidate_does_not_raise_when_redis_is_unreachable():
     with patch("core.catalog_cache.cache.delete", side_effect=ConnectionInterrupted("down")):
-        invalidate_beauty_catalog_cache()  # must not raise
+        invalidate_catalog_cache(DOMAIN)  # must not raise
 
 
 @pytest.mark.django_db
 def test_reconcile_skips_the_tick_cleanly_when_redis_is_unreachable():
     _business_with_resource()
     with patch("core.catalog_cache.cache.get", side_effect=ConnectionInterrupted("down")):
-        corrected = reconcile_beauty_catalog_cache()  # must not raise
+        corrected = reconcile_catalog_cache(DOMAIN)  # must not raise
     assert corrected is False
 
 
@@ -277,5 +287,5 @@ def test_get_cached_catalog_falls_back_on_the_raw_redis_connection_error_too():
     with patch(
         "core.catalog_cache.cache.set", side_effect=redis.exceptions.ConnectionError("down")
     ):
-        result = get_cached_beauty_catalog()  # must not raise
-    assert result == build_beauty_catalog()
+        result = get_cached_catalog(DOMAIN)  # must not raise
+    assert result == build_catalog(DOMAIN)

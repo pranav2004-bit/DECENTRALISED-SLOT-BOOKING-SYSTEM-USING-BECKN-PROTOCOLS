@@ -129,7 +129,20 @@ def submit_subscribe(domain: str) -> OnboardingStatus:
         status.save(update_fields=["status", "last_error", "updated_at"])
         raise OnboardingError(f"Subscribe rejected by Registry: {detail}") from exc
 
-    status.status = OnboardingStatus.Status(result["status"])
+    # Real race found live in BPP's identical code (2026-07-26): Registry's own
+    # `handle_subscribe()` dispatches the on_subscribe challenge *synchronously, before
+    # responding* (its own docstring: "synchronously dispatch ... and attempt
+    # verification before returning"), so by the time `registry_client.subscribe()`
+    # above returns, `handle_on_subscribe()` below may already have flipped this exact
+    # row to SUBSCRIBED. Registry's /subscribe response body always literally says
+    # `{"status": "UNDER_SUBSCRIPTION"}` regardless — it's not updated with the outcome
+    # of the challenge it just ran — so blindly writing `result["status"]` here would
+    # stomp a genuine SUBSCRIBED back to UNDER_SUBSCRIPTION using this function's own
+    # stale, pre-HTTP-call `status` object. `handle_on_subscribe` is the one
+    # authoritative path to SUBSCRIBED; never downgrade a row it already moved there.
+    status.refresh_from_db()
+    if status.status != OnboardingStatus.Status.SUBSCRIBED:
+        status.status = OnboardingStatus.Status(result["status"])
     status.last_error = ""
     status.save(update_fields=["status", "last_error", "updated_at"])
     return status

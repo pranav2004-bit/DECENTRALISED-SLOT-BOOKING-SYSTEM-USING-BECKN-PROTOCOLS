@@ -21,7 +21,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from . import registry_client, trust
-from .catalog_cache import get_cached_beauty_catalog
+from .catalog_cache import get_cached_catalog
 from .crypto import sign_outbound_request
 from .participant_keys import get_signing_keys
 
@@ -71,13 +71,17 @@ def dispatch_on_search(*, payload: dict) -> None:
     logged, not raised, same discipline as Gateway's own dispatch_search/
     relay_on_search.
 
-    §3.8: reads through `catalog_cache.get_cached_beauty_catalog()` (Redis-backed)
-    instead of calling `build_beauty_catalog()` directly — a real, repeated DB read
-    every search previously re-ran unconditionally. `confirm` and every other
-    booking-mutation path never consults this cache (see catalog_cache.py's module
-    docstring)."""
+    §3.8: reads through `catalog_cache.get_cached_catalog()` (Redis-backed) instead of
+    calling `build_catalog()` directly — a real, repeated DB read every search
+    previously re-ran unconditionally. `confirm` and every other booking-mutation path
+    never consults this cache (see catalog_cache.py's module docstring).
+
+    §4.1: fetches the catalog for *the domain the request actually asked for*
+    (`context["domain"]`), not a hardcoded Beauty catalog — a real gap found via audit
+    before implementing Healthcare, since this previously ignored the incoming domain
+    entirely and would have returned Beauty results to a Healthcare search."""
     context = payload["context"]
-    catalog = get_cached_beauty_catalog()
+    catalog = get_cached_catalog(context["domain"])
 
     on_search_context = build_context(
         domain=context["domain"],

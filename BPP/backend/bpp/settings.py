@@ -54,10 +54,15 @@ HTTP_CLIENT_TIMEOUT_MS = env.int("HTTP_CLIENT_TIMEOUT_MS", default=5000)
 HTTP_CLIENT_MAX_RETRIES = env.int("HTTP_CLIENT_MAX_RETRIES", default=3)
 HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD = env.int("HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD", default=5)
 
-# Domain codes — Healthcare/Automotive pending confirmation, per
-# protocol_compliance_notes_v1.1.md "Remaining Open Items" and livetracker1.md Phase 3.2.
-DOMAIN_HEALTHCARE = env("DOMAIN_HEALTHCARE", default="CONFIRM_BEFORE_USE")
-DOMAIN_AUTOMOTIVE = env("DOMAIN_AUTOMOTIVE", default="CONFIRM_BEFORE_USE")
+# Domain codes — Phase 4.1/4.2 (livetracker2.md), resolved per protocol_compliance_notes_v1.1.md's
+# "Remaining Open Items": Healthcare is a real, confirmed ONDC code (Tier-A source, the official
+# ONDC-SRV-Specifications developer guide's own example payload). Automotive has no genuine ONDC
+# match — the only adjacent real vertical (ONDC:SRV11 "Home Services") is built around a
+# provider-travels-to-customer fulfillment model, the opposite of this project's "bring the
+# vehicle to a garage" design — so it deliberately keeps its own project-owned code instead of
+# claiming a semantically-mismatched real one.
+DOMAIN_HEALTHCARE = env("DOMAIN_HEALTHCARE", default="ONDC:SRV13")
+DOMAIN_AUTOMOTIVE = env("DOMAIN_AUTOMOTIVE", default="BECKN:AUTO01")
 DOMAIN_BEAUTY = env("DOMAIN_BEAUTY", default="ONDC:RET13")
 
 # Django's test runner forces DEBUG=False regardless of .env — TESTING is the correct

@@ -202,6 +202,43 @@ def test_onboarding_approve_then_verification_file_matches_subscribe_request_id(
 
 
 @pytest.mark.django_db
+def test_onboarding_subscribe_does_not_revert_a_status_already_moved_to_subscribed(
+    onboarding_settings,
+):
+    """Real race found live in BPP's identical code 2026-07-26: Registry's own
+    `handle_subscribe()` dispatches the on_subscribe challenge *synchronously, before
+    responding* — so `handle_on_subscribe()` can flip this row to SUBSCRIBED before
+    `registry_client.subscribe()` above even returns. Registry's /subscribe response
+    body always literally says `{"status": "UNDER_SUBSCRIPTION"}` regardless of the
+    challenge outcome, so `submit_subscribe()` must not blindly write that stale value
+    back over a row `handle_on_subscribe()` already moved to SUBSCRIBED. Simulated here
+    by having the mocked /subscribe callback itself perform the same DB write
+    `handle_on_subscribe()` would have made, mid-call — exactly the interleaving that
+    broke this live."""
+    from core import onboarding_service
+    from core.models import OnboardingStatus
+
+    onboarding_service.approve("ONDC:RET13")
+
+    def subscribe_callback(request):
+        OnboardingStatus.objects.filter(domain="ONDC:RET13").update(
+            status=OnboardingStatus.Status.SUBSCRIBED
+        )
+        return (200, {}, json.dumps({"status": "UNDER_SUBSCRIPTION"}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/subscribe", callback=subscribe_callback
+        )
+        status = onboarding_service.submit_subscribe("ONDC:RET13")
+
+    assert status.status == OnboardingStatus.Status.SUBSCRIBED
+    assert OnboardingStatus.objects.get(domain="ONDC:RET13").status == (
+        OnboardingStatus.Status.SUBSCRIBED
+    )
+
+
+@pytest.mark.django_db
 def test_onboarding_subscribe_marks_failed_on_registry_rejection(onboarding_settings):
     from core import onboarding_service
     from core.models import OnboardingStatus

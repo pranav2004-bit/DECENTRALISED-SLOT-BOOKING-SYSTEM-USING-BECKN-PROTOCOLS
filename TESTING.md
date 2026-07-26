@@ -23,6 +23,30 @@ Found in Phase 1.4: when connecting from the Windows host to a Docker-published 
 
 **Correction (Phase 2 Exit):** an earlier version of this note claimed `docker compose` itself was unaffected, reasoning that services resolve each other by service name inside the Docker network. That's true for *container-to-container* traffic, but wrong for *host-to-container* traffic: hitting a `docker compose`-published port from the host (e.g. `curl http://localhost:8000/health` after `docker compose up`) hits the exact same `wslrelay.exe` conflict — confirmed for real during Phase 2 Exit's full-stack integration test. Always use `127.0.0.1` from the host, for both standalone containers and `docker compose`.
 
+**Docker Desktop full crash + recovery (Phase 3 Exit, 2026-07-25/26) — a multi-hour live incident, recorded so a repeat doesn't cost the same time again.**
+
+*Root causes, compounding:*
+1. Repeated full image rebuilds across one long session (8+ times, no incremental deploy) filled Docker's build cache with ~48GB of reclaimable bloat, driving host disk free space down to **~4.6GB** — critical for a system that constantly needs to write new layers.
+2. A second, redundant build accidentally launched on top of an already-running one (misjudged timing) doubled the disk/CPU contention at the worst possible moment.
+3. Docker Desktop's backend crashed under that pressure — its internal API started returning `502 Bad Gateway` (`docker ps`/`docker stats` hanging or erroring, not just slow).
+4. Separately found: the host machine was down to **0.53GB free RAM out of 7.65GB** at one point — likely a contributing factor to the instability, not just a side effect of it.
+
+*Diagnostic checks, in order of what actually revealed the real problem:*
+- `docker system df` / `df -h` — confirms disk-space exhaustion as a first-order cause.
+- `docker ps` / `docker stats --no-stream` with a short timeout — if even these trivial commands hang or return `502`, the daemon itself is down, not just slow.
+- `wsl -l -v` — the check that found the actual root cause this time: Docker Desktop's own Windows-side app processes (`Docker Desktop.exe`, `com.docker.backend`) can show `Running` and "Responding: True" at the OS level while the `docker-desktop` WSL distro that actually runs the engine is stuck `Stopped` underneath. A normal "Restart" from the tray icon does not reliably fix this.
+
+*Recovery sequence that actually worked, in order (each step alone was insufficient):*
+1. Restart Docker Desktop via the tray icon — clears `502` errors, but often leaves containers in a broken state (zombie/dead/duplicate hash-prefixed containers, some stuck "visible in `docker ps -a` but `docker rm` reports `No such container`" — a genuine daemon-internal metadata inconsistency, not user error).
+2. `wsl --shutdown` (PowerShell) — resets the Linux VM. Sometimes not enough on its own; corrupted container references can survive it.
+3. Fully kill and relaunch the Docker Desktop application itself (`Stop-Process -Name "Docker Desktop","com.docker*"` then relaunch the exe) — a more thorough reset than the tray icon's "Restart."
+4. If the daemon is still unresponsive after that: check `wsl -l -v`. If `docker-desktop` shows `Stopped`, start it directly (`wsl -d docker-desktop -e echo test`) — this is what actually restored a responsive daemon when the first three steps hadn't.
+5. Rebuild any images that got wiped during the crash (no source code is ever at risk — only compiled images).
+6. For containers stuck with ugly hash-prefixed names after a broken recreate cycle: **don't** keep fighting `docker compose up`/`rm -f` against the same corrupted reference — use `docker rename <hash-prefixed-name> <proper-name>` directly on the already-running container instead. Zero downtime, sidesteps the corruption entirely.
+7. Verify nothing was actually lost: check Postgres data survived (e.g. Registry's `Participant` rows still `SUBSCRIBED`), re-run full test suites, and do one live E2E walkthrough with a database-level cross-check — Docker/WSL2-level chaos never touches named volumes, only the containers/images sitting on top of them.
+
+**Preventive note for next time:** if a rebuild is taking noticeably longer than its own established baseline, check `docker system df` and free disk space *before* assuming the build itself is slow or launching a second one — that single check would have caught this incident at its actual root cause, hours earlier.
+
 ## Test Database Strategy
 
 Django's test runner creates an isolated, ephemeral `test_<dbname>` per test run against the same Postgres instance defined in `docker-compose.yml` — never against a shared/persistent database. Fixtures/factories via `factory_boy`, not hand-rolled JSON fixtures, so test data stays close to real model shape as models evolve.

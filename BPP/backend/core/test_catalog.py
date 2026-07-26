@@ -1,8 +1,15 @@
-"""Phase 2.3 Test Gate (livetracker2.md §2.3) for BPP's internal Beauty catalog
-representation.
+"""Phase 2.3 Test Gate (livetracker2.md §2.3) for BPP's internal catalog representation,
+widened per-domain in §4.1.
 
 FUNC: the internal catalog representation round-trips correctly against the confirmed
-real schema field names.
+real schema shape (Beauty's shape is what the fixed schema file below actually checks;
+Healthcare uses the same generic `Catalog`/`Provider`/`Item` shape, proven directly by
+assertion rather than a second schema file, since the shape itself is domain-agnostic —
+only the data inside it differs).
+
+§4.1: also proves domain isolation — a Healthcare business's resources must never appear
+in a Beauty catalog build, and vice versa. Referenced by name from `catalog.py`'s own
+`build_catalog()` docstring.
 """
 
 import json
@@ -10,15 +17,19 @@ from pathlib import Path
 
 import jsonschema
 import pytest
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from inventory_core.models import Resource
 
-from core.catalog import build_beauty_catalog
+from core.catalog import build_catalog
 
 BusinessAccount = get_user_model()
 
 # Test fixture value, not a real credential.
 TEST_PASSWORD = "unused-in-this-test"  # pragma: allowlist secret
+
+BEAUTY = settings.DOMAIN_BEAUTY
+HEALTHCARE = settings.DOMAIN_HEALTHCARE
 
 SCHEMA_PATH = (
     Path(__file__).resolve().parents[3]
@@ -35,7 +46,7 @@ def _schema() -> dict:
 
 @pytest.mark.django_db
 def test_empty_catalog_matches_the_confirmed_schema():
-    catalog = build_beauty_catalog()
+    catalog = build_catalog(BEAUTY)
 
     assert catalog == {"descriptor": {"name": "Beauty Catalog"}, "providers": []}
     jsonschema.validate(instance=catalog, schema=_schema())
@@ -44,7 +55,10 @@ def test_empty_catalog_matches_the_confirmed_schema():
 @pytest.mark.django_db
 def test_catalog_round_trips_real_business_and_resource_data():
     business = BusinessAccount.objects.create_user(
-        contact="salon@example.com", business_name="Glow Salon", password=TEST_PASSWORD
+        contact="salon@example.com",
+        business_name="Glow Salon",
+        password=TEST_PASSWORD,
+        domain_code=BEAUTY,
     )
     Resource.objects.create(
         owner_ref=str(business.id),
@@ -56,14 +70,14 @@ def test_catalog_round_trips_real_business_and_resource_data():
         price_value="750.00",
     )
 
-    catalog = build_beauty_catalog()
+    catalog = build_catalog(BEAUTY)
     jsonschema.validate(instance=catalog, schema=_schema())
 
     assert len(catalog["providers"]) == 1
     provider = catalog["providers"][0]
     assert provider["id"] == str(business.id)
     assert provider["descriptor"]["name"] == "Glow Salon"
-    assert provider["category_id"] == "ONDC:RET13"
+    assert provider["category_id"] == BEAUTY
 
     assert len(provider["items"]) == 1
     item = provider["items"][0]
@@ -77,11 +91,14 @@ def test_catalog_round_trips_real_business_and_resource_data():
 @pytest.mark.django_db
 def test_catalog_item_uses_the_default_price_when_none_set():
     business = BusinessAccount.objects.create_user(
-        contact="salon2@example.com", business_name="Default Price Salon", password=TEST_PASSWORD
+        contact="salon2@example.com",
+        business_name="Default Price Salon",
+        password=TEST_PASSWORD,
+        domain_code=BEAUTY,
     )
     Resource.objects.create(owner_ref=str(business.id), name="Stylist B")
 
-    catalog = build_beauty_catalog()
+    catalog = build_catalog(BEAUTY)
     jsonschema.validate(instance=catalog, schema=_schema())
 
     item = catalog["providers"][0]["items"][0]
@@ -91,12 +108,15 @@ def test_catalog_item_uses_the_default_price_when_none_set():
 @pytest.mark.django_db
 def test_inactive_business_is_excluded_from_the_catalog():
     business = BusinessAccount.objects.create_user(
-        contact="salon@example.com", business_name="Glow Salon", password=TEST_PASSWORD
+        contact="salon@example.com",
+        business_name="Glow Salon",
+        password=TEST_PASSWORD,
+        domain_code=BEAUTY,
     )
     Resource.objects.create(owner_ref=str(business.id), name="Stylist A")
     BusinessAccount.objects.filter(id=business.id).update(is_active=False)
 
-    catalog = build_beauty_catalog()
+    catalog = build_catalog(BEAUTY)
 
     assert catalog["providers"] == []
 
@@ -104,34 +124,40 @@ def test_inactive_business_is_excluded_from_the_catalog():
 @pytest.mark.django_db
 def test_business_with_no_resources_is_excluded_from_the_catalog():
     BusinessAccount.objects.create_user(
-        contact="salon@example.com", business_name="Glow Salon", password=TEST_PASSWORD
+        contact="salon@example.com",
+        business_name="Glow Salon",
+        password=TEST_PASSWORD,
+        domain_code=BEAUTY,
     )
 
-    catalog = build_beauty_catalog()
+    catalog = build_catalog(BEAUTY)
 
     assert catalog["providers"] == []
 
 
 @pytest.mark.django_db
 def test_consecutive_builds_against_unchanged_data_return_identically_ordered_results():
-    """A real ordering-determinism regression test — before this fix, `build_beauty_
-    catalog()`'s two queries (businesses, and each business's own resources) had no
-    explicit `.order_by()`, so Postgres didn't guarantee the same row order across
-    repeated identical queries: two consecutive calls against genuinely unchanged data
-    could return the same providers/items in a different list order and compare unequal
-    by `==`. Found live via §3.11's catalog-cache reconciliation sweep logging a false
+    """A real ordering-determinism regression test — before this fix, `build_catalog()`'s
+    two queries (businesses, and each business's own resources) had no explicit
+    `.order_by()`, so Postgres didn't guarantee the same row order across repeated
+    identical queries: two consecutive calls against genuinely unchanged data could
+    return the same providers/items in a different list order and compare unequal by
+    `==`. Found live via §3.11's catalog-cache reconciliation sweep logging a false
     "corrected" on almost every tick. Multiple businesses/resources here to give any
     real nondeterminism room to actually surface, not just one of each."""
     for i in range(5):
         business = BusinessAccount.objects.create_user(
-            contact=f"salon{i}@example.com", business_name=f"Salon {i}", password=TEST_PASSWORD
+            contact=f"salon{i}@example.com",
+            business_name=f"Salon {i}",
+            password=TEST_PASSWORD,
+            domain_code=BEAUTY,
         )
         for j in range(3):
             Resource.objects.create(owner_ref=str(business.id), name=f"Stylist {j}")
 
-    first = build_beauty_catalog()
-    second = build_beauty_catalog()
-    third = build_beauty_catalog()
+    first = build_catalog(BEAUTY)
+    second = build_catalog(BEAUTY)
+    third = build_catalog(BEAUTY)
 
     assert first == second == third
 
@@ -141,8 +167,44 @@ def test_a_malformed_catalog_fails_contract_validation():
     """Proves the schema actually catches non-conformance, not just passes trivially —
     the same NEG discipline as shared/testing/test_contract_reference.py's reference
     pattern."""
-    catalog = build_beauty_catalog()
+    catalog = build_catalog(BEAUTY)
     del catalog["descriptor"]
 
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(instance=catalog, schema=_schema())
+
+
+@pytest.mark.django_db
+def test_two_domains_never_leak_into_each_others_catalog():
+    """§4.1's own domain-isolation requirement, referenced by name from `catalog.py`'s
+    `build_catalog()` docstring: a Healthcare clinic's resources must never appear in a
+    Beauty catalog build, and vice versa, even though both businesses coexist in the
+    same `BusinessAccount`/`Resource` tables."""
+    salon = BusinessAccount.objects.create_user(
+        contact="salon@example.com",
+        business_name="Glow Salon",
+        password=TEST_PASSWORD,
+        domain_code=BEAUTY,
+    )
+    Resource.objects.create(
+        owner_ref=str(salon.id), name="Stylist A", domain_data={"resource_type": "stylist"}
+    )
+
+    clinic = BusinessAccount.objects.create_user(
+        contact="clinic@example.com",
+        business_name="City Clinic",
+        password=TEST_PASSWORD,
+        domain_code=HEALTHCARE,
+    )
+    Resource.objects.create(
+        owner_ref=str(clinic.id), name="Dr. Rao", domain_data={"resource_type": "doctor"}
+    )
+
+    beauty_catalog = build_catalog(BEAUTY)
+    healthcare_catalog = build_catalog(HEALTHCARE)
+
+    assert beauty_catalog["descriptor"]["name"] == "Beauty Catalog"
+    assert [p["descriptor"]["name"] for p in beauty_catalog["providers"]] == ["Glow Salon"]
+
+    assert healthcare_catalog["descriptor"]["name"] == "Healthcare Catalog"
+    assert [p["descriptor"]["name"] for p in healthcare_catalog["providers"]] == ["City Clinic"]

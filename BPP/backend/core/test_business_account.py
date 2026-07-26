@@ -87,6 +87,53 @@ def test_deactivated_business_account_cannot_log_in(client):
     assert resp.status_code == 401
 
 
+# --- §4.1: domain_code on signup ----------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_signup_without_domain_code_defaults_to_beauty(client):
+    login_resp = _signup_and_login(client)
+    assert login_resp.json()["domain_code"] == settings.DOMAIN_BEAUTY
+
+
+@pytest.mark.django_db
+def test_signup_can_register_a_healthcare_business(client):
+    client.post(
+        reverse("business-signup"),
+        data={
+            "business_name": "City Clinic",
+            "contact": "clinic@example.com",
+            "password": TEST_PASSWORD,
+            "domain_code": settings.DOMAIN_HEALTHCARE,
+        },
+        content_type="application/json",
+    )
+    login_resp = client.post(
+        reverse("business-login"),
+        data={"contact": "clinic@example.com", "password": TEST_PASSWORD},
+        content_type="application/json",
+    )
+    assert login_resp.status_code == 200
+    assert login_resp.json()["domain_code"] == settings.DOMAIN_HEALTHCARE
+
+
+@pytest.mark.django_db
+def test_signup_rejects_an_unregistered_domain_code(client):
+    resp = client.post(
+        reverse("business-signup"),
+        data={
+            "business_name": "Mystery Business",
+            "contact": "mystery@example.com",
+            "password": TEST_PASSWORD,
+            "domain_code": "NOT:A-REAL-DOMAIN",
+        },
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["field"] == "domain_code"
+    assert BusinessAccount.objects.count() == 0
+
+
 # --- Resource creation + Beauty domain adapter validation ---------------------------------------
 
 
@@ -315,3 +362,70 @@ def test_beauty_adapter_is_registered_and_reachable_by_domain_code():
     assert adapter.fulfillment_type({"combo": False}) == "STANDARD_SERVICE"
     assert adapter.fulfillment_type({"combo": True}) == "COMBO_SERVICE"
     assert adapter.required_resource_count({"combo": True}) == 1
+
+
+# --- §4.1: Healthcare domain adapter -------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_healthcare_adapter_is_registered_and_reachable_by_domain_code():
+    adapter = get_adapter(settings.DOMAIN_HEALTHCARE)
+    in_person = adapter.fulfillment_type({"consultation_type": "in_person"})
+    tele = adapter.fulfillment_type({"consultation_type": "tele_consultation"})
+    assert in_person == "IN_PERSON_CONSULTATION"
+    assert tele == "TELE_CONSULTATION"
+    assert adapter.required_resource_count({}) == 1
+
+
+def _signup_and_login_healthcare_business(
+    client, *, business_name="City Clinic", contact="clinic@example.com"
+):
+    client.post(
+        reverse("business-signup"),
+        data={
+            "business_name": business_name,
+            "contact": contact,
+            "password": TEST_PASSWORD,
+            "domain_code": settings.DOMAIN_HEALTHCARE,
+        },
+        content_type="application/json",
+    )
+    return client.post(
+        reverse("business-login"),
+        data={"contact": contact, "password": TEST_PASSWORD},
+        content_type="application/json",
+    )
+
+
+@pytest.mark.django_db
+def test_healthcare_business_creates_a_doctor_resource(client):
+    _signup_and_login_healthcare_business(client)
+
+    resp = client.post(
+        reverse("resource-create"),
+        data={"name": "Dr. Rao", "domain_data": {"resource_type": "doctor"}},
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 201
+    resource = Resource.objects.get(id=resp.json()["id"])
+    assert resource.domain_data == {"resource_type": "doctor"}
+
+
+@pytest.mark.django_db
+def test_healthcare_business_cannot_create_a_beauty_resource_type(client):
+    """§4.1: `resource_create_view` now looks up the adapter by the authenticated
+    business's own `domain_code`, not a hardcoded Beauty adapter — a Healthcare
+    business's `resource_type: "stylist"` must be rejected by
+    `HealthcareDomainAdapter`, which only recognizes "doctor"."""
+    _signup_and_login_healthcare_business(client)
+
+    resp = client.post(
+        reverse("resource-create"),
+        data={"name": "Not A Doctor", "domain_data": {"resource_type": "stylist"}},
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"]["field"] == "domain_data"
+    assert Resource.objects.count() == 0

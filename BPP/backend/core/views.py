@@ -26,7 +26,7 @@ from . import (
     update_service,
 )
 from .catalog import visible_resources
-from .catalog_cache import invalidate_beauty_catalog_cache
+from .catalog_cache import invalidate_catalog_cache
 
 # §3.7: caps the real number of Slot rows one availability-creation call can
 # materialize — an honest, deliberately-generous ceiling (just over a year), not a
@@ -67,6 +67,7 @@ def _business_account_json(account) -> dict:
         "id": str(account.id),
         "business_name": account.business_name,
         "contact": account.contact,
+        "domain_code": account.domain_code,
     }
 
 
@@ -85,7 +86,14 @@ def business_signup_view(request):
     signup (§2.1), for the same reasons (see BAP/backend/core/views.py's `signup_view`).
     Rate-limited (§3.7) for the same reason as BAP's signup/login — a real gap found
     via audit: this bullet's own CSRF fix already treated this as an equally real
-    auth-form surface, rate limiting was the one piece left inconsistent."""
+    auth-form surface, rate limiting was the one piece left inconsistent.
+
+    §4.1: accepts an optional `domain_code`, defaulting to `settings.DOMAIN_BEAUTY` so
+    every existing signup caller that doesn't send it keeps working unchanged. Validated
+    against `inventory_core.domain_adapter`'s real registry (whichever domains actually
+    have a registered `DomainAdapter` — Beauty/Healthcare so far) rather than accepted
+    as an arbitrary string, since an unregistered domain_code would silently orphan a
+    business's resources from ever appearing in any catalog."""
     try:
         payload = json.loads(request.body or b"{}")
     except json.JSONDecodeError:
@@ -94,6 +102,7 @@ def business_signup_view(request):
     business_name = (payload.get("business_name") or "").strip()
     contact = (payload.get("contact") or "").strip()
     password = payload.get("password") or ""
+    domain_code = (payload.get("domain_code") or settings.DOMAIN_BEAUTY).strip()
 
     if not business_name:
         return error_response(
@@ -111,6 +120,15 @@ def business_signup_view(request):
         return error_response(
             "VALIDATION_ERROR", "contact is too long (max 255)", 400, field="contact"
         )
+    try:
+        get_adapter(domain_code)
+    except LookupError:
+        return error_response(
+            "VALIDATION_ERROR",
+            f"unsupported domain_code: {domain_code!r}",
+            400,
+            field="domain_code",
+        )
 
     BusinessAccount = get_user_model()
     if BusinessAccount.objects.filter(contact=contact).exists():
@@ -124,7 +142,7 @@ def business_signup_view(request):
         return error_response("VALIDATION_ERROR", " ".join(exc.messages), 400, field="password")
 
     account = BusinessAccount.objects.create_user(
-        contact=contact, business_name=business_name, password=password
+        contact=contact, business_name=business_name, password=password, domain_code=domain_code
     )
     return JsonResponse(_business_account_json(account), status=201)
 
@@ -186,7 +204,10 @@ def resource_create_view(request):
         return error_response("VALIDATION_ERROR", "name is too long (max 255)", 400, field="name")
 
     domain_data = payload.get("domain_data") or {}
-    adapter = get_adapter(settings.DOMAIN_BEAUTY)
+    # §4.1: the authenticated business's own domain, not a hardcoded Beauty adapter — a
+    # Healthcare business must have its domain_data validated by HealthcareDomainAdapter,
+    # not BeautyDomainAdapter's stylist/chair rules.
+    adapter = get_adapter(request.user.domain_code)
     try:
         adapter.validate_resource_domain_data(domain_data)
     except DjangoValidationError as exc:
@@ -219,7 +240,8 @@ def resource_create_view(request):
     )
     # §3.8: a new Resource is real, visible catalog content — invalidate the
     # cached search catalog so it doesn't stay stale until the TTL safety net.
-    invalidate_beauty_catalog_cache()
+    # §4.1: only this business's own domain's cache, not every domain's.
+    invalidate_catalog_cache(request.user.domain_code)
     return JsonResponse({"id": str(resource.id), "name": resource.name}, status=201)
 
 
@@ -309,8 +331,14 @@ def resources_list_view(request):
     deactivated business account's inventory stops appearing in search"). Distinct
     from the real Beckn `/search`/`/on_search` wire endpoints below (§3.1) — this is a
     non-protocol, web-facing convenience endpoint, not part of the Beckn transaction
-    flow."""
-    resources = visible_resources().values("id", "name", "owner_ref")
+    flow.
+
+    §4.1: `visible_resources()` is now domain-scoped (BPP can serve more than one
+    domain) — accepts an optional `?domain=` query param, defaulting to
+    `settings.DOMAIN_BEAUTY` so every caller that existed before this field did keeps
+    seeing exactly what it saw before, unchanged."""
+    domain_code = request.GET.get("domain") or settings.DOMAIN_BEAUTY
+    resources = visible_resources(domain_code).values("id", "name", "owner_ref")
     return JsonResponse({"resources": list(resources)}, status=200)
 
 

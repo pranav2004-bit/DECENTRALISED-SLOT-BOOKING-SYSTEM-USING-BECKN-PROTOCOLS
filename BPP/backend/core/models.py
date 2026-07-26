@@ -5,6 +5,7 @@
 
 import uuid
 
+from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
 from django.db import models
@@ -14,11 +15,21 @@ class BusinessAccountManager(BaseUserManager):
     """Standard Django custom-user-model manager, mirroring BAP's `CustomerManager`."""
 
     def create_user(
-        self, contact: str, business_name: str, password: str | None = None, **extra_fields
+        self,
+        contact: str,
+        business_name: str,
+        password: str | None = None,
+        domain_code: str | None = None,
+        **extra_fields,
     ):
         if not contact:
             raise ValueError("Business accounts must have a contact (email or phone).")
-        account = self.model(contact=contact, business_name=business_name, **extra_fields)
+        account = self.model(
+            contact=contact,
+            business_name=business_name,
+            domain_code=domain_code or settings.DOMAIN_BEAUTY,
+            **extra_fields,
+        )
         account.set_password(password)
         account.save(using=self._db)
         return account
@@ -52,6 +63,14 @@ class BusinessAccount(AbstractBaseUser, PermissionsMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     contact = models.CharField(max_length=255, unique=True)
     business_name = models.CharField(max_length=255)
+
+    # Phase 4.1 (livetracker2.md) — real gap found via audit before implementing: BPP was
+    # single-domain-only everywhere (catalog/search hardcoded to Beauty), with no way to
+    # even represent "this business is a Healthcare provider, not a salon." A business
+    # realistically operates in one domain (a clinic isn't also a salon), so this lives on
+    # the account, not on individual Resources. Defaults to Beauty for backward
+    # compatibility with every business created before this field existed.
+    domain_code = models.CharField(max_length=100, default=settings.DOMAIN_BEAUTY)
 
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)

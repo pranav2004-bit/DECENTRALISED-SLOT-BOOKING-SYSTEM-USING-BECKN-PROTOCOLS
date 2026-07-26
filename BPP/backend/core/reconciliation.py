@@ -7,9 +7,12 @@ INTERVAL_SECONDS` between runs, calling the two real sweeps this phase's audit i
 1. `inventory_core.reconciliation.sweep_expired_holds()` — releases any `HELD` booking whose
    Redis TTL hold has lapsed but nothing has opportunistically touched since (the safety net
    for `confirm_hold()`'s own on-touch release, for holds nobody ever touches again).
-2. `catalog_cache.reconcile_beauty_catalog_cache()` — rebuilds the catalog fresh and corrects
-   the cached entry immediately if it's drifted, instead of passively waiting up to the cache's
-   own TTL.
+2. `catalog_cache.reconcile_catalog_cache(domain_code)` — rebuilds each registered domain's
+   catalog fresh and corrects its cached entry immediately if it's drifted, instead of
+   passively waiting up to the cache's own TTL. §4.1: sweeps every domain currently registered
+   with `inventory_core.domain_adapter` (`registered_domains()`), not just Beauty — a Healthcare
+   catalog left uncorrected until its own TTL would be the same gap this sweep exists to close
+   for Beauty.
 
 One failure in either sweep is logged and does not kill the loop — a transient DB/Redis hiccup
 on one tick should not silently end reconciliation for the rest of the process's lifetime.
@@ -21,9 +24,10 @@ import time
 
 import redis
 from django.conf import settings
+from inventory_core.domain_adapter import registered_domains
 from inventory_core.reconciliation import sweep_expired_holds
 
-from .catalog_cache import reconcile_beauty_catalog_cache
+from .catalog_cache import reconcile_catalog_cache
 from .events import get_event_bus
 
 logger = logging.getLogger("bpp")
@@ -45,12 +49,16 @@ def _run_once() -> None:
     except Exception:
         logger.exception("reconciliation: sweep_expired_holds failed")
 
-    try:
-        corrected = reconcile_beauty_catalog_cache()
-        if corrected:
-            logger.info("reconciliation: corrected a drifted/missing catalog cache entry")
-    except Exception:
-        logger.exception("reconciliation: reconcile_beauty_catalog_cache failed")
+    for domain_code in registered_domains():
+        try:
+            corrected = reconcile_catalog_cache(domain_code)
+            if corrected:
+                logger.info(
+                    "reconciliation: corrected a drifted/missing %s catalog cache entry",
+                    domain_code,
+                )
+        except Exception:
+            logger.exception("reconciliation: reconcile_catalog_cache(%s) failed", domain_code)
 
 
 def _loop() -> None:

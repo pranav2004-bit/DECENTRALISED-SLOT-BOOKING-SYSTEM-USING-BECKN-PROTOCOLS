@@ -12,8 +12,13 @@ class CoreConfig(AppConfig):
         from inventory_core.domain_adapter import register_adapter
 
         from .beauty_adapter import BeautyDomainAdapter
+        from .healthcare_adapter import HealthcareDomainAdapter
 
         register_adapter(settings.DOMAIN_BEAUTY, BeautyDomainAdapter())
+        # §4.1: Healthcare, widening the single-domain (Beauty-only) registration above —
+        # BPP now genuinely serves two ONDC domains at once, matching Registry's own
+        # per-domain Participant rows (registry/core/models.py's unique_subscriber_domain_type).
+        register_adapter(settings.DOMAIN_HEALTHCARE, HealthcareDomainAdapter())
 
         # §3.8: connects the catalog-cache invalidation signal handlers (imported
         # for its side effect of running the module-level @receiver decorators).

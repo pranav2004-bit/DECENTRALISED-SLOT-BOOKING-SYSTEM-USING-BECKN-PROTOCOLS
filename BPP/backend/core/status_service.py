@@ -29,6 +29,7 @@ from beckn_transaction import (
 from django.conf import settings
 from django.utils import timezone
 from inventory_core.models import Booking
+from inventory_core.reservation import find_group_bookings
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
@@ -122,23 +123,30 @@ def dispatch_on_status(*, payload: dict) -> None:
         # reasoning as /init and /confirm (protocol_compliance_notes_v1.1.md §J/§L).
         error = {"code": "SLOT_UNAVAILABLE", "message": "No matching booking for this order"}
     else:
-        resource = booking.slot.resource
+        # §4.2: report every resource in the group (Automotive's bay+mechanic pair),
+        # not just the one this booking_id itself names — a customer checking status
+        # on a multi-resource booking must see every resource actually reserved for
+        # them, not just one. `find_group_bookings` returns just `[booking]` unchanged
+        # for every domain before this phase, so this is a no-op widening for them.
+        group = find_group_bookings(booking)
+        resources = [b.slot.resource for b in group]
         resolved_order = {
             "id": str(booking.id),
             "status": booking.status,
-            "provider": {"id": resource.owner_ref},
-            "items": [{"id": str(resource.id)}],
+            "provider": {"id": resources[0].owner_ref},
+            "items": [{"id": str(r.id)} for r in resources],
             "fulfillments": [
                 {
-                    "id": str(booking.id),
-                    "state": {"descriptor": {"code": booking.fulfillment_status}},
+                    "id": str(b.id),
+                    "state": {"descriptor": {"code": b.fulfillment_status}},
                     "stops": [
                         {
                             "type": "start",
-                            "time": {"timestamp": booking.slot.start_time.isoformat()},
+                            "time": {"timestamp": b.slot.start_time.isoformat()},
                         }
                     ],
                 }
+                for b in group
             ],
         }
 

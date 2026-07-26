@@ -120,6 +120,26 @@ def submit_subscribe(domain: str) -> OnboardingStatus:
 
     request_id = request_domain_verification()
     payload = _build_subscribe_payload(domain=domain, request_id=request_id)
+
+    # Real, deeper race found live in BPP's identical code (2026-07-26, root-caused
+    # after a first fix here turned out insufficient on its own): Registry's own
+    # `handle_subscribe()` dispatches the on_subscribe challenge *synchronously, before
+    # responding* — meaning `handle_on_subscribe()` (this row's own only path to
+    # SUBSCRIBED) can run and complete *nested inside* the `registry_client.subscribe()`
+    # call below, before it ever returns. `handle_on_subscribe()`'s own bulk update only
+    # matches rows *already* `UNDER_SUBSCRIPTION` — but this function used to only write
+    # that status *after* `registry_client.subscribe()` returned, so at the exact moment
+    # the nested challenge fired, this row was still whatever `approve()` had left it at
+    # (`AWAITING_APPROVAL`), never matching the filter at all. The challenge would still
+    # succeed and return 200 to Registry, but silently confirm nothing on this app's own
+    # side — confirmed live by directly cross-checking Registry's own authoritative
+    # `Participant.status` (`SUBSCRIBED`) against this row staying stuck. Fixed by
+    # marking this row `UNDER_SUBSCRIPTION` *before* calling Registry, not after — so by
+    # the time the nested challenge fires, `handle_on_subscribe()` has a real row to
+    # match.
+    status.status = OnboardingStatus.Status.UNDER_SUBSCRIPTION
+    status.save(update_fields=["status", "updated_at"])
+
     try:
         result = registry_client.subscribe(payload)
     except requests.HTTPError as exc:
@@ -129,17 +149,14 @@ def submit_subscribe(domain: str) -> OnboardingStatus:
         status.save(update_fields=["status", "last_error", "updated_at"])
         raise OnboardingError(f"Subscribe rejected by Registry: {detail}") from exc
 
-    # Real race found live in BPP's identical code (2026-07-26): Registry's own
-    # `handle_subscribe()` dispatches the on_subscribe challenge *synchronously, before
-    # responding* (its own docstring: "synchronously dispatch ... and attempt
-    # verification before returning"), so by the time `registry_client.subscribe()`
-    # above returns, `handle_on_subscribe()` below may already have flipped this exact
-    # row to SUBSCRIBED. Registry's /subscribe response body always literally says
-    # `{"status": "UNDER_SUBSCRIPTION"}` regardless — it's not updated with the outcome
-    # of the challenge it just ran — so blindly writing `result["status"]` here would
-    # stomp a genuine SUBSCRIBED back to UNDER_SUBSCRIPTION using this function's own
-    # stale, pre-HTTP-call `status` object. `handle_on_subscribe` is the one
-    # authoritative path to SUBSCRIBED; never downgrade a row it already moved there.
+    # First-found half of this same race (still needed on its own): even with the row
+    # correctly marked before the call above, `handle_on_subscribe()` may have already
+    # flipped it to SUBSCRIBED by the time control returns here. Registry's /subscribe
+    # response body always literally says `{"status": "UNDER_SUBSCRIPTION"}` regardless
+    # of the challenge outcome it just ran — so blindly writing `result["status"]` here
+    # would stomp a genuine SUBSCRIBED back down using this function's own stale,
+    # pre-HTTP-call `status` object. `handle_on_subscribe` is the one authoritative path
+    # to SUBSCRIBED; never downgrade a row it already moved there.
     status.refresh_from_db()
     if status.status != OnboardingStatus.Status.SUBSCRIBED:
         status.status = OnboardingStatus.Status(result["status"])

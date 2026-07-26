@@ -34,7 +34,7 @@ from beckn_transaction import (
 from django.conf import settings
 from django.utils import timezone
 from inventory_core.models import Booking
-from inventory_core.reservation import ReservationHold
+from inventory_core.reservation import ReservationHold, find_group_bookings
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
@@ -159,35 +159,40 @@ def dispatch_on_init(*, payload: dict) -> None:
                 "message": "This booking's hold is no longer active",
             }
         else:
-            resource = booking.slot.resource
+            # §4.2: report every resource in the group (Automotive's bay+mechanic
+            # pair), not just the one `fulfillments[0].id` itself named — otherwise
+            # a customer would see a combined quote at /select (both resources'
+            # combined price) and then a misleadingly smaller single-resource price
+            # here at /init, a real quote-consistency bug, not just a cosmetic one.
+            # `find_group_bookings` returns just `[booking]` unchanged for every
+            # domain before this phase, so this is a no-op widening for them.
+            group = find_group_bookings(booking)
+            resources = [b.slot.resource for b in group]
+            total_value = sum(r.price_value for r in resources)
             resolved_order = {
-                "provider": {"id": resource.owner_ref},
-                "items": [{"id": str(resource.id)}],
+                "provider": {"id": resources[0].owner_ref},
+                "items": [{"id": str(r.id)} for r in resources],
                 "fulfillments": [
                     {
-                        "id": str(booking.id),
+                        "id": str(b.id),
                         "stops": [
                             {
                                 "type": "start",
-                                "time": {"timestamp": booking.slot.start_time.isoformat()},
+                                "time": {"timestamp": b.slot.start_time.isoformat()},
                             }
                         ],
                     }
+                    for b in group
                 ],
                 "quote": {
-                    "price": {
-                        "currency": resource.price_currency,
-                        "value": str(resource.price_value),
-                    },
+                    "price": {"currency": resources[0].price_currency, "value": str(total_value)},
                     "breakup": [
                         {
-                            "item": {"id": str(resource.id)},
-                            "title": resource.name,
-                            "price": {
-                                "currency": resource.price_currency,
-                                "value": str(resource.price_value),
-                            },
+                            "item": {"id": str(r.id)},
+                            "title": r.name,
+                            "price": {"currency": r.price_currency, "value": str(r.price_value)},
                         }
+                        for r in resources
                     ],
                     "ttl": f"PT{int(remaining_ttl)}S",
                 },

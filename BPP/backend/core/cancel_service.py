@@ -30,7 +30,7 @@ from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django_observability.context import correlation_id_var
 from inventory_core.models import Booking
-from inventory_core.reservation import cancel_booking
+from inventory_core.reservation import cancel_booking, find_group_bookings
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
@@ -128,10 +128,16 @@ def dispatch_on_cancel(*, payload: dict, correlation_id: str | None = None) -> N
     elif booking.holder_ref != context["transaction_id"]:
         error = {"code": "SLOT_UNAVAILABLE", "message": "No matching booking for this order"}
     else:
+        # §4.2: cancel every booking in the group together (Automotive's bay+mechanic
+        # pair) — `find_group_bookings` returns just `[booking]` unchanged for every
+        # domain before this phase, so this is a no-op widening for them, not a
+        # behavior change.
+        group = find_group_bookings(booking)
         try:
-            cancelled_booking = cancel_booking(
-                booking.id, event_bus=get_event_bus(), correlation_id=correlation_id
-            )
+            cancelled_bookings = [
+                cancel_booking(b.id, event_bus=get_event_bus(), correlation_id=correlation_id)
+                for b in group
+            ]
         except ValidationError:
             error = {
                 "code": "SLOT_UNAVAILABLE",
@@ -139,13 +145,14 @@ def dispatch_on_cancel(*, payload: dict, correlation_id: str | None = None) -> N
             }
         else:
             record_booking_cancelled()
-            resource = cancelled_booking.slot.resource
+            cancelled_booking = next(b for b in cancelled_bookings if b.id == booking.id)
+            resources = [b.slot.resource for b in cancelled_bookings]
             resolved_order = {
                 "id": str(cancelled_booking.id),
                 "status": cancelled_booking.status,
-                "provider": {"id": resource.owner_ref},
-                "items": [{"id": str(resource.id)}],
-                "fulfillments": [{"id": str(cancelled_booking.id)}],
+                "provider": {"id": resources[0].owner_ref},
+                "items": [{"id": str(r.id)} for r in resources],
+                "fulfillments": [{"id": str(b.id)} for b in cancelled_bookings],
             }
 
     on_cancel_context = _on_cancel_context(request_context=context)

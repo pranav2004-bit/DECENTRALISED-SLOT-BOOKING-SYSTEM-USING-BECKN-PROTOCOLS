@@ -33,7 +33,7 @@ from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django_observability.context import correlation_id_var
 from inventory_core.models import Booking
-from inventory_core.reservation import confirm_hold
+from inventory_core.reservation import confirm_hold, find_group_bookings
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
@@ -156,20 +156,35 @@ def dispatch_on_confirm(*, payload: dict, correlation_id: str | None = None) -> 
         # same IDOR-safety reasoning as /init (protocol_compliance_notes_v1.1.md §J).
         error = {"code": "SLOT_UNAVAILABLE", "message": "No matching booking for this order"}
     else:
+        # §4.2: confirm every booking in the group together (Automotive's bay+mechanic
+        # pair), not just the one the wire request actually names — `find_group_bookings`
+        # returns just `[booking]` unchanged for every domain before this phase, so this
+        # is a no-op widening for Beauty/Healthcare, not a behavior change for them.
+        group = find_group_bookings(booking)
         try:
-            confirmed_booking = confirm_hold(
-                booking.id,
-                redis_client=_redis_client(),
-                event_bus=get_event_bus(),
-                correlation_id=correlation_id,
-            )
+            confirmed_bookings = [
+                confirm_hold(
+                    b.id,
+                    redis_client=_redis_client(),
+                    event_bus=get_event_bus(),
+                    correlation_id=correlation_id,
+                )
+                for b in group
+            ]
         except ValidationError:
             # The real, already-firing production signal that a hold expired
             # before the customer could confirm it (§3.10) — `confirm_hold()`
             # raises exactly this when `is_active()` is false, the one place
             # an expiry actually becomes observable today (see core/metrics.py's
             # module docstring for why this is used instead of the currently
-            # dead `release_expired_hold()`).
+            # dead `release_expired_hold()`). A multi-resource group's members all
+            # start their Redis TTL at the same instant with the same ttl_seconds
+            # (§4.2's own `hold_multi_resource_booking`), so one expiring
+            # independently of the other is a real but effectively-negligible edge
+            # case, not compensated for with cross-booking rollback here — the same
+            # right-sized-for-current-scale judgment already applied throughout
+            # this reservation layer (e.g. `release_expired_hold`'s own opportunistic
+            # design).
             record_hold_expired()
             error = {
                 "code": "SLOT_UNAVAILABLE",
@@ -177,39 +192,35 @@ def dispatch_on_confirm(*, payload: dict, correlation_id: str | None = None) -> 
             }
         else:
             record_booking_confirmed()
-            resource = confirmed_booking.slot.resource
+            confirmed_booking = next(b for b in confirmed_bookings if b.id == booking.id)
+            resources = [b.slot.resource for b in confirmed_bookings]
+            total_value = sum(r.price_value for r in resources)
             resolved_order = {
                 "id": str(confirmed_booking.id),
                 "status": confirmed_booking.status,
-                "provider": {"id": resource.owner_ref},
-                "items": [{"id": str(resource.id)}],
+                "provider": {"id": resources[0].owner_ref},
+                "items": [{"id": str(r.id)} for r in resources],
                 "fulfillments": [
                     {
-                        "id": str(confirmed_booking.id),
+                        "id": str(b.id),
                         "stops": [
                             {
                                 "type": "start",
-                                "time": {
-                                    "timestamp": confirmed_booking.slot.start_time.isoformat()
-                                },
+                                "time": {"timestamp": b.slot.start_time.isoformat()},
                             }
                         ],
                     }
+                    for b in confirmed_bookings
                 ],
                 "quote": {
-                    "price": {
-                        "currency": resource.price_currency,
-                        "value": str(resource.price_value),
-                    },
+                    "price": {"currency": resources[0].price_currency, "value": str(total_value)},
                     "breakup": [
                         {
-                            "item": {"id": str(resource.id)},
-                            "title": resource.name,
-                            "price": {
-                                "currency": resource.price_currency,
-                                "value": str(resource.price_value),
-                            },
+                            "item": {"id": str(r.id)},
+                            "title": r.name,
+                            "price": {"currency": r.price_currency, "value": str(r.price_value)},
                         }
+                        for r in resources
                     ],
                 },
                 "payments": [{"status": "NOT-PAID"}],

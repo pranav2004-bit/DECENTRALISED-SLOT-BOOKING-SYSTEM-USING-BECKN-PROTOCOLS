@@ -21,6 +21,8 @@ from inventory_core.reservation import (
     ReservationHold,
     cancel_booking,
     confirm_hold,
+    find_group_bookings,
+    hold_multi_resource_booking,
     hold_slot,
     release_expired_hold,
     release_hold_now,
@@ -573,3 +575,176 @@ def test_sweep_expired_holds_publishes_real_events_when_given_an_event_bus(resou
     assert len(published) == 2  # SlotReleased + BookingCancelled
     entry = BookingAuditLogEntry.objects.get(booking_id_text=str(booking.id))
     assert entry.detail["reason"] == "hold_expired"
+
+
+# --- §4.2 multi-resource booking (hold_multi_resource_booking / find_group_bookings) -----------
+
+
+@pytest.fixture
+def second_resource(db):
+    return Resource.objects.create(owner_ref="biz-1", name="Bay 1")
+
+
+@pytest.mark.django_db
+def test_hold_multi_resource_booking_succeeds_when_every_slot_has_capacity(
+    resource, second_resource, redis_client
+):
+    """FUNC: §4.2's own Test Gate wording — "succeeds when both are" available."""
+    mechanic_slot = _make_slot(resource, capacity=1)
+    bay_slot = _make_slot(second_resource, capacity=1)
+
+    bookings = hold_multi_resource_booking(
+        [mechanic_slot.id, bay_slot.id],
+        holder_ref="cust-1",
+        redis_client=redis_client,
+        ttl_seconds=60,
+    )
+
+    assert bookings is not None
+    assert len(bookings) == 2
+    assert [b.slot_id for b in bookings] == [mechanic_slot.id, bay_slot.id]
+    assert all(b.status == Booking.Status.HELD for b in bookings)
+    group_ids = {b.domain_data["booking_group_id"] for b in bookings}
+    assert len(group_ids) == 1  # both share the same group id
+
+    mechanic_slot.refresh_from_db()
+    bay_slot.refresh_from_db()
+    assert mechanic_slot.capacity_remaining == 0
+    assert bay_slot.capacity_remaining == 0
+    for b in bookings:
+        assert ReservationHold(redis_client=redis_client).is_active(b.id)
+
+
+@pytest.mark.django_db
+def test_hold_multi_resource_booking_fails_cleanly_if_only_one_resource_is_available(
+    resource, second_resource, redis_client
+):
+    """EDGE: §4.2's own Test Gate wording — "correctly fails if only one of the two
+    required resources is available." The already-full slot's capacity must stay
+    exactly as it was (0), and the *other*, genuinely-available slot must NOT be
+    left partially held either — a real all-or-nothing guarantee, not just "the
+    overall call reports failure while quietly leaking a real hold on one side."""
+    mechanic_slot = _make_slot(resource, capacity=1)
+    bay_slot = _make_slot(second_resource, capacity=0)  # already fully booked
+
+    bookings = hold_multi_resource_booking(
+        [mechanic_slot.id, bay_slot.id],
+        holder_ref="cust-1",
+        redis_client=redis_client,
+        ttl_seconds=60,
+    )
+
+    assert bookings is None
+    mechanic_slot.refresh_from_db()
+    bay_slot.refresh_from_db()
+    assert mechanic_slot.capacity_remaining == 1  # untouched, not partially held
+    assert bay_slot.capacity_remaining == 0
+    assert Booking.objects.count() == 0  # no partial Booking row left behind either
+
+
+@pytest.mark.django_db
+def test_hold_multi_resource_booking_returns_bookings_in_the_order_slot_ids_were_given(
+    resource, second_resource, redis_client
+):
+    """The internal deterministic locking order (sorted by slot id, the same
+    deadlock-avoidance precedent as `reschedule_active_booking`) must never leak
+    into the caller-visible result order — callers pass `[mechanic_slot_id,
+    bay_slot_id]` and must get bookings back in that same order regardless of
+    which slot id happens to sort first."""
+    mechanic_slot = _make_slot(resource, capacity=1)
+    bay_slot = _make_slot(second_resource, capacity=1)
+
+    # Deliberately request in both possible orders and confirm the result always
+    # mirrors the requested order, not the internal sort order.
+    for slot_ids in (
+        [mechanic_slot.id, bay_slot.id],
+        [bay_slot.id, mechanic_slot.id],
+    ):
+        Booking.objects.all().delete()
+        mechanic_slot.capacity_remaining = 1
+        mechanic_slot.status = Slot.Status.AVAILABLE
+        mechanic_slot.save()
+        bay_slot.capacity_remaining = 1
+        bay_slot.status = Slot.Status.AVAILABLE
+        bay_slot.save()
+
+        bookings = hold_multi_resource_booking(
+            slot_ids, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=60
+        )
+        assert [b.slot_id for b in bookings] == slot_ids
+
+
+@pytest.mark.django_db
+def test_find_group_bookings_returns_every_sibling_including_itself(
+    resource, second_resource, redis_client
+):
+    mechanic_slot = _make_slot(resource, capacity=1)
+    bay_slot = _make_slot(second_resource, capacity=1)
+    bookings = hold_multi_resource_booking(
+        [mechanic_slot.id, bay_slot.id],
+        holder_ref="cust-1",
+        redis_client=redis_client,
+        ttl_seconds=60,
+    )
+
+    siblings = find_group_bookings(bookings[0])
+
+    assert {b.id for b in siblings} == {b.id for b in bookings}
+
+
+@pytest.mark.django_db
+def test_find_group_bookings_returns_just_itself_for_an_ordinary_single_resource_booking(
+    resource, redis_client
+):
+    """§4.1-and-earlier's ordinary case — a plain `hold_slot()` booking has no
+    `booking_group_id` at all, and must not be mistaken for a group of one
+    something-else; it's simply not part of any group."""
+    slot = _make_slot(resource, capacity=1)
+    booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=60)
+
+    assert find_group_bookings(booking) == [booking]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_hold_multi_resource_booking_locks_slots_in_a_deterministic_order_to_avoid_deadlock(
+    resource, second_resource, redis_client
+):
+    """Real concurrency proof, not just code inspection: two concurrent multi-resource
+    holds racing over the *same pair* of slots, submitted in opposite id order, must
+    both complete (one succeeding, one correctly failing on capacity) rather than
+    deadlocking — proving the internal sort-by-id locking order is actually applied,
+    the same deadlock-avoidance precedent already proven for
+    `reschedule_active_booking`.
+
+    `transaction=True` (not the default `django_db`), same reasoning as Phase 1.2's
+    own concurrent-write test: the background threads below open their own real DB
+    connections, which can't see fixture-created rows still sitting inside the
+    default single-wrapped-transaction the plain `django_db` marker would use."""
+    import threading
+
+    from django.db import connection
+
+    mechanic_slot = _make_slot(resource, capacity=1)
+    bay_slot = _make_slot(second_resource, capacity=1)
+    results = []
+
+    def _hold(slot_ids):
+        try:
+            results.append(
+                hold_multi_resource_booking(
+                    slot_ids, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=60
+                )
+            )
+        finally:
+            connection.close()
+
+    t1 = threading.Thread(target=_hold, args=([mechanic_slot.id, bay_slot.id],))
+    t2 = threading.Thread(target=_hold, args=([bay_slot.id, mechanic_slot.id],))
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    assert not t1.is_alive() and not t2.is_alive()  # neither thread deadlocked
+    successes = [r for r in results if r is not None]
+    assert len(successes) == 1  # only one of the two could win the shared capacity

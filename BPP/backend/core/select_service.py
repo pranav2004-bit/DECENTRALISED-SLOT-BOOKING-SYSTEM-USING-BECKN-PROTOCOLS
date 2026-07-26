@@ -30,12 +30,15 @@ from beckn_transaction import (
 from django.conf import settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from inventory_core.domain_adapter import get_adapter
 from inventory_core.models import Resource, Slot
-from inventory_core.reservation import hold_slot, release_hold_now
+from inventory_core.reservation import hold_multi_resource_booking, hold_slot, release_hold_now
 
 from . import registry_client, trust
+from .automotive_adapter import find_paired_resource
 from .crypto import sign_outbound_request
 from .metrics import record_hold_created
+from .models import BusinessAccount
 from .participant_keys import get_signing_keys
 
 logger = logging.getLogger("bpp")
@@ -130,6 +133,67 @@ def _on_select_context(*, request_context: dict) -> dict:
     )
 
 
+def _hold_multi_resource_selection(
+    *, resource: Resource, slot: Slot, requested_time, requested_timestamp: str, transaction_id: str
+) -> tuple[dict | None, dict | None]:
+    """§4.2's multi-resource selection path — Automotive's own case, and the reason
+    `required_resource_count()` (Phase 1.5's own hook, unused until this phase) now
+    has a real caller. Finds the paired resource (bay<->mechanic, same business, same
+    time) and holds both slots together via `hold_multi_resource_booking()`. Returns
+    `(error, resolved_order)`, exactly one of which is non-`None` — the same contract
+    `dispatch_on_select`'s single-resource branch already follows, so both branches
+    slot into the same response-building code below unchanged."""
+    paired = find_paired_resource(resource, requested_time)
+    if paired is None:
+        return (
+            {
+                "code": "SLOT_UNAVAILABLE",
+                "message": "The other required resource is not available at this time",
+            },
+            None,
+        )
+    paired_resource, paired_slot = paired
+
+    bookings = hold_multi_resource_booking(
+        [slot.id, paired_slot.id],
+        holder_ref=transaction_id,
+        redis_client=_redis_client(),
+        ttl_seconds=settings.RESERVATION_HOLD_TTL_SECONDS,
+    )
+    if bookings is None:
+        return (
+            {"code": "SLOT_UNAVAILABLE", "message": "Slot no longer available"},
+            None,
+        )
+
+    record_hold_created()
+    resources = [resource, paired_resource]
+    total_value = resource.price_value + paired_resource.price_value
+    resolved_order = {
+        "provider": {"id": resource.owner_ref},
+        "items": [{"id": str(r.id)} for r in resources],
+        "fulfillments": [
+            {
+                "id": str(booking.id),
+                "stops": [{"type": "start", "time": {"timestamp": requested_timestamp}}],
+            }
+            for booking in bookings
+        ],
+        "quote": {
+            "price": {"currency": resource.price_currency, "value": str(total_value)},
+            "breakup": [
+                {
+                    "item": {"id": str(r.id)},
+                    "title": r.name,
+                    "price": {"currency": r.price_currency, "value": str(r.price_value)},
+                }
+                for r in resources
+            ],
+        },
+    }
+    return None, resolved_order
+
+
 def dispatch_on_select(*, payload: dict) -> None:
     """Resolves the requested item + time against **live** availability (Source-of-
     Truth rule, §3.2's own Test Gate) and attempts the real, already-proven atomic hold
@@ -168,47 +232,68 @@ def dispatch_on_select(*, payload: dict) -> None:
                 # A customer selecting a different slot after already holding one from
                 # an earlier /select in this same transaction must not leak the first
                 # hold until its TTL eventually expires on its own — release it now,
-                # before attempting the new one.
+                # before attempting the new one. Already generalizes correctly to a
+                # prior *multi*-resource hold (§4.2) too: it releases every still-HELD
+                # booking under this transaction_id, not just one.
                 release_prior_hold_for_transaction(transaction_id=context["transaction_id"])
-                booking = hold_slot(
-                    slot.id,
-                    # transaction_id, not bap_id: bap_id identifies the BAP *application*,
-                    # shared across every one of its customers — using it as holder_ref
-                    # would make one customer's re-selection release an unrelated
-                    # customer's hold. transaction_id is unique per real Beckn
-                    # transaction, i.e. per individual customer's shopping session.
-                    holder_ref=context["transaction_id"],
-                    redis_client=_redis_client(),
-                    ttl_seconds=settings.RESERVATION_HOLD_TTL_SECONDS,
-                )
-                if booking is None:
-                    error = {
-                        "code": "SLOT_UNAVAILABLE",
-                        "message": "Slot no longer available",
-                    }
+
+                # §4.2: how many resources this domain's own adapter says a booking
+                # genuinely needs (Automotive's bay+mechanic pair = 2; every domain
+                # before it = 1) — the real consumer `required_resource_count()` was
+                # missing since Phase 1.5 first defined it.
+                business = BusinessAccount.objects.get(id=resource.owner_ref)
+                adapter = get_adapter(business.domain_code)
+                required_count = adapter.required_resource_count({})
+
+                if required_count > 1:
+                    error, resolved_order = _hold_multi_resource_selection(
+                        resource=resource,
+                        slot=slot,
+                        requested_time=requested_time,
+                        requested_timestamp=requested_timestamp,
+                        transaction_id=context["transaction_id"],
+                    )
                 else:
-                    record_hold_created()
-                    resolved_order = {
-                        "provider": {"id": resource.owner_ref},
-                        "items": [{"id": str(resource.id)}],
-                        "fulfillments": [
-                            {
-                                "id": str(booking.id),
-                                "stops": [
-                                    {
-                                        "type": "start",
-                                        "time": {"timestamp": requested_timestamp},
-                                    }
-                                ],
-                            }
-                        ],
-                        "quote": {
-                            "price": {
-                                "currency": resource.price_currency,
-                                "value": str(resource.price_value),
-                            }
-                        },
-                    }
+                    booking = hold_slot(
+                        slot.id,
+                        # transaction_id, not bap_id: bap_id identifies the BAP
+                        # *application*, shared across every one of its customers —
+                        # using it as holder_ref would make one customer's
+                        # re-selection release an unrelated customer's hold.
+                        # transaction_id is unique per real Beckn transaction, i.e.
+                        # per individual customer's shopping session.
+                        holder_ref=context["transaction_id"],
+                        redis_client=_redis_client(),
+                        ttl_seconds=settings.RESERVATION_HOLD_TTL_SECONDS,
+                    )
+                    if booking is None:
+                        error = {
+                            "code": "SLOT_UNAVAILABLE",
+                            "message": "Slot no longer available",
+                        }
+                    else:
+                        record_hold_created()
+                        resolved_order = {
+                            "provider": {"id": resource.owner_ref},
+                            "items": [{"id": str(resource.id)}],
+                            "fulfillments": [
+                                {
+                                    "id": str(booking.id),
+                                    "stops": [
+                                        {
+                                            "type": "start",
+                                            "time": {"timestamp": requested_timestamp},
+                                        }
+                                    ],
+                                }
+                            ],
+                            "quote": {
+                                "price": {
+                                    "currency": resource.price_currency,
+                                    "value": str(resource.price_value),
+                                }
+                            },
+                        }
 
     on_select_context = _on_select_context(request_context=context)
     on_select_message: dict = {}

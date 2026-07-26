@@ -204,27 +204,38 @@ def test_onboarding_approve_then_verification_file_matches_subscribe_request_id(
 
 
 @pytest.mark.django_db
-def test_onboarding_subscribe_does_not_revert_a_status_already_moved_to_subscribed(
+def test_onboarding_subscribe_marks_under_subscription_before_calling_registry(
     onboarding_settings,
 ):
-    """Real race found live 2026-07-26: Registry's own `handle_subscribe()` dispatches the
-    on_subscribe challenge *synchronously, before responding* — so `handle_on_subscribe()`
-    can flip this row to SUBSCRIBED before `registry_client.subscribe()` above even
-    returns. Registry's /subscribe response body always literally says
-    `{"status": "UNDER_SUBSCRIPTION"}` regardless of the challenge outcome, so
-    `submit_subscribe()` must not blindly write that stale value back over a row
-    `handle_on_subscribe()` already moved to SUBSCRIBED. Simulated here by having the
-    mocked /subscribe callback itself perform the same DB write `handle_on_subscribe()`
-    would have made, mid-call — exactly the interleaving that broke this live."""
+    """Real, deeper race found live 2026-07-26 (root-caused after a first, insufficient
+    fix): Registry's own `handle_subscribe()` dispatches the on_subscribe challenge
+    *synchronously, before responding* — so `handle_on_subscribe()`'s own bulk
+    `.filter(status=UNDER_SUBSCRIPTION).update(...)` runs *nested inside*
+    `registry_client.subscribe()` below, before it ever returns. That filter only
+    matches a row already `UNDER_SUBSCRIPTION` — `submit_subscribe()` used to only write
+    that status *after* the call returned, so the nested filter found nothing to match,
+    silently confirming nothing despite Registry's own challenge succeeding. Simulated
+    here by having the mocked /subscribe callback assert the row is already
+    `UNDER_SUBSCRIPTION` at the moment it fires (the real precondition
+    `handle_on_subscribe`'s filter depends on) and then perform the exact same
+    filtered bulk update `handle_on_subscribe` does — this fails loudly if
+    `submit_subscribe()` ever regresses to marking the row *after* the Registry call
+    instead of before it."""
     from core import onboarding_service
     from core.models import OnboardingStatus
 
     onboarding_service.approve("ONDC:RET13")
 
     def subscribe_callback(request):
-        OnboardingStatus.objects.filter(domain="ONDC:RET13").update(
-            status=OnboardingStatus.Status.SUBSCRIBED
+        current = OnboardingStatus.objects.get(domain="ONDC:RET13")
+        assert current.status == OnboardingStatus.Status.UNDER_SUBSCRIPTION, (
+            "the row must already be UNDER_SUBSCRIPTION by the time the synchronous "
+            "on_subscribe challenge fires, or handle_on_subscribe's own filter can "
+            "never match it"
         )
+        OnboardingStatus.objects.filter(
+            domain="ONDC:RET13", status=OnboardingStatus.Status.UNDER_SUBSCRIPTION
+        ).update(status=OnboardingStatus.Status.SUBSCRIBED)
         return (200, {}, json.dumps({"status": "UNDER_SUBSCRIPTION"}))
 
     with responses.RequestsMock() as rsps:

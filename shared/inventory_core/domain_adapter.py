@@ -67,3 +67,10 @@ def get_adapter(domain_code: str) -> DomainAdapter:
             f"No DomainAdapter registered for domain_code={domain_code!r}. "
             f"Registered: {sorted(_REGISTRY)}"
         ) from None
+
+
+def registered_domains() -> list[str]:
+    """All domain_codes currently registered (e.g. for a periodic sweep that must cover
+    every live domain, not just one hardcoded at write time — §4.1's own multi-domain
+    widening, `core/reconciliation.py`)."""
+    return sorted(_REGISTRY)

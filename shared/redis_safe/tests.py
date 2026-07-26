@@ -86,7 +86,14 @@ def test_default_timeout_is_generous_enough_for_a_healthy_local_redis_round_trip
     800-real-thread-creation tight-loop burst on a shared/throttled CI runner,
     heavier than any real traffic pattern. 10.0s is still a small fraction of
     what an actual production Redis outage would otherwise cost (the original
-    unbounded hang ran 10s+ before this module existed)."""
+    unbounded hang ran 10s+ before this module existed).
+
+    **2026-07-26 correction:** a fourth failure of BAP's copy of this test was
+    traced instead to a real logic bug in
+    `shared/django_observability/metrics.py`'s `increment_counter()` (a
+    non-atomic check-then-set race on a brand-new counter key) — not another
+    instance of this timeout being too tight. Raising this default further did
+    not fix it and was reverted; see that module's own docstring."""
     import inspect
 
     default_timeout = inspect.signature(call_with_hard_timeout).parameters["timeout"].default

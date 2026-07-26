@@ -51,12 +51,27 @@ def increment_counter(key: str, amount: int = 1) -> None:
     side-effect called from real request-handling code, e.g. BAP's search-trigger
     success path) could crash the actual customer-facing request it's attached
     to. A dropped counter increment during a Redis outage is acceptable (see
-    DATABASE.md's Redis Persistence section); crashing the request over it is not."""
+    DATABASE.md's Redis Persistence section); crashing the request over it is not.
+
+    Real gap found and closed live 2026-07-26: the original shape here was
+    `cache.incr()`, catch `ValueError` (django_redis's "key doesn't exist yet"
+    signal), fall back to `cache.set(key, amount)`. That fallback is a
+    non-atomic check-then-set — under genuine concurrent writers racing on a
+    *brand-new* key (confirmed live: `BAP/backend/core/test_metrics.py`'s own
+    concurrency test clears the cache first, guaranteeing this exact case on
+    every run), several threads can all see the key as missing at once and
+    each independently `set()` it to their own single `amount`, silently
+    stomping each other and undercounting — a real logic bug, not the
+    thread-scheduling tail latency this failure was first misdiagnosed as (see
+    `shared/redis_safe/timeout.py`'s own correction note). Fixed with
+    `cache.add()` (django_redis's atomic "SET if not exists", concurrent adds
+    are safe — exactly one ever wins) to guarantee the key exists before ever
+    calling `cache.incr()`, which is then always genuinely atomic with no
+    remaining race window. `rate_limit.py` had the identical shape and is
+    fixed the same way."""
     try:
-        try:
-            call_with_hard_timeout(cache.incr, key, amount)
-        except ValueError:
-            call_with_hard_timeout(cache.set, key, amount, timeout=_COUNTER_TTL_SECONDS)
+        call_with_hard_timeout(cache.add, key, 0, timeout=_COUNTER_TTL_SECONDS)
+        call_with_hard_timeout(cache.incr, key, amount)
     except _REDIS_UNAVAILABLE:
         logger.warning("metrics: Redis unreachable, dropping increment for %s", key)
 

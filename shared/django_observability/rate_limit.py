@@ -65,13 +65,20 @@ def rate_limit(*, limit_per_minute: int, scope: str, key_func=_client_ip_key):
     def decorator(view_func):
         @wraps(view_func)
         def wrapped(request, *args, **kwargs):
+            # Real gap found and closed live 2026-07-26: the original shape here
+            # was `cache.incr()`, catch `ValueError` (key doesn't exist yet), fall
+            # back to `cache.set(key, 1)` — a non-atomic check-then-set. Under
+            # genuine concurrent requests racing on a brand-new window key, several
+            # could all see it as missing at once and each independently reset it
+            # to 1, undercounting real traffic against the limit (identical bug,
+            # same fix, as `metrics.py`'s `increment_counter()` — see that
+            # docstring for the full live reproduction). Fixed with `cache.add()`
+            # (atomic "SET if not exists") to guarantee the key exists before ever
+            # calling `cache.incr()`, which is then always genuinely atomic.
             key = f"ratelimit:{scope}:{key_func(request)}"
             try:
-                try:
-                    count = call_with_hard_timeout(cache.incr, key)
-                except ValueError:
-                    call_with_hard_timeout(cache.set, key, 1, timeout=60)
-                    count = 1
+                call_with_hard_timeout(cache.add, key, 0, timeout=60)
+                count = call_with_hard_timeout(cache.incr, key)
             except _REDIS_UNAVAILABLE:
                 # Real gap found and closed at Phase 3 Exit (livetracker2.md, 2026-07-24,
                 # live "kill Redis" re-test): only `ValueError` (django_redis's own

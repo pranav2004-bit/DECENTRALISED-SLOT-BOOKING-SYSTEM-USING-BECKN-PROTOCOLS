@@ -40,6 +40,15 @@ test on a shared/throttled CI runner. Settled at 10.0s — still a small
 fraction of what an actual production outage would otherwise cost (the
 original unbounded hang ran 10s+), and irrelevant to normal operation either
 way (a healthy call returns in microseconds regardless of the ceiling).
+
+**2026-07-26 correction:** a fourth occurrence of this same test failing (this
+time consistently, 3/5 local re-runs, even after raising this default to
+20.0s) turned out to be a *different, real logic bug*, not another instance of
+this tail latency — see `shared/django_observability/metrics.py`'s
+`increment_counter()` docstring. Raising this timeout further was the wrong
+fix for that failure and has been reverted back to 10.0s; this module's own
+three-escalation history above remains accurate for what it actually
+diagnosed.
 """
 
 import queue

@@ -82,15 +82,22 @@ def test_get_counter_returns_zero_when_redis_is_unreachable():
 
 
 def test_increment_counter_does_not_raise_on_the_raw_redis_connection_error_too():
-    """`cache.incr()`'s fallback path (`cache.set()`, on a cache-miss `ValueError`)
-    was observed live raising the raw `redis.exceptions.ConnectionError` instead of
-    `ConnectionInterrupted` — a genuinely different exception class. Both must be
+    """`cache.incr()` was observed live raising the raw `redis.exceptions.ConnectionError`
+    instead of `ConnectionInterrupted` — a genuinely different exception class. Both must be
     swallowed, not just one."""
-    with (
-        patch("django_observability.metrics.cache.incr", side_effect=ValueError()),
-        patch(
-            "django_observability.metrics.cache.set",
-            side_effect=redis.exceptions.ConnectionError("down"),
-        ),
+    with patch(
+        "django_observability.metrics.cache.incr",
+        side_effect=redis.exceptions.ConnectionError("down"),
+    ):
+        shared_metrics.increment_counter("some:key")  # must not raise
+
+
+def test_increment_counter_does_not_raise_when_cache_add_itself_is_unreachable():
+    """§4.1-adjacent fix (2026-07-26): `increment_counter()` now calls `cache.add()`
+    before `cache.incr()` (the atomic check-then-set race fix) — that new call site
+    needs the same Redis-unavailable fail-open coverage as `cache.incr()` already
+    had, not just the call that existed before this fix."""
+    with patch(
+        "django_observability.metrics.cache.add", side_effect=ConnectionInterrupted("down")
     ):
         shared_metrics.increment_counter("some:key")  # must not raise

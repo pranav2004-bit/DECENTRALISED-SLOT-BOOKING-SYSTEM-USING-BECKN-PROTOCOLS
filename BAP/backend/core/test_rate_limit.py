@@ -77,18 +77,51 @@ def test_rate_limit_fails_open_when_redis_itself_is_unreachable():
 
 
 def test_rate_limit_fails_open_on_the_raw_redis_connection_error_too():
-    """`cache.incr()`'s fallback path (`cache.set()`, on a cache-miss `ValueError`)
-    was observed live raising the raw `redis.exceptions.ConnectionError` instead of
-    `ConnectionInterrupted` — a genuinely different exception class, confirmed not a
-    subclass of the other. Both must fail open, not just one."""
+    """`cache.incr()` was observed live raising the raw `redis.exceptions.ConnectionError`
+    instead of `ConnectionInterrupted` — a genuinely different exception class, confirmed not
+    a subclass of the other. Both must fail open, not just one."""
     factory = RequestFactory()
     request = factory.post("/dummy")
-    with (
-        patch("django_observability.rate_limit.cache.incr", side_effect=ValueError()),
-        patch(
-            "django_observability.rate_limit.cache.set",
-            side_effect=redis.exceptions.ConnectionError("down"),
-        ),
+    with patch(
+        "django_observability.rate_limit.cache.incr",
+        side_effect=redis.exceptions.ConnectionError("down"),
     ):
         response = _dummy_view(request)
     assert response.status_code == 200
+
+
+def test_rate_limit_counts_every_request_under_real_concurrent_traffic():
+    """Real gap found and closed live 2026-07-26: the original implementation did
+    `cache.incr()`, caught `ValueError` on a missing key, and fell back to a
+    non-atomic `cache.set(key, 1)` — under genuine concurrent requests racing on a
+    brand-new window key (guaranteed here by the autouse `cache.clear()` fixture),
+    several could all see it as missing at once and each independently reset it to
+    1, undercounting real traffic against the limit. Fixed with an atomic
+    `cache.add()`-then-`cache.incr()` shape (see `rate_limit.py`'s own docstring).
+    20 real concurrent requests against a generous limit must all be individually
+    counted — the 21st, sent after all 20 land, must be the one throttled."""
+    import threading
+
+    factory = RequestFactory()
+    request = factory.post("/dummy", REMOTE_ADDR="10.0.0.9")
+
+    @rate_limit(limit_per_minute=1000, scope="concurrency-test")
+    def _concurrent_view(request):
+        return JsonResponse({"ok": True}, status=200)
+
+    responses = []
+    lock = threading.Lock()
+
+    def _call():
+        resp = _concurrent_view(request)
+        with lock:
+            responses.append(resp.status_code)
+
+    threads = [threading.Thread(target=_call) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert responses == [200] * 20
+    assert cache.get("ratelimit:concurrency-test:10.0.0.9") == 20

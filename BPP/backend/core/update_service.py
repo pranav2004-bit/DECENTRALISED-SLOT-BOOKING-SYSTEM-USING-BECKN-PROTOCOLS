@@ -33,7 +33,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django_observability.context import correlation_id_var
 from inventory_core.models import Booking, Slot
-from inventory_core.reservation import reschedule_active_booking
+from inventory_core.reservation import find_group_bookings, reschedule_booking_group
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
@@ -132,9 +132,20 @@ def dispatch_on_update(*, payload: dict, correlation_id: str | None = None) -> N
     it's held by *this* transaction, resolves the newly-requested time to a real
     `Slot` on the SAME resource (Source-of-Truth rule, same principle §3.2
     established), and delegates the actual slot move to
-    `reschedule_active_booking()`. Sends the resulting /on_update (a real
+    `reschedule_booking_group()`. Sends the resulting /on_update (a real
     rescheduled Order, or a real error) to Gateway. Fire-and-forget: failures
     are logged, not raised.
+
+    §4.2: real gap found live, not in code review — the original single-booking
+    `reschedule_active_booking()` only ever moved the *one* resource
+    `fulfillments[0].id` itself named, silently leaving any other resource in a
+    multi-resource group (Automotive's bay+mechanic pair) at its old time, a
+    real half-rescheduled state. Now resolves *every* resource in
+    `find_group_bookings(booking)`'s own group to its own new slot at the same
+    requested time, and moves them all together via `reschedule_booking_group()`
+    — all-or-nothing, matching `hold_multi_resource_booking()`'s own guarantee.
+    `find_group_bookings` returns just `[booking]` unchanged for every domain
+    before this phase, so this is a no-op widening for them.
 
     `correlation_id` (§3.10): same explicit-threading pattern as
     `confirm_service.dispatch_on_confirm`."""
@@ -163,21 +174,27 @@ def dispatch_on_update(*, payload: dict, correlation_id: str | None = None) -> N
                 "message": f"Malformed time.timestamp: {requested_timestamp!r}",
             }
         else:
-            resource = booking.slot.resource
-            try:
-                new_slot = Slot.objects.get(resource=resource, start_time=requested_time)
-            except Slot.DoesNotExist:
+            group = find_group_bookings(booking)
+            pairs = []
+            for group_booking in group:
+                try:
+                    new_slot = Slot.objects.get(
+                        resource=group_booking.slot.resource, start_time=requested_time
+                    )
+                except Slot.DoesNotExist:
+                    pairs = None
+                    break
+                pairs.append((group_booking.id, new_slot.id))
+
+            if pairs is None:
                 error = {
                     "code": "SLOT_UNAVAILABLE",
                     "message": "No matching slot for the requested time",
                 }
             else:
                 try:
-                    rescheduled_booking = reschedule_active_booking(
-                        booking.id,
-                        new_slot.id,
-                        event_bus=get_event_bus(),
-                        correlation_id=correlation_id,
+                    rescheduled_bookings = reschedule_booking_group(
+                        pairs, event_bus=get_event_bus(), correlation_id=correlation_id
                     )
                 except ValidationError:
                     error = {
@@ -185,14 +202,15 @@ def dispatch_on_update(*, payload: dict, correlation_id: str | None = None) -> N
                         "message": "The requested slot is no longer available",
                     }
                 else:
+                    resources = [b.slot.resource for b in rescheduled_bookings]
                     resolved_order = {
-                        "id": str(rescheduled_booking.id),
-                        "status": rescheduled_booking.status,
-                        "provider": {"id": resource.owner_ref},
-                        "items": [{"id": str(resource.id)}],
+                        "id": str(rescheduled_bookings[0].id),
+                        "status": rescheduled_bookings[0].status,
+                        "provider": {"id": resources[0].owner_ref},
+                        "items": [{"id": str(r.id)} for r in resources],
                         "fulfillments": [
                             {
-                                "id": str(rescheduled_booking.id),
+                                "id": str(b.id),
                                 "stops": [
                                     {
                                         "type": "start",
@@ -200,6 +218,7 @@ def dispatch_on_update(*, payload: dict, correlation_id: str | None = None) -> N
                                     }
                                 ],
                             }
+                            for b in rescheduled_bookings
                         ],
                     }
 

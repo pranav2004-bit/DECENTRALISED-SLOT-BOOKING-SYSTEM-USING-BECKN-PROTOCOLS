@@ -30,6 +30,7 @@ from core import (
     select_service,
     status_service,
     track_service,
+    update_service,
 )
 from core.automotive_adapter import find_paired_resource
 from core.events import get_event_bus
@@ -539,3 +540,148 @@ def test_status_reports_every_resource_in_the_group(bpp_identity_settings):
     order = forwarded["message"]["order"]
     assert len(order["fulfillments"]) == 2
     assert len(order["items"]) == 2
+
+
+# --- update (reschedule): the whole group must move together, all-or-nothing ------------------
+
+
+def _update_payload(*, order_id, new_timestamp, transaction_id):
+    return {
+        "context": {
+            "domain": settings.DOMAIN_AUTOMOTIVE,
+            "location": {"country": {"code": "IND"}},
+            "action": "update",
+            "version": "1.1.0",
+            "bap_id": "bap.example.com",
+            "bap_uri": "https://bap.example.com",
+            "transaction_id": transaction_id,
+            "message_id": "msg-1",
+            "timestamp": "2026-07-20T00:00:00Z",
+        },
+        "message": {
+            "update_target": "fulfillment",
+            "order": {
+                "fulfillments": [
+                    {
+                        "id": order_id,
+                        "stops": [{"type": "start", "time": {"timestamp": new_timestamp}}],
+                    }
+                ]
+            },
+        },
+    }
+
+
+@pytest.mark.django_db
+def test_update_reschedules_every_resource_in_the_group_together(bpp_identity_settings, bus):
+    """Real gap found live 2026-07-26: the original single-booking reschedule
+    primitive only ever moved the *one* resource the wire request named, silently
+    leaving the other resource in a multi-resource group at its old time — a real
+    half-rescheduled state. Both resources must move to the new time together."""
+    business = _make_automotive_business()
+    _mechanic, mechanic_slot, _bay, bay_slot = _make_bay_and_mechanic(business)
+    new_start = mechanic_slot.start_time + dt.timedelta(hours=2)
+    Slot.objects.create(
+        resource=_mechanic,
+        start_time=new_start,
+        end_time=new_start + dt.timedelta(hours=1),
+        capacity_total=1,
+        capacity_remaining=1,
+    )
+    Slot.objects.create(
+        resource=_bay,
+        start_time=new_start,
+        end_time=new_start + dt.timedelta(hours=1),
+        capacity_total=1,
+        capacity_remaining=1,
+    )
+
+    bookings = _hold_both(business, mechanic_slot, bay_slot, holder_ref="txn-auto-8")
+    for b in bookings:
+        b.transition_status(Booking.Status.ACTIVE)
+    primary = bookings[0]
+
+    payload = _update_payload(
+        order_id=str(primary.id),
+        new_timestamp=new_start.isoformat(),
+        transaction_id="txn-auto-8",
+    )
+
+    captured = []
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://gateway:8000/on_update",
+            callback=lambda r: (captured.append(r), (200, {}, json.dumps({"message": {}})))[1],
+        )
+        update_service.dispatch_on_update(payload=payload)
+
+    forwarded = json.loads(captured[0].body)
+    assert "error" not in forwarded
+    order = forwarded["message"]["order"]
+    assert len(order["fulfillments"]) == 2
+    for fulfillment in order["fulfillments"]:
+        assert fulfillment["stops"][0]["time"]["timestamp"] == new_start.isoformat()
+
+    for b in bookings:
+        b.refresh_from_db()
+        assert b.slot.start_time == new_start
+
+    mechanic_slot.refresh_from_db()
+    bay_slot.refresh_from_db()
+    assert mechanic_slot.capacity_remaining == 1  # old slots restored
+    assert bay_slot.capacity_remaining == 1
+
+
+@pytest.mark.django_db
+def test_update_fails_the_whole_group_if_only_one_new_slot_is_available(
+    bpp_identity_settings, bus
+):
+    """EDGE: the same all-or-nothing guarantee as the original booking itself —
+    if the new time only has room for one of the two resources, neither resource
+    moves; both bookings must stay at their original slot, not a half-moved
+    group."""
+    business = _make_automotive_business()
+    _mechanic, mechanic_slot, _bay, bay_slot = _make_bay_and_mechanic(business)
+    new_start = mechanic_slot.start_time + dt.timedelta(hours=2)
+    Slot.objects.create(
+        resource=_mechanic,
+        start_time=new_start,
+        end_time=new_start + dt.timedelta(hours=1),
+        capacity_total=1,
+        capacity_remaining=1,
+    )
+    # Deliberately no matching bay slot at new_start — the bay side of the group
+    # has nowhere to move to.
+
+    bookings = _hold_both(business, mechanic_slot, bay_slot, holder_ref="txn-auto-9")
+    for b in bookings:
+        b.transition_status(Booking.Status.ACTIVE)
+    primary = bookings[0]
+
+    payload = _update_payload(
+        order_id=str(primary.id),
+        new_timestamp=new_start.isoformat(),
+        transaction_id="txn-auto-9",
+    )
+
+    captured = []
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://gateway:8000/on_update",
+            callback=lambda r: (captured.append(r), (200, {}, json.dumps({"message": {}})))[1],
+        )
+        update_service.dispatch_on_update(payload=payload)
+
+    forwarded = json.loads(captured[0].body)
+    assert forwarded["error"]["code"] == "SLOT_UNAVAILABLE"
+
+    for b in bookings:
+        b.refresh_from_db()
+        assert b.slot.start_time == mechanic_slot.start_time  # neither one moved
+
+    mechanic_slot.refresh_from_db()
+    bay_slot.refresh_from_db()
+    assert mechanic_slot.capacity_remaining == 0  # still held by the original booking
+    assert bay_slot.capacity_remaining == 0

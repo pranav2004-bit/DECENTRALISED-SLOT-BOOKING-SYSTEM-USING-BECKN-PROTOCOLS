@@ -486,3 +486,91 @@ def reschedule_active_booking(
 
     booking.refresh_from_db()
     return booking
+
+
+def reschedule_booking_group(booking_new_slot_pairs, *, event_bus=None, correlation_id=None):
+    """§4.2's group-aware generalization of `reschedule_active_booking` — moves *every*
+    booking in a multi-resource group (e.g. Automotive's bay+mechanic pair) to its own
+    new slot, atomically as one unit, rather than moving only the one resource a naive
+    caller might otherwise name. `booking_new_slot_pairs` is an iterable of
+    `(booking_id, new_slot_id)` tuples, one per resource being rescheduled together.
+
+    Real gap found live, not in code review (2026-07-26): the original
+    `reschedule_active_booking` only ever moved *one* booking — calling it once per
+    group member independently (matching this project's existing group-widening
+    pattern used for `confirm`/`cancel`) would have left the *other* resource's booking
+    at the old time whenever the new time only had room for the first one processed,
+    a real half-rescheduled state no single-booking function call can prevent on its
+    own. This function instead locks every old *and* new slot row involved across the
+    whole group inside **one** `transaction.atomic()`, checks capacity on every new
+    slot first (before mutating any of them), and only then moves them all — the same
+    all-or-nothing discipline as `hold_multi_resource_booking`. Raises
+    `ValidationError` if any booking isn't `ACTIVE`, any new slot equals that
+    booking's current slot, or any new slot lacks capacity — nothing in the group
+    moves if any one of them can't.
+
+    Deadlock-safety: every slot row involved (old and new, across every pair) is
+    locked in one deterministic, sorted-by-id order — the same precedent
+    `reschedule_active_booking` already established for its own two slots, generalized
+    to however many are involved here.
+    """
+    pairs = [(str(booking_id), str(new_slot_id)) for booking_id, new_slot_id in booking_new_slot_pairs]
+
+    with transaction.atomic():
+        bookings = {}
+        for booking_id, _new_slot_id in pairs:
+            booking = Booking.objects.select_for_update().get(pk=booking_id)
+            if booking.status != Booking.Status.ACTIVE:
+                raise ValidationError(
+                    f"cannot reschedule booking {booking_id}: not currently ACTIVE "
+                    f"(status={booking.status!r})."
+                )
+            bookings[booking_id] = booking
+
+        old_slot_ids = {str(b.slot_id) for b in bookings.values()}
+        for booking_id, new_slot_id in pairs:
+            if new_slot_id == str(bookings[booking_id].slot_id):
+                raise ValidationError("new slot is the same as the booking's current slot")
+
+        all_ids = sorted(old_slot_ids | {new_slot_id for _, new_slot_id in pairs})
+        locked_slots = {}
+        for slot_id in all_ids:
+            with Slot.objects.lock_for_mutation(slot_id) as slot:
+                locked_slots[slot_id] = slot
+
+        for booking_id, new_slot_id in pairs:
+            new_slot = locked_slots[new_slot_id]
+            if new_slot.capacity_remaining < bookings[booking_id].quantity:
+                raise ValidationError(f"slot {new_slot_id} does not have enough capacity")
+
+        old_slot_id_by_booking = {bid: str(b.slot_id) for bid, b in bookings.items()}
+        for booking_id, new_slot_id in pairs:
+            booking = bookings[booking_id]
+            new_slot = locked_slots[new_slot_id]
+            new_slot.capacity_remaining -= booking.quantity
+            if new_slot.capacity_remaining == 0:
+                new_slot.status = Slot.Status.HELD
+            new_slot.save(update_fields=["capacity_remaining", "status", "updated_at"])
+            _restore_capacity(locked_slots[old_slot_id_by_booking[booking_id]], booking.quantity)
+            booking.slot_id = new_slot.id
+            booking.save(update_fields=["slot", "updated_at"])
+
+    result = []
+    for booking_id, new_slot_id in pairs:
+        booking = bookings[booking_id]
+        booking.refresh_from_db()
+        result.append(booking)
+        if event_bus is not None:
+            old_slot_id = old_slot_id_by_booking[booking_id]
+            publish_event(event_bus, SlotEvent.RELEASED, slot_id=old_slot_id)
+            publish_event(event_bus, SlotEvent.RESCHEDULED, slot_id=new_slot_id)
+            publish_event(event_bus, BookingEvent.RESCHEDULED, booking_id=booking_id)
+            log_booking_audit_event(
+                booking=booking,
+                booking_id=booking_id,
+                event_type=BookingEvent.RESCHEDULED,
+                detail={"old_slot_id": old_slot_id, "new_slot_id": new_slot_id},
+                correlation_id=correlation_id,
+            )
+
+    return result

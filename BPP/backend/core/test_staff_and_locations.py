@@ -107,7 +107,11 @@ def test_staff_account_cannot_create_or_list_staff(client):
 
     resp = staff_client.post(
         reverse("staff"),
-        data={"business_name": "Sub Staff", "contact": "sub@example.com", "password": TEST_PASSWORD},
+        data={
+            "business_name": "Sub Staff",
+            "contact": "sub@example.com",
+            "password": TEST_PASSWORD,
+        },
         content_type="application/json",
     )
     assert resp.status_code == 403
@@ -338,7 +342,9 @@ def test_block_skips_already_booked_slot_but_blocks_the_rest(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["blocked"] == [str(slots[1].id)]
-    assert body["skipped"] == [{"slot_id": str(slots[0].id), "reason": "not blockable (status=BOOKED)"}]
+    assert body["skipped"] == [
+        {"slot_id": str(slots[0].id), "reason": "not blockable (status=BOOKED)"}
+    ]
 
 
 @pytest.mark.django_db
@@ -357,7 +363,7 @@ def test_owner_can_also_block_their_own_resource_directly(client):
     assert resp.json()["blocked"] == [slot_id]
 
 
-# --- Multi-location support ------------------------------------------------------------------------
+# --- Multi-location support ----------------------------------------------------------------------
 
 
 @pytest.mark.django_db
@@ -405,7 +411,11 @@ def test_resource_can_be_tagged_with_own_location(client):
 
     resp = client.post(
         reverse("resource-create"),
-        data={"name": "Stylist A", "domain_data": {"resource_type": "stylist"}, "location_id": location_id},
+        data={
+            "name": "Stylist A",
+            "domain_data": {"resource_type": "stylist"},
+            "location_id": location_id,
+        },
         content_type="application/json",
     )
     assert resp.status_code == 201

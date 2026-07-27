@@ -15,8 +15,6 @@ from django_observability.rate_limit import by_authenticated_account, rate_limit
 from inventory_core.domain_adapter import get_adapter
 from inventory_core.models import AvailabilityCalendar, Resource, Slot
 
-from .models import Location
-
 from . import (
     cancel_service,
     confirm_service,
@@ -30,6 +28,7 @@ from . import (
 )
 from .catalog import visible_resources
 from .catalog_cache import invalidate_catalog_cache
+from .models import Location
 
 # §3.7: caps the real number of Slot rows one availability-creation call can
 # materialize — an honest, deliberately-generous ceiling (just over a year), not a
@@ -213,7 +212,9 @@ def resource_create_view(request):
     if not request.user.is_authenticated:
         return error_response("UNAUTHORIZED", "not logged in", 401)
     if request.user.role != get_user_model().Role.OWNER:
-        return error_response("FORBIDDEN", "only a business owner account can create resources", 403)
+        return error_response(
+            "FORBIDDEN", "only a business owner account can create resources", 403
+        )
 
     try:
         payload = json.loads(request.body or b"{}")
@@ -580,7 +581,9 @@ def locations_view(request):
         return error_response("UNAUTHORIZED", "not logged in", 401)
     BusinessAccount = get_user_model()
     if request.user.role != BusinessAccount.Role.OWNER:
-        return error_response("FORBIDDEN", "only a business owner account can manage locations", 403)
+        return error_response(
+            "FORBIDDEN", "only a business owner account can manage locations", 403
+        )
 
     if request.method == "GET":
         locations = request.user.locations.values(

@@ -43,9 +43,7 @@ class BusinessAccountManager(BaseUserManager):
 
 
 class BusinessAccount(AbstractBaseUser, PermissionsMixin):
-    """One business-account login (salon owner/admin) — livetracker2.md §2.2. Deliberately
-    **not** individual staff logins (deferred to Phase 4, tagged `[PILOT]` there): one
-    account per business, not one per employee.
+    """One business-account login (salon owner/admin) — livetracker2.md §2.2.
 
     **Provider Lifecycle Management** (`ACTIVE`/`INACTIVE`) reuses Django's own `is_active`
     flag, same reasoning as BAP's `Customer.is_active` (§2.1) — `authenticate()` already
@@ -58,11 +56,36 @@ class BusinessAccount(AbstractBaseUser, PermissionsMixin):
     operating-hours/schedule configuration *is* its configuration management here, not a
     separate settings screen. Documented explicitly as the mapping, not silently
     unaddressed.
+
+    Phase 4.3 (livetracker2.md §4.3): individual staff-level logins, deferred from §2.2.
+    Rather than a second `AUTH_USER_MODEL` (Django only supports one per project) or a
+    custom auth backend, a staff account is just another `BusinessAccount` row with
+    `role=STAFF` and `managed_by` pointing at the owner account — it reuses 100% of the
+    existing session/auth/rate-limit/URL plumbing (same login endpoint, same Redis-backed
+    session, same `authenticate()`/`login()` calls) with zero new auth machinery. A staff
+    account cannot itself create other staff, resources, or locations (owner-only actions
+    in `views.py`); it can only self-manage the availability of whichever `Resource` the
+    owner has explicitly assigned to it (`Resource.domain_data["assigned_staff_id"]`).
     """
+
+    class Role(models.TextChoices):
+        OWNER = "OWNER", "Owner"
+        STAFF = "STAFF", "Staff"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     contact = models.CharField(max_length=255, unique=True)
     business_name = models.CharField(max_length=255)
+
+    role = models.CharField(max_length=20, choices=Role.choices, default=Role.OWNER)
+    # Set only for STAFF accounts — the owning BusinessAccount that created this staff
+    # login. CASCADE: a staff login has no meaning once the business itself is gone.
+    managed_by = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="staff_members",
+    )
 
     # Phase 4.1 (livetracker2.md) — real gap found via audit before implementing: BPP was
     # single-domain-only everywhere (catalog/search hardcoded to Beauty), with no way to
@@ -83,8 +106,46 @@ class BusinessAccount(AbstractBaseUser, PermissionsMixin):
     USERNAME_FIELD = "contact"
     REQUIRED_FIELDS = ["business_name"]
 
+    class Meta:
+        constraints = [
+            # Defense in depth: an OWNER must never have a manager, and a STAFF account
+            # must always have one — enforced at the DB level, not just in view code.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(role="OWNER", managed_by__isnull=True)
+                    | models.Q(role="STAFF", managed_by__isnull=False)
+                ),
+                name="business_account_role_managed_by_consistency",
+            ),
+        ]
+
     def __str__(self) -> str:
         return f"BusinessAccount({self.contact})"
+
+
+class Location(models.Model):
+    """Phase 4.3 (livetracker2.md §4.3) — "richer business profile management
+    (multi-location support)". A business owns one or more physical locations;
+    `Resource.domain_data["location_id"]` (the shared library's generic no-fork
+    extension point, per its own docstring) opaquely links a Resource to one, the same
+    pattern already used for staff assignment above — no schema change to the shared
+    `shared/inventory_core` app needed.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    business = models.ForeignKey(
+        BusinessAccount, on_delete=models.CASCADE, related_name="locations"
+    )
+    name = models.CharField(max_length=255)
+    address = models.CharField(max_length=500, blank=True)
+    city = models.CharField(max_length=255, blank=True)
+    is_primary = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"Location({self.name}, business={self.business_id})"
 
 
 class OnboardingStatus(models.Model):

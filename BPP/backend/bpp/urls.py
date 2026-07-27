@@ -41,6 +41,18 @@ urlpatterns = [
         name="resource-availability-create",
     ),
     path("api/v1/catalog/resources", core_views.resources_list_view, name="resources-list"),
+    path("api/v1/staff", core_views.staff_view, name="staff"),
+    path(
+        "api/v1/resources/<uuid:resource_id>/assign-staff",
+        core_views.resource_assign_staff_view,
+        name="resource-assign-staff",
+    ),
+    path(
+        "api/v1/resources/<uuid:resource_id>/availability/block",
+        core_views.resource_availability_block_view,
+        name="resource-availability-block",
+    ),
+    path("api/v1/locations", core_views.locations_view, name="locations"),
     path("search", core_views.search_view, name="search"),
     path("select", core_views.select_view, name="select"),
     path("init", core_views.init_view, name="init"),

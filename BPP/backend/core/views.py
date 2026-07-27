@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model, login, logout, password_validation
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from django.http import HttpResponse, JsonResponse
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
@@ -12,7 +13,7 @@ from django.views.decorators.http import require_http_methods
 from django_observability.errors import error_response
 from django_observability.rate_limit import by_authenticated_account, rate_limit
 from inventory_core.domain_adapter import get_adapter
-from inventory_core.models import AvailabilityCalendar, Resource
+from inventory_core.models import AvailabilityCalendar, Resource, Slot
 
 from . import (
     cancel_service,
@@ -27,6 +28,7 @@ from . import (
 )
 from .catalog import visible_resources
 from .catalog_cache import invalidate_catalog_cache
+from .models import Location
 
 # §3.7: caps the real number of Slot rows one availability-creation call can
 # materialize — an honest, deliberately-generous ceiling (just over a year), not a
@@ -63,12 +65,24 @@ def on_subscribe_view(request):
 
 
 def _business_account_json(account) -> dict:
-    return {
+    data = {
         "id": str(account.id),
         "business_name": account.business_name,
         "contact": account.contact,
         "domain_code": account.domain_code,
+        "role": account.role,
+        "managed_by": str(account.managed_by_id) if account.managed_by_id else None,
     }
+    # §4.3: a staff account's own dashboard needs to know which Resource(s) it's
+    # actually allowed to self-manage — cheaper to include here than a second round trip.
+    if account.role == account.Role.STAFF:
+        data["assigned_resource_ids"] = list(
+            Resource.objects.filter(domain_data__assigned_staff_id=str(account.id)).values_list(
+                "id", flat=True
+            )
+        )
+        data["assigned_resource_ids"] = [str(rid) for rid in data["assigned_resource_ids"]]
+    return data
 
 
 @require_http_methods(["GET"])
@@ -188,9 +202,19 @@ def business_me_view(request):
 def resource_create_view(request):
     """The logged-in business account creates a real `Resource` it owns (§2.2) —
     `owner_ref` is always the authenticated account's own id, never client-supplied, so a
-    business can only ever create resources under itself."""
+    business can only ever create resources under itself.
+
+    §4.3: owner-only. A staff account's `owner_ref` would be its own id, not the
+    business's, silently splitting inventory ownership between the owner and its staff
+    sub-accounts — resource/calendar creation stays an owner action; staff only
+    self-manage the availability of a Resource already assigned to them (see
+    `resource_availability_block_view`)."""
     if not request.user.is_authenticated:
         return error_response("UNAUTHORIZED", "not logged in", 401)
+    if request.user.role != get_user_model().Role.OWNER:
+        return error_response(
+            "FORBIDDEN", "only a business owner account can create resources", 403
+        )
 
     try:
         payload = json.loads(request.body or b"{}")
@@ -228,6 +252,17 @@ def resource_create_view(request):
                 "VALIDATION_ERROR", "price_value must not be negative", 400, field="price_value"
             )
 
+    # §4.3: optional multi-location tagging — validated against this business's own
+    # locations only, same "no such X for this account" IDOR posture as everywhere else.
+    location_id = payload.get("location_id")
+    if location_id:
+        if not Location.objects.filter(id=location_id, business=request.user).exists():
+            return error_response(
+                "VALIDATION_ERROR", "no such location for this business account", 400,
+                field="location_id",
+            )
+        domain_data = {**domain_data, "location_id": str(location_id)}
+
     resource = Resource.objects.create(
         owner_ref=str(request.user.id),
         name=name,
@@ -252,9 +287,17 @@ def resource_create_view(request):
 )
 def resource_availability_create_view(request, resource_id):
     """Creates a real `AvailabilityCalendar` for one of the logged-in business's own
-    `Resource`s and generates real `Slot` rows from it (§2.2's own Test Gate wording)."""
+    `Resource`s and generates real `Slot` rows from it (§2.2's own Test Gate wording).
+
+    §4.3: owner-only, same reasoning as `resource_create_view` — bulk calendar
+    generation is inventory *creation*, distinct from a staff account merely blocking
+    off already-generated slots (`resource_availability_block_view`)."""
     if not request.user.is_authenticated:
         return error_response("UNAUTHORIZED", "not logged in", 401)
+    if request.user.role != get_user_model().Role.OWNER:
+        return error_response(
+            "FORBIDDEN", "only a business owner account can create availability", 403
+        )
 
     try:
         resource = Resource.objects.get(id=resource_id, owner_ref=str(request.user.id))
@@ -340,6 +383,235 @@ def resources_list_view(request):
     domain_code = request.GET.get("domain") or settings.DOMAIN_BEAUTY
     resources = visible_resources(domain_code).values("id", "name", "owner_ref")
     return JsonResponse({"resources": list(resources)}, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+@rate_limit(limit_per_minute=20, scope="staff", key_func=by_authenticated_account)
+def staff_view(request):
+    """§4.3: owner-only staff-account management. `POST` creates a new staff login under
+    the calling business (`role=STAFF`, `managed_by=<the owner>`); `GET` lists the
+    calling business's own staff. A staff account cannot call either — it has no staff
+    of its own, mirroring `resource_create_view`'s owner-only IDOR posture."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+    BusinessAccount = get_user_model()
+    if request.user.role != BusinessAccount.Role.OWNER:
+        return error_response("FORBIDDEN", "only a business owner account can manage staff", 403)
+
+    if request.method == "GET":
+        staff = request.user.staff_members.values("id", "business_name", "contact", "is_active")
+        return JsonResponse({"staff": list({**s, "id": str(s["id"])} for s in staff)}, status=200)
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    business_name = (payload.get("business_name") or "").strip()
+    contact = (payload.get("contact") or "").strip()
+    password = payload.get("password") or ""
+
+    if not business_name:
+        return error_response(
+            "VALIDATION_ERROR", "business_name is required", 400, field="business_name"
+        )
+    if not contact:
+        return error_response("VALIDATION_ERROR", "contact is required", 400, field="contact")
+    if not password:
+        return error_response("VALIDATION_ERROR", "password is required", 400, field="password")
+    if len(business_name) > 255:
+        return error_response(
+            "VALIDATION_ERROR", "business_name is too long (max 255)", 400, field="business_name"
+        )
+    if len(contact) > 255:
+        return error_response(
+            "VALIDATION_ERROR", "contact is too long (max 255)", 400, field="contact"
+        )
+    if BusinessAccount.objects.filter(contact=contact).exists():
+        return error_response(
+            "VALIDATION_ERROR", "an account with this contact already exists", 409, field="contact"
+        )
+    try:
+        password_validation.validate_password(password)
+    except DjangoValidationError as exc:
+        return error_response("VALIDATION_ERROR", " ".join(exc.messages), 400, field="password")
+
+    staff = BusinessAccount.objects.create_user(
+        contact=contact,
+        business_name=business_name,
+        password=password,
+        domain_code=request.user.domain_code,
+        role=BusinessAccount.Role.STAFF,
+        managed_by=request.user,
+    )
+    return JsonResponse(_business_account_json(staff), status=201)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+@rate_limit(limit_per_minute=30, scope="resource-assign-staff", key_func=by_authenticated_account)
+def resource_assign_staff_view(request, resource_id):
+    """§4.3: the owner assigns one of its own `Resource`s to one of its own staff
+    accounts — `Resource.domain_data["assigned_staff_id"]` is the opaque link the
+    availability-block view below trusts for staff-scoped authorization. Owner-only,
+    same IDOR posture as `resource_availability_create_view` (404, not 403, on
+    mismatch, so a caller can't distinguish "not yours" from "doesn't exist")."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+    BusinessAccount = get_user_model()
+    if request.user.role != BusinessAccount.Role.OWNER:
+        return error_response("FORBIDDEN", "only a business owner account can assign staff", 403)
+
+    try:
+        resource = Resource.objects.get(id=resource_id, owner_ref=str(request.user.id))
+    except (Resource.DoesNotExist, DjangoValidationError, ValueError):
+        return error_response("NOT_FOUND", "no such resource for this business account", 404)
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    staff_id = payload.get("staff_id")
+    if not staff_id:
+        return error_response("VALIDATION_ERROR", "staff_id is required", 400, field="staff_id")
+    if not BusinessAccount.objects.filter(
+        id=staff_id, role=BusinessAccount.Role.STAFF, managed_by=request.user
+    ).exists():
+        return error_response(
+            "VALIDATION_ERROR", "no such staff account for this business", 400, field="staff_id"
+        )
+
+    resource.domain_data = {**resource.domain_data, "assigned_staff_id": str(staff_id)}
+    resource.save(update_fields=["domain_data", "updated_at"])
+    return JsonResponse({"id": str(resource.id), "assigned_staff_id": str(staff_id)}, status=200)
+
+
+def _resource_accessible_to(user, resource) -> bool:
+    """§4.3: shared ownership check between the owner's full-access path and a staff
+    account's narrower one-resource path — the owner always owns everything under its
+    own `owner_ref`; a staff account only ever owns the one `Resource` its owner
+    explicitly assigned to it via `resource_assign_staff_view` above."""
+    BusinessAccount = get_user_model()
+    if user.role == BusinessAccount.Role.OWNER:
+        return resource.owner_ref == str(user.id)
+    return (
+        resource.owner_ref == str(user.managed_by_id)
+        and resource.domain_data.get("assigned_staff_id") == str(user.id)
+    )
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+@rate_limit(
+    limit_per_minute=30, scope="resource-availability-block", key_func=by_authenticated_account
+)
+def resource_availability_block_view(request, resource_id):
+    """§4.3's own Test Gate: "a staff member logs in independently of the business
+    owner account and blocks off their own availability." Self-service — a staff
+    account calls this on its one assigned `Resource` with no owner involvement, using
+    the exact same login/session mechanism the owner uses (§2.2), just a different
+    account. The owner can also call this on any of its own resources.
+
+    Blocking only ever targets currently-`AVAILABLE` slots (a `HELD`/`BOOKED` slot has
+    an active customer transaction against it that this endpoint has no business
+    unwinding) and reuses the existing `CANCELLED` status rather than inventing a new
+    one, matching `Slot.Status`'s already-confirmed "not bookable" terminal meaning.
+    Best-effort per slot_id, not all-or-nothing: one already-booked slot in a batch
+    shouldn't block the rest from being blocked."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+
+    try:
+        resource = Resource.objects.get(id=resource_id)
+    except (Resource.DoesNotExist, DjangoValidationError, ValueError):
+        return error_response("NOT_FOUND", "no such resource for this account", 404)
+    if not _resource_accessible_to(request.user, resource):
+        return error_response("NOT_FOUND", "no such resource for this account", 404)
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    slot_ids = payload.get("slot_ids")
+    if not isinstance(slot_ids, list) or not slot_ids:
+        return error_response(
+            "VALIDATION_ERROR", "slot_ids must be a non-empty list", 400, field="slot_ids"
+        )
+    # §3.7-style cap: bound the batch so this can't be used to hold an unbounded number
+    # of row locks in one request.
+    if len(slot_ids) > 500:
+        return error_response(
+            "VALIDATION_ERROR", "slot_ids must not exceed 500 items", 400, field="slot_ids"
+        )
+
+    blocked, skipped = [], []
+    for raw_id in slot_ids:
+        try:
+            with transaction.atomic(), Slot.objects.lock_for_mutation(raw_id) as slot:
+                if slot.resource_id != resource.id:
+                    skipped.append({"slot_id": str(raw_id), "reason": "not found"})
+                    continue
+                if slot.status != Slot.Status.AVAILABLE:
+                    skipped.append(
+                        {"slot_id": str(raw_id), "reason": f"not blockable (status={slot.status})"}
+                    )
+                    continue
+                slot.status = Slot.Status.CANCELLED
+                slot.save(update_fields=["status", "updated_at"])
+                blocked.append(str(slot.id))
+        except (Slot.DoesNotExist, DjangoValidationError, ValueError):
+            skipped.append({"slot_id": str(raw_id), "reason": "not found"})
+
+    return JsonResponse({"blocked": blocked, "skipped": skipped}, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+@rate_limit(limit_per_minute=20, scope="locations", key_func=by_authenticated_account)
+def locations_view(request):
+    """§4.3: "richer business profile management (multi-location support)". Owner-only,
+    same collection-endpoint shape as `staff_view` above (`GET` lists, `POST` creates).
+    A `Resource` opts into a location via `domain_data["location_id"]` at creation time
+    (see `resource_create_view`) — this endpoint only manages the `Location` rows
+    themselves."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+    BusinessAccount = get_user_model()
+    if request.user.role != BusinessAccount.Role.OWNER:
+        return error_response(
+            "FORBIDDEN", "only a business owner account can manage locations", 403
+        )
+
+    if request.method == "GET":
+        locations = request.user.locations.values(
+            "id", "name", "address", "city", "is_primary"
+        )
+        return JsonResponse(
+            {"locations": list({**loc, "id": str(loc["id"])} for loc in locations)}, status=200
+        )
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return error_response("VALIDATION_ERROR", "name is required", 400, field="name")
+    if len(name) > 255:
+        return error_response("VALIDATION_ERROR", "name is too long (max 255)", 400, field="name")
+
+    location = Location.objects.create(
+        business=request.user,
+        name=name,
+        address=(payload.get("address") or "").strip(),
+        city=(payload.get("city") or "").strip(),
+        is_primary=bool(payload.get("is_primary", False)),
+    )
+    return JsonResponse({"id": str(location.id), "name": location.name}, status=201)
 
 
 @csrf_exempt

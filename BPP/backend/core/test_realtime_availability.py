@@ -155,7 +155,9 @@ async def test_a_different_businesss_owner_is_rejected(resource):
 
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.asyncio
-async def test_owner_can_connect_and_receives_a_broadcast_slot_update(owner_session, resource, slot):
+async def test_owner_can_connect_and_receives_a_broadcast_slot_update(
+    owner_session, resource, slot
+):
     communicator = WebsocketCommunicator(
         application,
         f"/ws/resources/{resource.id}/availability",

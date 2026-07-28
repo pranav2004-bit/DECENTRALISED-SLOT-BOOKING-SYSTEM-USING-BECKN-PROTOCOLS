@@ -40,6 +40,7 @@ from .crypto import sign_outbound_request
 from .metrics import record_hold_created
 from .models import BusinessAccount
 from .participant_keys import get_signing_keys
+from .realtime import broadcast_slot_update
 
 logger = logging.getLogger("bpp")
 
@@ -167,6 +168,10 @@ def _hold_multi_resource_selection(
         )
 
     record_hold_created()
+    # Phase 4.4 (livetracker2.md §4.4): both resources just became less available (or
+    # fully HELD) — broadcast each to its own resource's live availability dashboard.
+    for resource_obj, booking in zip([resource, paired_resource], bookings, strict=True):
+        broadcast_slot_update(resource_obj.id, booking.slot)
     resources = [resource, paired_resource]
     total_value = resource.price_value + paired_resource.price_value
     resolved_order = {
@@ -273,6 +278,7 @@ def dispatch_on_select(*, payload: dict) -> None:
                         }
                     else:
                         record_hold_created()
+                        broadcast_slot_update(resource.id, booking.slot)
                         resolved_order = {
                             "provider": {"id": resource.owner_ref},
                             "items": [{"id": str(resource.id)}],
@@ -346,4 +352,7 @@ def release_prior_hold_for_transaction(*, transaction_id: str) -> None:
     from inventory_core.models import Booking
 
     for booking in Booking.objects.filter(holder_ref=transaction_id, status=Booking.Status.HELD):
-        release_hold_now(booking.id, redis_client=_redis_client())
+        slot_id = booking.slot_id
+        if release_hold_now(booking.id, redis_client=_redis_client()):
+            released_slot = Slot.objects.select_related("resource").get(pk=slot_id)
+            broadcast_slot_update(released_slot.resource_id, released_slot)

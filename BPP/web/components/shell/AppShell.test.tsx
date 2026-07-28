@@ -7,6 +7,7 @@ vi.spyOn(realtimeModule, 'useRealtimeConnection').mockReturnValue({
   status: 'open',
   lastMessage: null,
   reconnect: vi.fn(),
+  send: vi.fn(),
 });
 
 describe('AppShell', () => {

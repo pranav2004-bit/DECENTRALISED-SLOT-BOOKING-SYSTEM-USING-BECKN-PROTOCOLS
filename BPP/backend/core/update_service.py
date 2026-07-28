@@ -39,6 +39,7 @@ from . import registry_client, trust
 from .crypto import sign_outbound_request
 from .events import get_event_bus
 from .participant_keys import get_signing_keys
+from .realtime import broadcast_slot_update
 
 logger = logging.getLogger("bpp")
 
@@ -203,6 +204,15 @@ def dispatch_on_update(*, payload: dict, correlation_id: str | None = None) -> N
                     }
                 else:
                     resources = [b.slot.resource for b in rescheduled_bookings]
+                    # Phase 4.4 (livetracker2.md §4.4): each resource in the group has
+                    # two real transitions to broadcast — its old slot freed back to
+                    # AVAILABLE, and its new slot now held.
+                    for old_group_booking, rescheduled in zip(
+                        group, rescheduled_bookings, strict=True
+                    ):
+                        old_slot = Slot.objects.get(pk=old_group_booking.slot_id)
+                        broadcast_slot_update(old_slot.resource_id, old_slot)
+                        broadcast_slot_update(rescheduled.slot.resource_id, rescheduled.slot)
                     resolved_order = {
                         "id": str(rescheduled_bookings[0].id),
                         "status": rescheduled_bookings[0].status,

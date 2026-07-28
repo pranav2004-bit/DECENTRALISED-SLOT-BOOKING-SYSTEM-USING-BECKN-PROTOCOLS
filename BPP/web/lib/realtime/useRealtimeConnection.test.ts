@@ -4,9 +4,16 @@ import { useRealtimeConnection } from './useRealtimeConnection';
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+
   url: string;
   listeners: Record<string, ((event: unknown) => void)[]> = {};
   closed = false;
+  readyState = MockWebSocket.CONNECTING;
+  sent: string[] = [];
 
   constructor(url: string) {
     this.url = url;
@@ -21,9 +28,15 @@ class MockWebSocket {
 
   close() {
     this.closed = true;
+    this.readyState = MockWebSocket.CLOSED;
+  }
+
+  send(data: string) {
+    this.sent.push(data);
   }
 
   emit(type: string, event: unknown = {}) {
+    if (type === 'open') this.readyState = MockWebSocket.OPEN;
     for (const handler of this.listeners[type] ?? []) handler(event);
   }
 }
@@ -90,5 +103,52 @@ describe('useRealtimeConnection', () => {
 
     await waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
     expect(MockWebSocket.instances[0].closed).toBe(true);
+  });
+
+  it('invokes onMessage with the parsed payload the instant a message arrives', async () => {
+    const onMessage = vi.fn();
+    renderHook(() => useRealtimeConnection('/ws/', onMessage));
+
+    act(() => {
+      MockWebSocket.instances[0].emit('message', {
+        data: JSON.stringify({ type: 'slot.update', slot: { id: 's1' } }),
+      });
+    });
+
+    await waitFor(() =>
+      expect(onMessage).toHaveBeenCalledWith({ type: 'slot.update', slot: { id: 's1' } })
+    );
+  });
+
+  describe('send', () => {
+    it('sends JSON over the socket and returns true when open', async () => {
+      const { result } = renderHook(() => useRealtimeConnection('/ws/'));
+      act(() => {
+        MockWebSocket.instances[0].emit('open');
+      });
+      await waitFor(() => expect(result.current.status).toBe('open'));
+
+      let sent: boolean | undefined;
+      act(() => {
+        sent = result.current.send({ type: 'block_slot', slot_id: 'abc' });
+      });
+
+      expect(sent).toBe(true);
+      expect(MockWebSocket.instances[0].sent).toEqual([
+        JSON.stringify({ type: 'block_slot', slot_id: 'abc' }),
+      ]);
+    });
+
+    it('returns false and sends nothing when the socket is not open', () => {
+      const { result } = renderHook(() => useRealtimeConnection('/ws/'));
+
+      let sent: boolean | undefined;
+      act(() => {
+        sent = result.current.send({ type: 'block_slot', slot_id: 'abc' });
+      });
+
+      expect(sent).toBe(false);
+      expect(MockWebSocket.instances[0].sent).toEqual([]);
+    });
   });
 });

@@ -4,11 +4,14 @@ import userEvent from '@testing-library/user-event';
 import { RealtimeStatus } from './RealtimeStatus';
 import * as realtimeModule from '@/lib/realtime/useRealtimeConnection';
 
-function mockConnection(overrides: Partial<ReturnType<typeof realtimeModule.useRealtimeConnection>>) {
+function mockConnection(
+  overrides: Partial<ReturnType<typeof realtimeModule.useRealtimeConnection>>
+) {
   return vi.spyOn(realtimeModule, 'useRealtimeConnection').mockReturnValue({
     status: 'connecting',
     lastMessage: null,
     reconnect: vi.fn(),
+    send: vi.fn(),
     ...overrides,
   });
 }

@@ -36,6 +36,20 @@ RECONCILIATION_INTERVAL_SECONDS = env.int("RECONCILIATION_INTERVAL_SECONDS", def
 DEBUG = env.bool("DJANGO_DEBUG", default=False)
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
+# Phase 4.4 (livetracker2.md §4.4): real gap found live — this setting existed since
+# §2.2 but `django-cors-headers` itself was never installed/wired into MIDDLEWARE below,
+# so it silently did nothing; BPP/web never had a real authenticated cross-origin browser
+# flow to expose this until this phase's live availability dashboard. Same fix BAP already
+# made at its own Phase 3 Exit (see BAP/backend/bap/settings.py's matching comment) —
+# `credentials: 'include'` was added on the frontend (lib/api-client.ts); this is the
+# matching backend half, without which the browser would silently strip the Set-Cookie
+# response and refuse to attach cookies to the next request.
+CORS_ALLOW_CREDENTIALS = True
+# Django rejects a cross-origin cookie-authenticated POST unless the request's Origin
+# header matches an entry here (distinct from CORS_ALLOWED_ORIGINS, which only governs
+# whether the browser's JS may read the response — this governs whether Django's own
+# CSRF check accepts the request at all).
+CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 LOG_LEVEL = env("LOG_LEVEL", default="INFO")
 
 REGISTRY_BASE_URL = env("REGISTRY_BASE_URL")
@@ -82,6 +96,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "channels",
+    "corsheaders",
     "django_observability",
     "inventory_core",
     "core",
@@ -92,8 +107,20 @@ INSTALLED_APPS = [
 # Channels' own documented setup.
 ASGI_APPLICATION = "bpp.asgi.application"
 
+# Phase 4.4 (livetracker2.md §4.4): real live-inventory-push needs `group_send` to fan out to
+# every connected browser watching a resource, which the default in-memory channel layer only
+# does within a single process — Redis-backed, using the same REDIS_URL already proven for the
+# cache/event bus, not a new piece of infrastructure.
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {"hosts": [REDIS_URL]},
+    }
+}
+
 MIDDLEWARE = [
     "django_observability.middleware.CorrelationIdMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",

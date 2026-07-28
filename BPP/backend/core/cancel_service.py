@@ -37,6 +37,7 @@ from .crypto import sign_outbound_request
 from .events import get_event_bus
 from .metrics import record_booking_cancelled
 from .participant_keys import get_signing_keys
+from .realtime import broadcast_slot_update
 
 logger = logging.getLogger("bpp")
 
@@ -147,6 +148,10 @@ def dispatch_on_cancel(*, payload: dict, correlation_id: str | None = None) -> N
             record_booking_cancelled()
             cancelled_booking = next(b for b in cancelled_bookings if b.id == booking.id)
             resources = [b.slot.resource for b in cancelled_bookings]
+            # Phase 4.4 (livetracker2.md §4.4): every freed slot in the group just went
+            # back to AVAILABLE — broadcast each to its own resource's live dashboard.
+            for b in cancelled_bookings:
+                broadcast_slot_update(b.slot.resource_id, b.slot)
             resolved_order = {
                 "id": str(cancelled_booking.id),
                 "status": cancelled_booking.status,

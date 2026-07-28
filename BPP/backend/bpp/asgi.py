@@ -21,11 +21,24 @@ django_asgi_app = get_asgi_application()
 
 from realtime.consumers import FoundationConsumer  # noqa: E402
 
+from core.consumers import ResourceAvailabilityConsumer  # noqa: E402
+
 application = ProtocolTypeRouter(
     {
         "http": django_asgi_app,
         "websocket": AuthMiddlewareStack(
-            URLRouter([path("ws/", FoundationConsumer.as_asgi())])
+            URLRouter(
+                [
+                    path("ws/", FoundationConsumer.as_asgi()),
+                    # Phase 4.4 (livetracker2.md §4.4): BPP-only live availability push,
+                    # see core/consumers.py's module docstring for why this isn't shared
+                    # with BAP's identical-looking FoundationConsumer route above.
+                    path(
+                        "ws/resources/<uuid:resource_id>/availability",
+                        ResourceAvailabilityConsumer.as_asgi(),
+                    ),
+                ]
+            )
         ),
     }
 )

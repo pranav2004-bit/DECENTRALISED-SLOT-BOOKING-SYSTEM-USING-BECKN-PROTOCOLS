@@ -29,6 +29,7 @@ from . import (
 from .catalog import visible_resources
 from .catalog_cache import invalidate_catalog_cache
 from .models import Location
+from .realtime import broadcast_slot_update
 
 # §3.7: caps the real number of Slot rows one availability-creation call can
 # materialize — an honest, deliberately-generous ceiling (just over a year), not a
@@ -281,7 +282,7 @@ def resource_create_view(request):
 
 
 @csrf_exempt
-@require_http_methods(["POST"])
+@require_http_methods(["GET", "POST"])
 @rate_limit(
     limit_per_minute=30, scope="resource-availability-create", key_func=by_authenticated_account
 )
@@ -289,11 +290,41 @@ def resource_availability_create_view(request, resource_id):
     """Creates a real `AvailabilityCalendar` for one of the logged-in business's own
     `Resource`s and generates real `Slot` rows from it (§2.2's own Test Gate wording).
 
-    §4.3: owner-only, same reasoning as `resource_create_view` — bulk calendar
-    generation is inventory *creation*, distinct from a staff account merely blocking
-    off already-generated slots (`resource_availability_block_view`)."""
+    §4.3: `POST` (create) is owner-only, same reasoning as `resource_create_view` —
+    bulk calendar generation is inventory *creation*, distinct from a staff account
+    merely blocking off already-generated slots (`resource_availability_block_view`).
+
+    §4.4: `GET` lists the resource's current slots — owner or assigned staff, the
+    same access model as the block view — feeding a live availability dashboard's
+    initial render before its WebSocket connection takes over."""
     if not request.user.is_authenticated:
         return error_response("UNAUTHORIZED", "not logged in", 401)
+
+    if request.method == "GET":
+        try:
+            resource = Resource.objects.get(id=resource_id)
+        except (Resource.DoesNotExist, DjangoValidationError, ValueError):
+            return error_response("NOT_FOUND", "no such resource for this account", 404)
+        if not _resource_accessible_to(request.user, resource):
+            return error_response("NOT_FOUND", "no such resource for this account", 404)
+        slots = Slot.objects.filter(resource=resource).order_by("start_time")
+        return JsonResponse(
+            {
+                "slots": [
+                    {
+                        "id": str(s.id),
+                        "start_time": s.start_time.isoformat(),
+                        "end_time": s.end_time.isoformat(),
+                        "status": s.status,
+                        "capacity_remaining": s.capacity_remaining,
+                        "capacity_total": s.capacity_total,
+                    }
+                    for s in slots
+                ]
+            },
+            status=200,
+        )
+
     if request.user.role != get_user_model().Role.OWNER:
         return error_response(
             "FORBIDDEN", "only a business owner account can create availability", 403
@@ -502,6 +533,44 @@ def _resource_accessible_to(user, resource) -> bool:
     )
 
 
+def block_slots(resource, slot_ids: list) -> tuple[list, list]:
+    """Shared core of §4.3's self-service blocking, factored out so Phase 4.4's
+    `ResourceAvailabilityConsumer` (`core/consumers.py`) can offer the exact same action
+    over the live WebSocket channel, not a parallel reimplementation — a real
+    client → server signal on that channel (livetracker2.md §4.4's own wording: "not
+    just a one-way dashboard feed"), not merely `ping`/`pong`. Broadcasts each
+    successfully-blocked slot via `realtime.broadcast_slot_update` so every other
+    browser watching this resource's dashboard updates live too, including the REST
+    caller's own other open tabs.
+
+    Blocking only ever targets currently-`AVAILABLE` slots (a `HELD`/`BOOKED` slot has
+    an active customer transaction against it that this has no business unwinding) and
+    reuses the existing `CANCELLED` status rather than inventing a new one, matching
+    `Slot.Status`'s already-confirmed "not bookable" terminal meaning. Best-effort per
+    slot_id, not all-or-nothing: one already-booked slot in a batch shouldn't block the
+    rest from being blocked."""
+    blocked, skipped = [], []
+    for raw_id in slot_ids:
+        try:
+            with transaction.atomic(), Slot.objects.lock_for_mutation(raw_id) as slot:
+                if slot.resource_id != resource.id:
+                    skipped.append({"slot_id": str(raw_id), "reason": "not found"})
+                    continue
+                if slot.status != Slot.Status.AVAILABLE:
+                    skipped.append(
+                        {"slot_id": str(raw_id), "reason": f"not blockable (status={slot.status})"}
+                    )
+                    continue
+                slot.status = Slot.Status.CANCELLED
+                slot.save(update_fields=["status", "updated_at"])
+                blocked.append(str(slot.id))
+        except (Slot.DoesNotExist, DjangoValidationError, ValueError):
+            skipped.append({"slot_id": str(raw_id), "reason": "not found"})
+            continue
+        broadcast_slot_update(resource.id, slot)
+    return blocked, skipped
+
+
 @csrf_exempt
 @require_http_methods(["POST"])
 @rate_limit(
@@ -512,14 +581,7 @@ def resource_availability_block_view(request, resource_id):
     owner account and blocks off their own availability." Self-service — a staff
     account calls this on its one assigned `Resource` with no owner involvement, using
     the exact same login/session mechanism the owner uses (§2.2), just a different
-    account. The owner can also call this on any of its own resources.
-
-    Blocking only ever targets currently-`AVAILABLE` slots (a `HELD`/`BOOKED` slot has
-    an active customer transaction against it that this endpoint has no business
-    unwinding) and reuses the existing `CANCELLED` status rather than inventing a new
-    one, matching `Slot.Status`'s already-confirmed "not bookable" terminal meaning.
-    Best-effort per slot_id, not all-or-nothing: one already-booked slot in a batch
-    shouldn't block the rest from being blocked."""
+    account. The owner can also call this on any of its own resources."""
     if not request.user.is_authenticated:
         return error_response("UNAUTHORIZED", "not logged in", 401)
 
@@ -547,24 +609,7 @@ def resource_availability_block_view(request, resource_id):
             "VALIDATION_ERROR", "slot_ids must not exceed 500 items", 400, field="slot_ids"
         )
 
-    blocked, skipped = [], []
-    for raw_id in slot_ids:
-        try:
-            with transaction.atomic(), Slot.objects.lock_for_mutation(raw_id) as slot:
-                if slot.resource_id != resource.id:
-                    skipped.append({"slot_id": str(raw_id), "reason": "not found"})
-                    continue
-                if slot.status != Slot.Status.AVAILABLE:
-                    skipped.append(
-                        {"slot_id": str(raw_id), "reason": f"not blockable (status={slot.status})"}
-                    )
-                    continue
-                slot.status = Slot.Status.CANCELLED
-                slot.save(update_fields=["status", "updated_at"])
-                blocked.append(str(slot.id))
-        except (Slot.DoesNotExist, DjangoValidationError, ValueError):
-            skipped.append({"slot_id": str(raw_id), "reason": "not found"})
-
+    blocked, skipped = block_slots(resource, slot_ids)
     return JsonResponse({"blocked": blocked, "skipped": skipped}, status=200)
 
 

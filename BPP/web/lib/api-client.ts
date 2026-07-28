@@ -43,6 +43,7 @@ export async function apiFetch(path: string, options: RequestOptions = {}): Prom
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(`${baseUrl}${path}`, {
+        credentials: 'include',
         ...init,
         signal: controller.signal,
       });

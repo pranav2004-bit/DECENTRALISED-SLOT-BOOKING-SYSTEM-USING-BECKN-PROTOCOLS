@@ -20,6 +20,7 @@ from inventory_core.models import Booking, BookingAuditLogEntry, Resource, Slot
 from inventory_core.reservation import (
     ReservationHold,
     cancel_booking,
+    complete_active_booking,
     confirm_hold,
     find_group_bookings,
     hold_multi_resource_booking,
@@ -575,6 +576,124 @@ def test_sweep_expired_holds_publishes_real_events_when_given_an_event_bus(resou
     assert len(published) == 2  # SlotReleased + BookingCancelled
     entry = BookingAuditLogEntry.objects.get(booking_id_text=str(booking.id))
     assert entry.detail["reason"] == "hold_expired"
+
+
+# --- complete_active_booking / sweep_completed_bookings (livetracker2.md §4.5) -----------------
+
+
+def _make_ended_slot(resource, *, capacity=1):
+    now = timezone.now()
+    return Slot.objects.create(
+        resource=resource,
+        start_time=now - dt.timedelta(hours=2),
+        end_time=now - dt.timedelta(hours=1),
+        capacity_total=capacity,
+        capacity_remaining=capacity - 1,
+    )
+
+
+@pytest.mark.django_db
+def test_complete_active_booking_completes_once_the_slots_end_time_has_passed(resource):
+    slot = _make_ended_slot(resource)
+    booking = Booking.objects.create(
+        slot=slot, holder_ref="cust-1", status=Booking.Status.ACTIVE
+    )
+
+    completed = complete_active_booking(booking.id)
+
+    assert completed is True
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.COMPLETE
+
+
+@pytest.mark.django_db
+def test_complete_active_booking_is_a_noop_while_the_slot_hasnt_ended_yet(resource):
+    slot = _make_slot(resource)  # ends 30 minutes from now
+    booking = Booking.objects.create(
+        slot=slot, holder_ref="cust-1", status=Booking.Status.ACTIVE
+    )
+
+    completed = complete_active_booking(booking.id)
+
+    assert completed is False
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.ACTIVE
+
+
+@pytest.mark.django_db
+def test_complete_active_booking_is_a_noop_for_a_non_active_booking(resource):
+    slot = _make_ended_slot(resource)
+    booking = Booking.objects.create(
+        slot=slot, holder_ref="cust-1", status=Booking.Status.CANCELLED
+    )
+
+    completed = complete_active_booking(booking.id)
+
+    assert completed is False
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.CANCELLED
+
+
+@pytest.mark.django_db
+def test_complete_active_booking_does_not_touch_slot_capacity(resource):
+    """Distinct from cancel/release: completion doesn't return capacity to the pool — the
+    fulfillment window that just ended already consumed it for real."""
+    slot = _make_ended_slot(resource, capacity=1)
+    remaining_before = slot.capacity_remaining
+    booking = Booking.objects.create(
+        slot=slot, holder_ref="cust-1", status=Booking.Status.ACTIVE
+    )
+
+    complete_active_booking(booking.id)
+
+    slot.refresh_from_db()
+    assert slot.capacity_remaining == remaining_before
+
+
+@pytest.mark.django_db
+def test_complete_active_booking_records_a_real_audit_log_entry(resource):
+    slot = _make_ended_slot(resource)
+    booking = Booking.objects.create(
+        slot=slot, holder_ref="cust-1", status=Booking.Status.ACTIVE
+    )
+
+    fake_bus = type("FakeBus", (), {"publish": lambda self, *a, **kw: None})()
+    complete_active_booking(booking.id, event_bus=fake_bus)
+
+    entry = BookingAuditLogEntry.objects.get(
+        booking_id_text=str(booking.id), event_type="BookingCompleted"
+    )
+    assert entry.correlation_id is None
+    assert entry.detail["reason"] == "fulfillment_window_ended"
+
+
+@pytest.mark.django_db
+def test_sweep_completed_bookings_completes_only_the_ones_that_actually_ended(resource):
+    ended_slot = _make_ended_slot(resource)
+    ongoing_slot = _make_slot(resource)
+    ended_booking = Booking.objects.create(
+        slot=ended_slot, holder_ref="cust-1", status=Booking.Status.ACTIVE
+    )
+    ongoing_booking = Booking.objects.create(
+        slot=ongoing_slot, holder_ref="cust-2", status=Booking.Status.ACTIVE
+    )
+
+    from inventory_core.reconciliation import sweep_completed_bookings
+
+    completed_count = sweep_completed_bookings()
+
+    assert completed_count == 1
+    ended_booking.refresh_from_db()
+    assert ended_booking.status == Booking.Status.COMPLETE
+    ongoing_booking.refresh_from_db()
+    assert ongoing_booking.status == Booking.Status.ACTIVE
+
+
+@pytest.mark.django_db
+def test_sweep_completed_bookings_returns_zero_when_nothing_is_active(resource):
+    from inventory_core.reconciliation import sweep_completed_bookings
+
+    assert sweep_completed_bookings() == 0
 
 
 # --- §4.2 multi-resource booking (hold_multi_resource_booking / find_group_bookings) -----------

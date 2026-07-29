@@ -31,6 +31,7 @@ import uuid
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.utils import timezone
 
 from .audit import log_booking_audit_event
 from .events import BookingEvent, SlotEvent, publish_event
@@ -422,6 +423,55 @@ def cancel_booking(booking_id, *, event_bus=None, correlation_id=None) -> Bookin
         )
 
     return booking
+
+
+def complete_active_booking(booking_id, *, event_bus=None, correlation_id=None) -> bool:
+    """If `booking_id` is still `ACTIVE` and its `Slot.end_time` has already passed,
+    atomically transitions it to `COMPLETE` (livetracker2.md §4.5's prerequisite for a
+    real completed booking — rating/support both need one to genuinely exist against).
+    Returns `True` if it performed a completion, `False` if the booking isn't `ACTIVE`
+    or its slot hasn't ended yet (never raises for either ordinary outcome, matching
+    `release_expired_hold`'s contract).
+
+    Deliberately does not touch `Slot`/capacity: completion is a booking-lifecycle
+    transition, not a capacity-release one — the slot's capacity was already consumed
+    for the fulfillment window that just ended, not returned to the pool the way a
+    cancellation returns it.
+
+    Race-safe by the same `select_for_update()` discipline as `release_expired_hold`:
+    two concurrent sweep/on-touch callers can't both pass the "is this ACTIVE and
+    ended" check and each fire a duplicate `BookingCompleted`.
+
+    `correlation_id` is optional (`None` by default) — like `release_expired_hold`,
+    this is opportunistic (a scheduled sweep noticing time has passed), not a single
+    customer action with an `X-Correlation-Id` to thread through.
+    """
+    with transaction.atomic():
+        try:
+            booking = Booking.objects.select_for_update().select_related("slot").get(pk=booking_id)
+        except Booking.DoesNotExist:
+            return False
+
+        if booking.status != Booking.Status.ACTIVE:
+            return False
+
+        if booking.slot.end_time > timezone.now():
+            return False
+
+        booking.transition_status(Booking.Status.COMPLETE)
+
+    if event_bus is not None:
+        publish_event(event_bus, SlotEvent.COMPLETED, slot_id=str(booking.slot_id))
+        publish_event(event_bus, BookingEvent.COMPLETED, booking_id=str(booking_id))
+        log_booking_audit_event(
+            booking=booking,
+            booking_id=str(booking_id),
+            event_type=BookingEvent.COMPLETED,
+            detail={"reason": "fulfillment_window_ended", "slot_id": str(booking.slot_id)},
+            correlation_id=correlation_id,
+        )
+
+    return True
 
 
 def reschedule_active_booking(

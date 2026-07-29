@@ -322,6 +322,54 @@ class BookingAuditLogEntry(models.Model):
         return f"{self.created_at} {self.booking_id_text} {self.event_type}"
 
 
+class Rating(models.Model):
+    """Post-completion feedback capture (livetracker2.md §4.5's `/rating` action) — real
+    genuine storage, not just an ack-and-discard. Field shapes are the confirmed real
+    `Rating` schema (protocol_compliance_notes_v1.1.md §O, `schema/Rating.yaml`):
+    `rating_category` (`Item`/`Order`/`Fulfillment`/`Provider`/`Agent`/`Support`), `entity_id`
+    (the real schema's own `id` field — renamed here since `id` collides with this model's
+    primary key — identifying which specific entity is being rated), `value` (deliberately a
+    plain string, matching the real schema exactly: not narrowed to an int, since the spec
+    leaves room for comparison/logical-expression values, not just a numeric score).
+
+    `rating_service.py` is what enforces "only against a genuinely `COMPLETE` `Booking`"
+    (§4.5's Test Gate) — this model doesn't gatekeep that business rule itself, the same
+    "model stays a plain record, the service layer owns the rule" split used everywhere
+    else in this file.
+
+    Lives here, in `inventory_core`, not in BPP's own `core/models.py`: same reasoning as
+    `BookingAuditLogEntry` — `Booking` is already a domain-agnostic `inventory_core`
+    concept, so what's rated against it belongs alongside it, not duplicated per domain.
+    """
+
+    class RatingCategory(models.TextChoices):
+        ITEM = "Item", "Item"
+        ORDER = "Order", "Order"
+        FULFILLMENT = "Fulfillment", "Fulfillment"
+        PROVIDER = "Provider", "Provider"
+        AGENT = "Agent", "Agent"
+        SUPPORT = "Support", "Support"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    booking = models.ForeignKey(
+        Booking, on_delete=models.SET_NULL, null=True, related_name="ratings"
+    )
+    booking_id_text = models.CharField(
+        max_length=64, db_index=True
+    )  # kept even if booking is deleted
+    rating_category = models.CharField(max_length=20, choices=RatingCategory.choices)
+    entity_id = models.CharField(max_length=255)
+    value = models.CharField(max_length=50)
+    correlation_id = models.CharField(max_length=64, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"Rating({self.booking_id_text}, {self.rating_category}, {self.value})"
+
+
 class AvailabilityCalendar(models.Model):
     """A recurring schedule + exceptions/holidays that generates real `Slot` rows for a
     `Resource`. Field shapes are the confirmed real `Time`/`Schedule` schemas

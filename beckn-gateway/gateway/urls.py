@@ -43,4 +43,8 @@ urlpatterns = [
     path("on_update", core_views.on_update_view, name="on_update"),
     path("track", core_views.track_view, name="track"),
     path("on_track", core_views.on_track_view, name="on_track"),
+    path("rating", core_views.rating_view, name="rating"),
+    path("on_rating", core_views.on_rating_view, name="on_rating"),
+    path("support", core_views.support_view, name="support"),
+    path("on_support", core_views.on_support_view, name="on_support"),
 ]

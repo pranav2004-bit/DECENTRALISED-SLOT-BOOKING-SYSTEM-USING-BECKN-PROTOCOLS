@@ -20,9 +20,11 @@ from . import (
     confirm_service,
     init_service,
     onboarding_service,
+    rating_service,
     search_service,
     select_service,
     status_service,
+    support_service,
     track_service,
     update_service,
 )
@@ -841,4 +843,50 @@ def track_view(request):
     )
     if status_code == 200:
         track_service.dispatch_on_track_in_background(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def rating_view(request):
+    """Real /rating business logic (livetracker2.md Phase 4.5) — receives Gateway's
+    forwarded rating submission, ACKs the calling Gateway/BAP pair synchronously,
+    then records every submitted rating in the background (see
+    core/rating_service.py's module docstring)."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = rating_service.validate_and_ack_rating(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        rating_service.dispatch_on_rating_in_background(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def support_view(request):
+    """Real /support business logic (livetracker2.md Phase 4.5) — receives Gateway's
+    forwarded support lookup, ACKs the calling Gateway/BAP pair synchronously, then
+    returns the owning business's real contact info in the background (see
+    core/support_service.py's module docstring)."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = support_service.validate_and_ack_support(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        support_service.dispatch_on_support_in_background(payload=payload)
     return JsonResponse(response_body, status=status_code)

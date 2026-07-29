@@ -2,7 +2,7 @@
 Django startup (`apps.py`'s `ready()`), not a request-time check and not a new task-queue
 dependency (no Celery/beat exists anywhere in this project; see `inventory_core.reservation`'s
 own module docstring for why). A single daemon thread, sleeping `settings.RECONCILIATION_
-INTERVAL_SECONDS` between runs, calling the two real sweeps this phase's audit identified:
+INTERVAL_SECONDS` between runs, calling the three real sweeps this project's audits identified:
 
 1. `inventory_core.reconciliation.sweep_expired_holds()` — releases any `HELD` booking whose
    Redis TTL hold has lapsed but nothing has opportunistically touched since (the safety net
@@ -13,8 +13,12 @@ INTERVAL_SECONDS` between runs, calling the two real sweeps this phase's audit i
    with `inventory_core.domain_adapter` (`registered_domains()`), not just Beauty — a Healthcare
    catalog left uncorrected until its own TTL would be the same gap this sweep exists to close
    for Beauty.
+3. `inventory_core.reconciliation.sweep_completed_bookings()` (§4.5) — completes any `ACTIVE`
+   booking whose slot's fulfillment window has already ended, the real trigger `Booking.Status.
+   COMPLETE` otherwise never reaches in production (needed so rating/support have a genuinely
+   completed booking to test against, not a hand-set status in a fixture).
 
-One failure in either sweep is logged and does not kill the loop — a transient DB/Redis hiccup
+One failure in any sweep is logged and does not kill the loop — a transient DB/Redis hiccup
 on one tick should not silently end reconciliation for the rest of the process's lifetime.
 """
 
@@ -25,7 +29,7 @@ import time
 import redis
 from django.conf import settings
 from inventory_core.domain_adapter import registered_domains
-from inventory_core.reconciliation import sweep_expired_holds
+from inventory_core.reconciliation import sweep_completed_bookings, sweep_expired_holds
 
 from .catalog_cache import reconcile_catalog_cache
 from .events import get_event_bus
@@ -48,6 +52,13 @@ def _run_once() -> None:
             logger.info("reconciliation: released %d expired HELD booking(s)", released)
     except Exception:
         logger.exception("reconciliation: sweep_expired_holds failed")
+
+    try:
+        completed = sweep_completed_bookings(event_bus=event_bus)
+        if completed:
+            logger.info("reconciliation: completed %d ACTIVE booking(s)", completed)
+    except Exception:
+        logger.exception("reconciliation: sweep_completed_bookings failed")
 
     for domain_code in registered_domains():
         try:

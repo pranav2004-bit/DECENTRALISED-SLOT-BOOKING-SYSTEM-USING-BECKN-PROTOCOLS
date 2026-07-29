@@ -61,4 +61,6 @@ urlpatterns = [
     path("cancel", core_views.cancel_view, name="cancel"),
     path("update", core_views.update_view, name="update"),
     path("track", core_views.track_view, name="track"),
+    path("rating", core_views.rating_view, name="rating"),
+    path("support", core_views.support_view, name="support"),
 ]

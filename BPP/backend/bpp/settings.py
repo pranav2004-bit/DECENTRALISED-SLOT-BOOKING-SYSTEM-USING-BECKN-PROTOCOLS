@@ -163,10 +163,17 @@ DATABASES["default"]["CONN_MAX_AGE"] = env.int("DB_CONN_MAX_AGE", default=60)
 # Daphne's own "took too long to shut down and was killed" log line on `/search`. A
 # short, explicit `socket_connect_timeout`/`socket_timeout` makes a real Redis outage
 # fail fast enough for the exception handling to actually run.
+# Real gap found and closed at Phase 4.7 (livetracker2.md, 2026-07-29, live business-
+# metrics dashboard confirmation, see BAP/backend/bap/settings.py's identical comment):
+# `core/conftest.py`'s autouse `cache.clear()` (needed to isolate §3.7's rate-limit
+# counters between test runs) was clearing the *same* Redis DB the live dev server's
+# business-metrics counters and sessions live in — running pytest against this
+# docker-compose stack silently zeroed real §3.10 counters. Tests now get their own
+# Redis DB index so `cache.clear()` can never touch the real one.
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": REDIS_URL,
+        "LOCATION": f"{REDIS_URL.rsplit('/', 1)[0]}/15" if TESTING else REDIS_URL,
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
             "CONNECTION_POOL_KWARGS": {"socket_connect_timeout": 0.5, "socket_timeout": 0.5},

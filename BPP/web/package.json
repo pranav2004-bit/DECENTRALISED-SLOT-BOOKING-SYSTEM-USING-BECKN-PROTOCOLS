@@ -12,7 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "next": "16.2.10",
+    "next": "16.2.12",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },
@@ -33,5 +33,11 @@
     "typescript": "^5",
     "vitest": "^2.1.4",
     "@vitejs/plugin-react": "^4.3.3"
+  },
+  "overrides": {
+    "sharp": "^0.35.3",
+    "postcss": "^8.5.19",
+    "brace-expansion": "^5.0.8",
+    "esbuild": "^0.28.1"
   }
 }

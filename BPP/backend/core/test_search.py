@@ -44,7 +44,8 @@ def bpp_identity_settings(settings, tmp_path):
     yield settings
 
 
-def _build_search_payload(*, bap_id="bap.example.com"):
+def _build_search_payload(*, bap_id="bap.example.com", query=None):
+    intent = {"item": {"descriptor": {"name": query}}} if query else {}
     return {
         "context": {
             "domain": "ONDC:RET13",
@@ -57,7 +58,7 @@ def _build_search_payload(*, bap_id="bap.example.com"):
             "message_id": "msg-1",
             "timestamp": "2026-07-19T00:00:00Z",
         },
-        "message": {"intent": {}},
+        "message": {"intent": intent},
     }
 
 
@@ -229,3 +230,63 @@ def test_dispatch_on_search_sends_the_real_catalog_to_gateway(bpp_identity_setti
     assert provider["descriptor"]["name"] == "Glow Salon"
     assert provider["items"][0]["descriptor"]["name"] == "Stylist A"
     assert "Authorization" in captured_requests[0].headers
+
+
+@pytest.mark.django_db
+def test_dispatch_on_search_filters_the_real_catalog_by_the_real_query_text(
+    bpp_identity_settings,
+):
+    """livetracker3.md §1.1 Test Gate: a real query on the wire (not an empty intent,
+    as the test above uses) narrows the catalog actually sent to Gateway down to the
+    matching resource only — proving `dispatch_on_search` reads
+    `message.intent.item.descriptor.name` from the real inbound payload, not just
+    `context["domain"]` as before this fix."""
+    business = BusinessAccount.objects.create_user(
+        contact="salon@example.com", business_name="Glow Salon", password=TEST_PASSWORD
+    )
+    Resource.objects.create(owner_ref=str(business.id), name="Senior Stylist - Priya")
+    Resource.objects.create(owner_ref=str(business.id), name="Junior Stylist - Anjali")
+
+    payload = _build_search_payload(query="Priya")
+    captured_requests = []
+
+    def gateway_on_search_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://gateway:8000/on_search", callback=gateway_on_search_callback
+        )
+        search_service.dispatch_on_search(payload=payload)
+
+    forwarded = json.loads(captured_requests[0].body)
+    provider = forwarded["message"]["catalog"]["providers"][0]
+    items = provider["items"]
+    assert [item["descriptor"]["name"] for item in items] == ["Senior Stylist - Priya"]
+
+
+@pytest.mark.django_db
+def test_dispatch_on_search_with_a_nonsense_query_returns_zero_providers_not_an_error(
+    bpp_identity_settings,
+):
+    business = BusinessAccount.objects.create_user(
+        contact="salon@example.com", business_name="Glow Salon", password=TEST_PASSWORD
+    )
+    Resource.objects.create(owner_ref=str(business.id), name="Stylist A")
+
+    payload = _build_search_payload(query="xyzzy-no-such-thing")
+    captured_requests = []
+
+    def gateway_on_search_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://gateway:8000/on_search", callback=gateway_on_search_callback
+        )
+        search_service.dispatch_on_search(payload=payload)
+
+    forwarded = json.loads(captured_requests[0].body)
+    assert forwarded["message"]["catalog"]["providers"] == []

@@ -16,9 +16,11 @@ from . import (
     init_service,
     onboarding_service,
     pagination,
+    rating_service,
     search_service,
     select_service,
     status_service,
+    support_service,
     track_service,
     update_service,
 )
@@ -752,4 +754,151 @@ def on_track_view(request):
     )
     if status_code == 200:
         track_service.record_on_track_result(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+@rate_limit(limit_per_minute=10, scope="rating")
+def rating_trigger_view(request):
+    """Customer-facing rating trigger (livetracker2.md §4.5) — deliberately NOT
+    the Beckn wire shape. Sends the real signed Beckn /rating to Gateway,
+    targeting the same BPP this transaction was confirmed with. `entity_id` is
+    optional — defaults to the confirmed order's own id (the common "rate this
+    booking" case)."""
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    transaction_id = (payload.get("transaction_id") or "").strip()
+    if not transaction_id:
+        return error_response("VALIDATION_ERROR", "transaction_id is required", 400)
+
+    rating_category = (payload.get("rating_category") or "").strip()
+    if not rating_category:
+        return error_response("VALIDATION_ERROR", "rating_category is required", 400)
+
+    value = (payload.get("value") or "").strip()
+    if not value:
+        return error_response("VALIDATION_ERROR", "value is required", 400)
+
+    entity_id = (payload.get("entity_id") or "").strip()
+
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        rating_service.trigger_rating(
+            transaction_id=transaction_id,
+            rating_category=rating_category,
+            value=value,
+            entity_id=entity_id,
+            customer=customer,
+        )
+    except rating_service.RatingError as exc:
+        return error_response("RATING_UNAVAILABLE", exc.message, exc.status_code)
+
+    return JsonResponse({"transaction_id": transaction_id}, status=202)
+
+
+@require_http_methods(["GET"])
+def rating_result_view(request, transaction_id):
+    """Customer-facing rating result poll — real results only exist once the
+    BPP actually calls back via /on_rating, so both fields being null here is
+    a normal in-progress state, not an error."""
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        result = rating_service.get_rating_result(transaction_id=transaction_id, customer=customer)
+    except rating_service.RatingError as exc:
+        return error_response("RATING_UNAVAILABLE", exc.message, exc.status_code)
+    if result is None:
+        return error_response("NOT_FOUND", "no such search transaction", 404)
+    return JsonResponse(result, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def on_rating_view(request):
+    """Real /on_rating wire endpoint — receives Gateway's relayed callback from
+    a BPP, verifies both the BPP's and Gateway's signatures, ACKs synchronously,
+    then records the real result (or error) against the matching
+    SearchSession."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = rating_service.validate_and_ack_on_rating(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        rating_service.record_on_rating_result(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+@rate_limit(limit_per_minute=10, scope="support")
+def support_trigger_view(request):
+    """Customer-facing support lookup trigger (livetracker2.md §4.5) —
+    deliberately NOT the Beckn wire shape. Sends the real signed Beckn
+    /support to Gateway, targeting the same BPP this transaction was
+    confirmed with."""
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    transaction_id = (payload.get("transaction_id") or "").strip()
+    if not transaction_id:
+        return error_response("VALIDATION_ERROR", "transaction_id is required", 400)
+
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        support_service.trigger_support(transaction_id=transaction_id, customer=customer)
+    except support_service.SupportError as exc:
+        return error_response("SUPPORT_UNAVAILABLE", exc.message, exc.status_code)
+
+    return JsonResponse({"transaction_id": transaction_id}, status=202)
+
+
+@require_http_methods(["GET"])
+def support_result_view(request, transaction_id):
+    """Customer-facing support lookup result poll — real results only exist
+    once the BPP actually calls back via /on_support, so both fields being
+    null here is a normal in-progress state, not an error."""
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        result = support_service.get_support_result(
+            transaction_id=transaction_id, customer=customer
+        )
+    except support_service.SupportError as exc:
+        return error_response("SUPPORT_UNAVAILABLE", exc.message, exc.status_code)
+    if result is None:
+        return error_response("NOT_FOUND", "no such search transaction", 404)
+    return JsonResponse(result, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def on_support_view(request):
+    """Real /on_support wire endpoint — receives Gateway's relayed callback
+    from a BPP, verifies both the BPP's and Gateway's signatures, ACKs
+    synchronously, then records the real business contact info (or error)
+    against the matching SearchSession."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = support_service.validate_and_ack_on_support(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        support_service.record_on_support_result(payload=payload)
     return JsonResponse(response_body, status=status_code)

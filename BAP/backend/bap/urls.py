@@ -91,4 +91,18 @@ urlpatterns = [
         name="track-result",
     ),
     path("on_track", core_views.on_track_view, name="on_track"),
+    path("api/v1/rating", core_views.rating_trigger_view, name="rating-trigger"),
+    path(
+        "api/v1/rating/<str:transaction_id>",
+        core_views.rating_result_view,
+        name="rating-result",
+    ),
+    path("on_rating", core_views.on_rating_view, name="on_rating"),
+    path("api/v1/support", core_views.support_trigger_view, name="support-trigger"),
+    path(
+        "api/v1/support/<str:transaction_id>",
+        core_views.support_result_view,
+        name="support-result",
+    ),
+    path("on_support", core_views.on_support_view, name="on_support"),
 ]

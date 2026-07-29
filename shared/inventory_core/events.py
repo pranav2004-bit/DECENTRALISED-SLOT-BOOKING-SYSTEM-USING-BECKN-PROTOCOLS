@@ -37,10 +37,11 @@ class SlotEvent:
     Wired to a real trigger point now: `CREATED` (`AvailabilityCalendar.generate_slots`),
     `RESERVED` (`reservation.hold_slot`), `CONFIRMED` (`reservation.confirm_hold`), `RELEASED`
     (`reservation.release_expired_hold`), `RESCHEDULED` (`reservation.reschedule_active_booking`,
-    §3.5). `PUBLISHED` (catalog exposure), `LOCKED` (domain-level combo-service locking),
-    `CANCELLED` (provider-driven slot cancellation), and `COMPLETED` (fulfillment completion)
-    have no trigger point yet — those business flows aren't built until Phase 2/3/4 — but the
-    vocabulary is adopted now, not invented ad hoc later.
+    §3.5), `COMPLETED` (`reservation.complete_active_booking`, §4.5 — a slot whose booking's
+    fulfillment window has ended). `PUBLISHED` (catalog exposure), `LOCKED` (domain-level
+    combo-service locking), and `CANCELLED` (provider-driven slot cancellation) have no trigger
+    point yet — those business flows aren't built until Phase 2/3/4 — but the vocabulary is
+    adopted now, not invented ad hoc later.
     """
 
     CREATED = "SlotCreated"
@@ -59,12 +60,13 @@ class BookingEvent:
     care about the booking/order side, not the underlying slot. Wired now: `CONFIRMED`
     (`reservation.confirm_hold`), `CANCELLED` (`reservation.release_expired_hold`/
     `reservation.cancel_booking`, §3.5), `RESCHEDULED` (`reservation.reschedule_active_booking`,
-    §3.5).
+    §3.5), `COMPLETED` (`reservation.complete_active_booking`, §4.5).
     """
 
     CONFIRMED = "BookingConfirmed"
     CANCELLED = "BookingCancelled"
     RESCHEDULED = "BookingRescheduled"
+    COMPLETED = "BookingCompleted"
 
 
 def publish_event(bus, event_type: str, *, version: int = CURRENT_EVENT_VERSION, **data) -> str:

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import BookingAuditLogEntry
+from .models import BookingAuditLogEntry, Rating
 
 
 @admin.register(BookingAuditLogEntry)
@@ -12,6 +12,26 @@ class BookingAuditLogEntryAdmin(admin.ModelAdmin):
     list_filter = ("event_type",)
     search_fields = ("booking_id_text", "correlation_id")
     readonly_fields = [f.name for f in BookingAuditLogEntry._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(Rating)
+class RatingAdmin(admin.ModelAdmin):
+    """Same append-only, view/search-only convention as `BookingAuditLogEntryAdmin` — a
+    submitted rating is a real captured record, not something staff edit after the fact."""
+
+    list_display = ("created_at", "booking_id_text", "rating_category", "entity_id", "value")
+    list_filter = ("rating_category",)
+    search_fields = ("booking_id_text", "entity_id", "correlation_id")
+    readonly_fields = [f.name for f in Rating._meta.fields]
 
     def has_add_permission(self, request):
         return False

@@ -2973,3 +2973,532 @@ def test_relay_on_track_logs_and_returns_when_bap_uri_missing():
     payload = _build_on_track_context()
     del payload["context"]["bap_uri"]
     routing.relay_on_track(payload=payload, authorization_header="irrelevant")
+
+
+# --- rating / on_rating (livetracker2.md Phase 4.5) -------------------------------------------
+
+
+def _build_rating_context(*, bap_id="bap.example.com", bpp_id="bpp.example.com"):
+    return {
+        "context": {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "rating",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "bpp_id": bpp_id,
+            "bpp_uri": f"https://{bpp_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-20T00:00:00Z",
+        },
+        "message": {"ratings": [{"id": "booking-1", "rating_category": "Order", "value": "5"}]},
+    }
+
+
+def _build_on_rating_context(*, bap_id="bap.example.com", bpp_id="bpp.example.com"):
+    return {
+        "context": {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "on_rating",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "bpp_id": bpp_id,
+            "bpp_uri": f"https://{bpp_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-20T00:00:00Z",
+        },
+        "message": {},
+    }
+
+
+@patch("core.routing.dispatch_rating_in_background")
+def test_rating_view_acks_immediately_for_a_validly_signed_request(mock_dispatch, client):
+    bap_pub, bap_priv = generate_signing_key_pair()
+    payload = _build_rating_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=_lookup_callback(bap_pub, []),
+        )
+        resp = client.post(
+            reverse("rating"), data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_dispatch.assert_called_once_with(
+        payload=payload, authorization_header=header, correlation_id=ANY
+    )
+
+
+def test_dispatch_rating_forwards_to_the_specific_bpp_with_both_signatures(settings):
+    settings.SUBSCRIBER_ID = "gateway.local"
+    settings.UNIQUE_KEY_ID = "key1"
+    payload = _build_rating_context()
+    original_auth_header = 'Signature keyId="bap.example.com|key-1|ed25519",...(original)'
+
+    lookup_requests = []
+    captured_requests = []
+
+    def lookup_callback(request):
+        lookup_requests.append(json.loads(request.body))
+        return (
+            200,
+            {},
+            json.dumps(
+                [
+                    {
+                        "subscriber_id": "bpp.example.com",
+                        "url": "https://bpp.example.com",
+                        "status": "SUBSCRIBED",
+                    }
+                ]
+            ),
+        )
+
+    def bpp_rating_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(responses.POST, "http://registry:8000/lookup", callback=lookup_callback)
+        rsps.add_callback(
+            responses.POST, "https://bpp.example.com/rating", callback=bpp_rating_callback
+        )
+        routing.dispatch_rating(payload=payload, authorization_header=original_auth_header)
+
+    assert lookup_requests == [{"subscriber_id": "bpp.example.com"}]
+    assert len(captured_requests) == 1
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+    assert "gateway.local" in forwarded.headers["X-Gateway-Authorization"]
+
+
+def test_dispatch_rating_does_not_forward_when_bpp_no_longer_subscribed():
+    payload = _build_rating_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "url": "https://bpp.example.com",
+                            "status": "UNDER_SUBSCRIPTION",
+                        }
+                    ]
+                ),
+            ),
+        )
+        routing.dispatch_rating(payload=payload, authorization_header="irrelevant")
+
+
+def test_dispatch_rating_does_not_raise_when_bpp_is_unreachable():
+    payload = _build_rating_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "url": "https://bpp.example.com",
+                            "status": "SUBSCRIBED",
+                        }
+                    ]
+                ),
+            ),
+        )
+        rsps.add(responses.POST, "https://bpp.example.com/rating", status=503)
+        routing.dispatch_rating(payload=payload, authorization_header="irrelevant")
+
+
+def test_rating_view_rejects_missing_context_field(client):
+    payload = _build_rating_context()
+    del payload["context"]["bap_id"]
+    body = json.dumps(payload).encode()
+
+    resp = client.post(
+        reverse("rating"),
+        data=body,
+        content_type="application/json",
+        HTTP_AUTHORIZATION="irrelevant",
+    )
+    assert resp.status_code == 400
+
+
+@patch("core.routing.relay_on_rating_in_background")
+def test_on_rating_view_acks_immediately_for_a_validly_signed_bpp_callback(mock_relay, client):
+    bpp_pub, bpp_priv = generate_signing_key_pair()
+    payload = _build_on_rating_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bpp.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bpp_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "status": "SUBSCRIBED",
+                            "signing_public_key": bpp_pub,
+                        }
+                    ]
+                ),
+            ),
+        )
+        resp = client.post(
+            reverse("on_rating"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=header,
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_relay.assert_called_once_with(payload=payload, authorization_header=header)
+
+
+def test_relay_on_rating_forwards_to_the_bap_with_both_signatures():
+    payload = _build_on_rating_context()
+    original_auth_header = 'Signature keyId="bpp.example.com|key-1|ed25519",...(original)'
+
+    captured_requests = []
+
+    def bap_on_rating_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "https://bap.example.com/on_rating", callback=bap_on_rating_callback
+        )
+        routing.relay_on_rating(payload=payload, authorization_header=original_auth_header)
+
+    assert len(captured_requests) == 1
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+
+
+def test_relay_on_rating_does_not_raise_when_bap_is_unreachable():
+    payload = _build_on_rating_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(responses.POST, "https://bap.example.com/on_rating", status=503)
+        routing.relay_on_rating(payload=payload, authorization_header="irrelevant")
+
+
+def test_relay_on_rating_logs_and_returns_when_bap_uri_missing():
+    payload = _build_on_rating_context()
+    del payload["context"]["bap_uri"]
+    routing.relay_on_rating(payload=payload, authorization_header="irrelevant")
+
+
+# --- support / on_support (livetracker2.md Phase 4.5) -----------------------------------------
+
+
+def _build_support_context(*, bap_id="bap.example.com", bpp_id="bpp.example.com"):
+    return {
+        "context": {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "support",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "bpp_id": bpp_id,
+            "bpp_uri": f"https://{bpp_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-20T00:00:00Z",
+        },
+        "message": {"support": {"ref_id": "booking-1"}},
+    }
+
+
+def _build_on_support_context(*, bap_id="bap.example.com", bpp_id="bpp.example.com"):
+    return {
+        "context": {
+            "domain": "ONDC:RET13",
+            "location": {"country": {"code": "IND"}},
+            "action": "on_support",
+            "version": "1.1.0",
+            "bap_id": bap_id,
+            "bap_uri": f"https://{bap_id}",
+            "bpp_id": bpp_id,
+            "bpp_uri": f"https://{bpp_id}",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+            "timestamp": "2026-07-20T00:00:00Z",
+        },
+        "message": {"support": {"ref_id": "booking-1", "email": "owner@example.com"}},
+    }
+
+
+@patch("core.routing.dispatch_support_in_background")
+def test_support_view_acks_immediately_for_a_validly_signed_request(mock_dispatch, client):
+    bap_pub, bap_priv = generate_signing_key_pair()
+    payload = _build_support_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=_lookup_callback(bap_pub, []),
+        )
+        resp = client.post(
+            reverse("support"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=header,
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_dispatch.assert_called_once_with(
+        payload=payload, authorization_header=header, correlation_id=ANY
+    )
+
+
+def test_dispatch_support_forwards_to_the_specific_bpp_with_both_signatures(settings):
+    settings.SUBSCRIBER_ID = "gateway.local"
+    settings.UNIQUE_KEY_ID = "key1"
+    payload = _build_support_context()
+    original_auth_header = 'Signature keyId="bap.example.com|key-1|ed25519",...(original)'
+
+    lookup_requests = []
+    captured_requests = []
+
+    def lookup_callback(request):
+        lookup_requests.append(json.loads(request.body))
+        return (
+            200,
+            {},
+            json.dumps(
+                [
+                    {
+                        "subscriber_id": "bpp.example.com",
+                        "url": "https://bpp.example.com",
+                        "status": "SUBSCRIBED",
+                    }
+                ]
+            ),
+        )
+
+    def bpp_support_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(responses.POST, "http://registry:8000/lookup", callback=lookup_callback)
+        rsps.add_callback(
+            responses.POST, "https://bpp.example.com/support", callback=bpp_support_callback
+        )
+        routing.dispatch_support(payload=payload, authorization_header=original_auth_header)
+
+    assert lookup_requests == [{"subscriber_id": "bpp.example.com"}]
+    assert len(captured_requests) == 1
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+    assert "gateway.local" in forwarded.headers["X-Gateway-Authorization"]
+
+
+def test_dispatch_support_does_not_forward_when_bpp_no_longer_subscribed():
+    payload = _build_support_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "url": "https://bpp.example.com",
+                            "status": "UNDER_SUBSCRIPTION",
+                        }
+                    ]
+                ),
+            ),
+        )
+        routing.dispatch_support(payload=payload, authorization_header="irrelevant")
+
+
+def test_dispatch_support_does_not_raise_when_bpp_is_unreachable():
+    payload = _build_support_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "url": "https://bpp.example.com",
+                            "status": "SUBSCRIBED",
+                        }
+                    ]
+                ),
+            ),
+        )
+        rsps.add(responses.POST, "https://bpp.example.com/support", status=503)
+        routing.dispatch_support(payload=payload, authorization_header="irrelevant")
+
+
+def test_support_view_rejects_missing_context_field(client):
+    payload = _build_support_context()
+    del payload["context"]["bap_id"]
+    body = json.dumps(payload).encode()
+
+    resp = client.post(
+        reverse("support"),
+        data=body,
+        content_type="application/json",
+        HTTP_AUTHORIZATION="irrelevant",
+    )
+    assert resp.status_code == 400
+
+
+@patch("core.routing.relay_on_support_in_background")
+def test_on_support_view_acks_immediately_for_a_validly_signed_bpp_callback(mock_relay, client):
+    bpp_pub, bpp_priv = generate_signing_key_pair()
+    payload = _build_on_support_context()
+    body = json.dumps(payload).encode()
+    header = sign_outbound_request(
+        body=body,
+        subscriber_id="bpp.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bpp_priv,
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://registry:8000/lookup",
+            callback=lambda request: (
+                200,
+                {},
+                json.dumps(
+                    [
+                        {
+                            "subscriber_id": "bpp.example.com",
+                            "status": "SUBSCRIBED",
+                            "signing_public_key": bpp_pub,
+                        }
+                    ]
+                ),
+            ),
+        )
+        resp = client.post(
+            reverse("on_support"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=header,
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "context": payload["context"],
+        "message": {"ack": {"status": "ACK"}},
+    }
+    mock_relay.assert_called_once_with(payload=payload, authorization_header=header)
+
+
+def test_relay_on_support_forwards_to_the_bap_with_both_signatures():
+    payload = _build_on_support_context()
+    original_auth_header = 'Signature keyId="bpp.example.com|key-1|ed25519",...(original)'
+
+    captured_requests = []
+
+    def bap_on_support_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "https://bap.example.com/on_support", callback=bap_on_support_callback
+        )
+        routing.relay_on_support(payload=payload, authorization_header=original_auth_header)
+
+    assert len(captured_requests) == 1
+    forwarded = captured_requests[0]
+    assert json.loads(forwarded.body) == payload
+    assert forwarded.headers["Authorization"] == original_auth_header
+    assert forwarded.headers["X-Gateway-Authorization"].startswith("Signature keyId=")
+
+
+def test_relay_on_support_does_not_raise_when_bap_is_unreachable():
+    payload = _build_on_support_context()
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(responses.POST, "https://bap.example.com/on_support", status=503)
+        routing.relay_on_support(payload=payload, authorization_header="irrelevant")
+
+
+def test_relay_on_support_logs_and_returns_when_bap_uri_missing():
+    payload = _build_on_support_context()
+    del payload["context"]["bap_uri"]
+    routing.relay_on_support(payload=payload, authorization_header="irrelevant")

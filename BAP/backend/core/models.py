@@ -174,6 +174,16 @@ class SearchSession(models.Model):
     tracking = models.JSONField(null=True, blank=True)
     tracking_error = models.JSONField(null=True, blank=True)
 
+    # §4.5 — same mutually-exclusive success/error pattern as every other post-booking
+    # action above. `rating_result` holds /on_rating's real `message` (always `{}` on
+    # this BPP, since `feedback_form` is deliberately omitted — see
+    # protocol_compliance_notes_v1.1.md §O); `support_result` holds /on_support's real
+    # `message.support` (the owning business's actual contact channels).
+    rating_result = models.JSONField(null=True, blank=True)
+    rating_error = models.JSONField(null=True, blank=True)
+    support_result = models.JSONField(null=True, blank=True)
+    support_error = models.JSONField(null=True, blank=True)
+
     # §3.7 — reservation-hold abuse prevention needs a per-actor key to cap
     # concurrent in-flight holds against. A logged-in `customer` already provides
     # one; an anonymous session (search never required login) doesn't, so the

@@ -397,3 +397,95 @@ def on_track_view(request):
             payload=payload, authorization_header=authorization_header
         )
     return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def rating_view(request):
+    """Real /rating business logic (livetracker2.md Phase 4.5) — validates and
+    ACKs the calling BAP synchronously, then forwards to the one specific,
+    already-known BPP (after a fresh SUBSCRIBED re-check) in the background."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    authorization_header = request.headers.get("Authorization", "")
+    response_body, status_code = routing.validate_and_ack_rating(
+        payload=payload, authorization_header=authorization_header, body=request.body
+    )
+    if status_code == 200:
+        routing.dispatch_rating_in_background(
+            payload=payload,
+            authorization_header=authorization_header,
+            correlation_id=correlation_id_var.get(),
+        )
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def on_rating_view(request):
+    """Receives a BPP's /on_rating callback and relays it on to the originating
+    BAP (livetracker2.md Phase 4.5) — same routes-back-through-Gateway pattern
+    as on_cancel."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    authorization_header = request.headers.get("Authorization", "")
+    response_body, status_code = routing.validate_and_ack_on_rating(
+        payload=payload, authorization_header=authorization_header, body=request.body
+    )
+    if status_code == 200:
+        routing.relay_on_rating_in_background(
+            payload=payload, authorization_header=authorization_header
+        )
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def support_view(request):
+    """Real /support business logic (livetracker2.md Phase 4.5) — validates and
+    ACKs the calling BAP synchronously, then forwards to the one specific,
+    already-known BPP (after a fresh SUBSCRIBED re-check) in the background."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    authorization_header = request.headers.get("Authorization", "")
+    response_body, status_code = routing.validate_and_ack_support(
+        payload=payload, authorization_header=authorization_header, body=request.body
+    )
+    if status_code == 200:
+        routing.dispatch_support_in_background(
+            payload=payload,
+            authorization_header=authorization_header,
+            correlation_id=correlation_id_var.get(),
+        )
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def on_support_view(request):
+    """Receives a BPP's /on_support callback and relays it on to the originating
+    BAP (livetracker2.md Phase 4.5) — same routes-back-through-Gateway pattern
+    as on_cancel."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    authorization_header = request.headers.get("Authorization", "")
+    response_body, status_code = routing.validate_and_ack_on_support(
+        payload=payload, authorization_header=authorization_header, body=request.body
+    )
+    if status_code == 200:
+        routing.relay_on_support_in_background(
+            payload=payload, authorization_header=authorization_header
+        )
+    return JsonResponse(response_body, status=status_code)

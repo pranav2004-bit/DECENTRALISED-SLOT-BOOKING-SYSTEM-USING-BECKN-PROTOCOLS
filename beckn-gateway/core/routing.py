@@ -1449,3 +1449,355 @@ def relay_on_track_in_background(*, payload: dict, authorization_header: str) ->
         daemon=True,
     )
     thread.start()
+
+
+# --- rating / on_rating (livetracker2.md Phase 4.5) ------------------------------------------
+
+
+def validate_and_ack_rating(
+    *, payload: dict, authorization_header: str, body: bytes
+) -> tuple[dict, int]:
+    """Synchronous half of /rating: validates and verifies the calling BAP,
+    returns the real ACK/NACK envelope. Does NOT forward to the BPP — that's
+    dispatch_rating's job, meant to run after this returns."""
+    try:
+        context = payload["context"]
+    except KeyError as exc:
+        raise RoutingError("Missing context", status_code=400) from exc
+
+    try:
+        _verify_caller(
+            context=context,
+            authorization_header=authorization_header,
+            body=body,
+            expected_id_field="bap_id",
+        )
+    except RoutingError as exc:
+        return (
+            build_nack_response(
+                context=context, error={"code": "ROUTING_ERROR", "message": exc.message}
+            ),
+            exc.status_code,
+        )
+
+    return build_ack_response(context=context), 200
+
+
+def validate_and_ack_on_rating(
+    *, payload: dict, authorization_header: str, body: bytes
+) -> tuple[dict, int]:
+    """Synchronous half of /on_rating: validates and verifies the calling BPP
+    (its identity must match context.bpp_id). Does NOT relay to the BAP —
+    that's relay_on_rating's job."""
+    try:
+        context = payload["context"]
+    except KeyError as exc:
+        raise RoutingError("Missing context", status_code=400) from exc
+
+    try:
+        _verify_caller(
+            context=context,
+            authorization_header=authorization_header,
+            body=body,
+            expected_id_field="bpp_id",
+        )
+    except RoutingError as exc:
+        return (
+            build_nack_response(
+                context=context, error={"code": "ROUTING_ERROR", "message": exc.message}
+            ),
+            exc.status_code,
+        )
+
+    return build_ack_response(context=context), 200
+
+
+def dispatch_rating(
+    *, payload: dict, authorization_header: str, correlation_id: str | None = None
+) -> None:
+    """Forwards a customer's rating submission to the ONE specific BPP already
+    chosen at Selection — same targeted-forward pattern as dispatch_cancel.
+
+    Re-checks that BPP's SUBSCRIBED status via a fresh Registry lookup before
+    forwarding — the same staleness risk closed for every earlier action. Same
+    fire-and-forget/log-don't-raise discipline as dispatch_cancel."""
+    context = payload["context"]
+    body = json.dumps(payload).encode()
+
+    bpp_id = context.get("bpp_id")
+    bpp_uri = context.get("bpp_uri")
+    if not bpp_id or not bpp_uri:
+        logger.error("dispatch_rating: context missing bpp_id/bpp_uri, cannot forward")
+        return
+
+    try:
+        results = registry_client.lookup({"subscriber_id": bpp_id})
+    except Exception:
+        logger.exception("dispatch_rating: Registry lookup failed for bpp_id %s", bpp_id)
+        return
+
+    if not results or results[0].get("status") != "SUBSCRIBED":
+        logger.info(
+            "dispatch_rating: bpp_id %s is no longer SUBSCRIBED, refusing to forward", bpp_id
+        )
+        return
+
+    _, signing_priv = get_signing_keys()
+    gateway_signature = sign_outbound_request(
+        body=body,
+        subscriber_id=settings.SUBSCRIBER_ID,
+        unique_key_id=settings.UNIQUE_KEY_ID,
+        signing_private_key_b64=signing_priv,
+    )
+
+    bpp_rating_url = bpp_uri.rstrip("/") + "/rating"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": authorization_header,
+        "X-Gateway-Authorization": gateway_signature,
+        "X-Correlation-Id": correlation_id or "",
+    }
+    try:
+        client = registry_client.get_participant_client(bpp_id)
+        response = client.post(bpp_rating_url, data=body, headers=headers)
+        response.raise_for_status()
+    except Exception:
+        logger.exception("dispatch_rating: forwarding to %s failed", bpp_rating_url)
+
+
+def dispatch_rating_in_background(
+    *, payload: dict, authorization_header: str, correlation_id: str | None = None
+) -> None:
+    """Fires dispatch_rating on a daemon thread — same fire-and-forget entry
+    point pattern as dispatch_cancel_in_background."""
+    thread = threading.Thread(
+        target=dispatch_rating,
+        kwargs={
+            "payload": payload,
+            "authorization_header": authorization_header,
+            "correlation_id": correlation_id,
+        },
+        daemon=True,
+    )
+    thread.start()
+
+
+def relay_on_rating(*, payload: dict, authorization_header: str) -> None:
+    """Forwards a BPP's /on_rating callback on to the originating BAP —
+    on_rating routes back through Gateway, same as on_cancel. Same
+    fire-and-forget/log-don't-raise discipline as relay_on_cancel."""
+    context = payload["context"]
+    body = json.dumps(payload).encode()
+
+    bap_uri = context.get("bap_uri")
+    if not bap_uri:
+        logger.error("relay_on_rating: context missing bap_uri, cannot relay callback")
+        return
+
+    _, signing_priv = get_signing_keys()
+    gateway_signature = sign_outbound_request(
+        body=body,
+        subscriber_id=settings.SUBSCRIBER_ID,
+        unique_key_id=settings.UNIQUE_KEY_ID,
+        signing_private_key_b64=signing_priv,
+    )
+
+    bap_on_rating_url = bap_uri.rstrip("/") + "/on_rating"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": authorization_header,
+        "X-Gateway-Authorization": gateway_signature,
+    }
+    try:
+        client = registry_client.get_participant_client(context["bap_id"])
+        response = client.post(bap_on_rating_url, data=body, headers=headers)
+        response.raise_for_status()
+    except Exception:
+        logger.exception("relay_on_rating: forwarding to %s failed", bap_on_rating_url)
+
+
+def relay_on_rating_in_background(*, payload: dict, authorization_header: str) -> None:
+    """Fires relay_on_rating on a daemon thread — same fire-and-forget entry
+    point pattern as relay_on_cancel_in_background."""
+    thread = threading.Thread(
+        target=relay_on_rating,
+        kwargs={"payload": payload, "authorization_header": authorization_header},
+        daemon=True,
+    )
+    thread.start()
+
+
+# --- support / on_support (livetracker2.md Phase 4.5) ----------------------------------------
+
+
+def validate_and_ack_support(
+    *, payload: dict, authorization_header: str, body: bytes
+) -> tuple[dict, int]:
+    """Synchronous half of /support: validates and verifies the calling BAP,
+    returns the real ACK/NACK envelope. Does NOT forward to the BPP — that's
+    dispatch_support's job, meant to run after this returns."""
+    try:
+        context = payload["context"]
+    except KeyError as exc:
+        raise RoutingError("Missing context", status_code=400) from exc
+
+    try:
+        _verify_caller(
+            context=context,
+            authorization_header=authorization_header,
+            body=body,
+            expected_id_field="bap_id",
+        )
+    except RoutingError as exc:
+        return (
+            build_nack_response(
+                context=context, error={"code": "ROUTING_ERROR", "message": exc.message}
+            ),
+            exc.status_code,
+        )
+
+    return build_ack_response(context=context), 200
+
+
+def validate_and_ack_on_support(
+    *, payload: dict, authorization_header: str, body: bytes
+) -> tuple[dict, int]:
+    """Synchronous half of /on_support: validates and verifies the calling BPP
+    (its identity must match context.bpp_id). Does NOT relay to the BAP —
+    that's relay_on_support's job."""
+    try:
+        context = payload["context"]
+    except KeyError as exc:
+        raise RoutingError("Missing context", status_code=400) from exc
+
+    try:
+        _verify_caller(
+            context=context,
+            authorization_header=authorization_header,
+            body=body,
+            expected_id_field="bpp_id",
+        )
+    except RoutingError as exc:
+        return (
+            build_nack_response(
+                context=context, error={"code": "ROUTING_ERROR", "message": exc.message}
+            ),
+            exc.status_code,
+        )
+
+    return build_ack_response(context=context), 200
+
+
+def dispatch_support(
+    *, payload: dict, authorization_header: str, correlation_id: str | None = None
+) -> None:
+    """Forwards a customer's support lookup to the ONE specific BPP already
+    chosen at Selection — same targeted-forward pattern as dispatch_cancel.
+
+    Re-checks that BPP's SUBSCRIBED status via a fresh Registry lookup before
+    forwarding — the same staleness risk closed for every earlier action. Same
+    fire-and-forget/log-don't-raise discipline as dispatch_cancel."""
+    context = payload["context"]
+    body = json.dumps(payload).encode()
+
+    bpp_id = context.get("bpp_id")
+    bpp_uri = context.get("bpp_uri")
+    if not bpp_id or not bpp_uri:
+        logger.error("dispatch_support: context missing bpp_id/bpp_uri, cannot forward")
+        return
+
+    try:
+        results = registry_client.lookup({"subscriber_id": bpp_id})
+    except Exception:
+        logger.exception("dispatch_support: Registry lookup failed for bpp_id %s", bpp_id)
+        return
+
+    if not results or results[0].get("status") != "SUBSCRIBED":
+        logger.info(
+            "dispatch_support: bpp_id %s is no longer SUBSCRIBED, refusing to forward", bpp_id
+        )
+        return
+
+    _, signing_priv = get_signing_keys()
+    gateway_signature = sign_outbound_request(
+        body=body,
+        subscriber_id=settings.SUBSCRIBER_ID,
+        unique_key_id=settings.UNIQUE_KEY_ID,
+        signing_private_key_b64=signing_priv,
+    )
+
+    bpp_support_url = bpp_uri.rstrip("/") + "/support"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": authorization_header,
+        "X-Gateway-Authorization": gateway_signature,
+        "X-Correlation-Id": correlation_id or "",
+    }
+    try:
+        client = registry_client.get_participant_client(bpp_id)
+        response = client.post(bpp_support_url, data=body, headers=headers)
+        response.raise_for_status()
+    except Exception:
+        logger.exception("dispatch_support: forwarding to %s failed", bpp_support_url)
+
+
+def dispatch_support_in_background(
+    *, payload: dict, authorization_header: str, correlation_id: str | None = None
+) -> None:
+    """Fires dispatch_support on a daemon thread — same fire-and-forget entry
+    point pattern as dispatch_cancel_in_background."""
+    thread = threading.Thread(
+        target=dispatch_support,
+        kwargs={
+            "payload": payload,
+            "authorization_header": authorization_header,
+            "correlation_id": correlation_id,
+        },
+        daemon=True,
+    )
+    thread.start()
+
+
+def relay_on_support(*, payload: dict, authorization_header: str) -> None:
+    """Forwards a BPP's /on_support callback on to the originating BAP —
+    on_support routes back through Gateway, same as on_cancel. Same
+    fire-and-forget/log-don't-raise discipline as relay_on_cancel."""
+    context = payload["context"]
+    body = json.dumps(payload).encode()
+
+    bap_uri = context.get("bap_uri")
+    if not bap_uri:
+        logger.error("relay_on_support: context missing bap_uri, cannot relay callback")
+        return
+
+    _, signing_priv = get_signing_keys()
+    gateway_signature = sign_outbound_request(
+        body=body,
+        subscriber_id=settings.SUBSCRIBER_ID,
+        unique_key_id=settings.UNIQUE_KEY_ID,
+        signing_private_key_b64=signing_priv,
+    )
+
+    bap_on_support_url = bap_uri.rstrip("/") + "/on_support"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": authorization_header,
+        "X-Gateway-Authorization": gateway_signature,
+    }
+    try:
+        client = registry_client.get_participant_client(context["bap_id"])
+        response = client.post(bap_on_support_url, data=body, headers=headers)
+        response.raise_for_status()
+    except Exception:
+        logger.exception("relay_on_support: forwarding to %s failed", bap_on_support_url)
+
+
+def relay_on_support_in_background(*, payload: dict, authorization_header: str) -> None:
+    """Fires relay_on_support on a daemon thread — same fire-and-forget entry
+    point pattern as relay_on_cancel_in_background."""
+    thread = threading.Thread(
+        target=relay_on_support,
+        kwargs={"payload": payload, "authorization_header": authorization_header},
+        daemon=True,
+    )
+    thread.start()

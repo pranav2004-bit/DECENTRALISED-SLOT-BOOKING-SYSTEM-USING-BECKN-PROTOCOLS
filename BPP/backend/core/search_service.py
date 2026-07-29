@@ -21,6 +21,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from . import registry_client, trust
+from .catalog import filter_catalog
 from .catalog_cache import get_cached_catalog
 from .crypto import sign_outbound_request
 from .participant_keys import get_signing_keys
@@ -79,9 +80,26 @@ def dispatch_on_search(*, payload: dict) -> None:
     §4.1: fetches the catalog for *the domain the request actually asked for*
     (`context["domain"]`), not a hardcoded Beauty catalog — a real gap found via audit
     before implementing Healthcare, since this previously ignored the incoming domain
-    entirely and would have returned Beauty results to a Healthcare search."""
+    entirely and would have returned Beauty results to a Healthcare search.
+
+    livetracker3.md §1.1: also reads the real query text the customer typed
+    (`message.intent.item.descriptor.name`) and narrows the cached catalog down to
+    matching providers/items via `filter_catalog()` — previously this field was never
+    read at all, so every search silently returned the entire domain catalog
+    regardless of what was searched for. An empty/missing query still returns the
+    full catalog unfiltered (defined "browse everything" behavior, not a regression).
+    `message.intent.category.descriptor.code`/`message.intent.fulfillment.type` are
+    not read here — BAP's `trigger_search()` never populates either field today, so
+    there's nothing real to filter on yet; only `item.descriptor.name` is wired."""
     context = payload["context"]
-    catalog = get_cached_catalog(context["domain"])
+    query_text = (
+        payload.get("message", {})
+        .get("intent", {})
+        .get("item", {})
+        .get("descriptor", {})
+        .get("name")
+    )
+    catalog = filter_catalog(get_cached_catalog(context["domain"]), query_text)
 
     on_search_context = build_context(
         domain=context["domain"],

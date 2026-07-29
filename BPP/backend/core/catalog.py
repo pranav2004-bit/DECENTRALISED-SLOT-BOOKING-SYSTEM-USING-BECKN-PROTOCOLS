@@ -85,6 +85,52 @@ def _business_to_provider(business: BusinessAccount) -> dict:
     }
 
 
+def _tokenize(query_text: str) -> list[str]:
+    return [word for word in query_text.strip().lower().split() if word]
+
+
+def filter_catalog(catalog: dict, query_text: str | None) -> dict:
+    """livetracker3.md §1.1: narrows an already-built catalog (as returned by
+    `build_catalog()`/`get_cached_catalog()`) down to providers/items matching
+    `query_text`, applied *after* the domain-only cache read rather than as a
+    cache-key dimension — see `catalog_cache.py`'s own docstring for why per-query
+    caching would explode cache cardinality for no real benefit.
+
+    Word-tokenized, case-insensitive AND-match: every word in `query_text` must
+    appear as a substring somewhere in the combined `item.descriptor.name` +
+    `provider.descriptor.name` text for that item. Combining both fields (rather
+    than matching each independently) is deliberate — it's what lets a query like
+    "hair salon" match a business named "Salon Hair Care" even though the words
+    aren't in the same order and neither field alone contains both words. Not
+    fuzzy/typo-tolerant (§1.2, explicitly out of scope here).
+
+    A missing/empty `query_text` returns `catalog` unchanged — the defined
+    "browse everything" behavior for a customer who hasn't typed anything, not
+    a regression from the prior always-unfiltered behavior.
+    """
+    if not query_text:
+        return catalog
+    words = _tokenize(query_text)
+    if not words:
+        return catalog
+
+    filtered_providers = []
+    for provider in catalog.get("providers", []):
+        provider_name = provider.get("descriptor", {}).get("name", "")
+        matching_items = [
+            item
+            for item in provider.get("items", [])
+            if all(
+                word in f"{item.get('descriptor', {}).get('name', '')} {provider_name}".lower()
+                for word in words
+            )
+        ]
+        if matching_items:
+            filtered_providers.append({**provider, "items": matching_items})
+
+    return {"descriptor": catalog.get("descriptor", {}), "providers": filtered_providers}
+
+
 def build_catalog(domain_code: str) -> dict:
     """BPP's catalog for one domain, represented internally using the confirmed real
     `Catalog`/`Provider`/`Item` schema shapes (protocol_compliance_notes_v1.1.md §F/§G) —

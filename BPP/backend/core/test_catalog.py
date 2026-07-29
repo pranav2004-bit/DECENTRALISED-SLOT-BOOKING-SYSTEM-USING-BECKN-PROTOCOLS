@@ -21,7 +21,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from inventory_core.models import Resource
 
-from core.catalog import build_catalog
+from core.catalog import build_catalog, filter_catalog
 
 BusinessAccount = get_user_model()
 
@@ -208,3 +208,108 @@ def test_two_domains_never_leak_into_each_others_catalog():
 
     assert healthcare_catalog["descriptor"]["name"] == "Healthcare Catalog"
     assert [p["descriptor"]["name"] for p in healthcare_catalog["providers"]] == ["City Clinic"]
+
+
+def _seed_two_stylists():
+    """A real catalog with one provider ("Glow Salon") offering two named resources —
+    one that should match a "Priya" query, one that shouldn't."""
+    business = BusinessAccount.objects.create_user(
+        contact="salon@example.com",
+        business_name="Glow Salon",
+        password=TEST_PASSWORD,
+        domain_code=BEAUTY,
+    )
+    Resource.objects.create(owner_ref=str(business.id), name="Senior Stylist - Priya")
+    Resource.objects.create(owner_ref=str(business.id), name="Junior Stylist - Anjali")
+    return business
+
+
+@pytest.mark.django_db
+def test_filter_catalog_matches_only_the_resource_whose_name_contains_the_query():
+    """livetracker3.md §1.1 Test Gate: a real search for an existing stylist's
+    descriptor name returns only that resource, not the full provider catalog."""
+    _seed_two_stylists()
+    catalog = build_catalog(BEAUTY)
+
+    filtered = filter_catalog(catalog, "Priya")
+
+    assert len(filtered["providers"]) == 1
+    items = filtered["providers"][0]["items"]
+    assert [item["descriptor"]["name"] for item in items] == ["Senior Stylist - Priya"]
+
+
+@pytest.mark.django_db
+def test_filter_catalog_match_is_case_insensitive():
+    _seed_two_stylists()
+    catalog = build_catalog(BEAUTY)
+
+    filtered = filter_catalog(catalog, "priya")
+
+    assert [item["descriptor"]["name"] for item in filtered["providers"][0]["items"]] == [
+        "Senior Stylist - Priya"
+    ]
+
+
+@pytest.mark.django_db
+def test_filter_catalog_with_nonsense_query_returns_zero_providers_not_an_error():
+    _seed_two_stylists()
+    catalog = build_catalog(BEAUTY)
+
+    filtered = filter_catalog(catalog, "xyzzy-no-such-thing")
+
+    assert filtered["providers"] == []
+    assert filtered["descriptor"] == catalog["descriptor"]
+
+
+@pytest.mark.django_db
+def test_filter_catalog_with_empty_query_returns_the_full_catalog_unchanged():
+    _seed_two_stylists()
+    catalog = build_catalog(BEAUTY)
+
+    assert filter_catalog(catalog, "") == catalog
+    assert filter_catalog(catalog, None) == catalog
+    assert filter_catalog(catalog, "   ") == catalog
+
+
+@pytest.mark.django_db
+def test_filter_catalog_multiword_query_matches_regardless_of_word_order():
+    """The exact case §1.1 was written to fix: a literal-substring match on the whole
+    query string would miss this (words in a different order), but a word-tokenized
+    AND-match against the combined item+provider descriptor text finds it."""
+    business = BusinessAccount.objects.create_user(
+        contact="salon@example.com",
+        business_name="Salon Hair Care",
+        password=TEST_PASSWORD,
+        domain_code=BEAUTY,
+    )
+    Resource.objects.create(owner_ref=str(business.id), name="Basic Cut")
+    catalog = build_catalog(BEAUTY)
+
+    filtered = filter_catalog(catalog, "hair salon")
+
+    assert len(filtered["providers"]) == 1
+    assert filtered["providers"][0]["descriptor"]["name"] == "Salon Hair Care"
+
+
+@pytest.mark.django_db
+def test_filter_catalog_excludes_a_provider_whose_no_items_match():
+    salon = BusinessAccount.objects.create_user(
+        contact="salon@example.com",
+        business_name="Glow Salon",
+        password=TEST_PASSWORD,
+        domain_code=BEAUTY,
+    )
+    Resource.objects.create(owner_ref=str(salon.id), name="Stylist A")
+
+    clinic = BusinessAccount.objects.create_user(
+        contact="clinic@example.com",
+        business_name="City Clinic",
+        password=TEST_PASSWORD,
+        domain_code=BEAUTY,
+    )
+    Resource.objects.create(owner_ref=str(clinic.id), name="Dr. Rao")
+    catalog = build_catalog(BEAUTY)
+
+    filtered = filter_catalog(catalog, "Stylist")
+
+    assert [p["descriptor"]["name"] for p in filtered["providers"]] == ["Glow Salon"]

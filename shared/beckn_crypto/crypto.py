@@ -217,7 +217,9 @@ def encrypt_challenge(
     key = _derive_shared_key(own_private_key_b64, peer_public_key_b64_der)
     padder = padding.PKCS7(algorithms.AES.block_size).padder()
     padded = padder.update(challenge.encode()) + padder.finalize()
-    encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+    # ECB is protocol-mandated, not a bug — see protocol_compliance_notes_v1.1.md's
+    # "Confirmed Against ONDC's Own Reference Implementation" section.
+    encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()  # nosec B305
     ciphertext = encryptor.update(padded) + encryptor.finalize()
     return base64.b64encode(ciphertext).decode()
 
@@ -232,7 +234,9 @@ def decrypt_challenge(
     key = _derive_shared_key(own_private_key_b64, peer_public_key_b64_der)
     try:
         ciphertext = base64.b64decode(encrypted_challenge)
-        decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
+        # ECB is protocol-mandated, not a bug — see protocol_compliance_notes_v1.1.md's
+        # "Confirmed Against ONDC's Own Reference Implementation" section.
+        decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()  # nosec B305
         padded = decryptor.update(ciphertext) + decryptor.finalize()
         unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
         plaintext = unpadder.update(padded) + unpadder.finalize()

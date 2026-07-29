@@ -127,10 +127,17 @@ DATABASES["default"]["CONN_MAX_AGE"] = env.int("DB_CONN_MAX_AGE", default=60)
 # Redis" re-test, third pass) — see BPP/backend/bpp/settings.py's identical comment:
 # no socket timeout meant a real Redis outage could hang on the OS-level TCP timeout
 # before any exception fired, defeating the fail-open handling added elsewhere.
+#
+# Real gap found and closed at Phase 4.7 (livetracker2.md, 2026-07-29, live business-
+# metrics dashboard confirmation): `core/conftest.py`'s autouse `cache.clear()` (needed
+# to isolate §3.7's rate-limit counters between test runs) was clearing the *same* Redis
+# DB the live dev server's business-metrics counters and sessions live in — running
+# pytest against this docker-compose stack silently zeroed real §3.10 counters. Tests
+# now get their own Redis DB index so `cache.clear()` can never touch the real one.
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": REDIS_URL,
+        "LOCATION": f"{REDIS_URL.rsplit('/', 1)[0]}/15" if TESTING else REDIS_URL,
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
             "CONNECTION_POOL_KWARGS": {"socket_connect_timeout": 0.5, "socket_timeout": 0.5},

@@ -75,7 +75,7 @@ def test_registry_subscribe_call_is_mocked_not_real():
     )
     # `responses` intercepts the `requests` library specifically, not raw urllib/http.client —
     # this is the correct pattern for the mocked-HTTP-boundary approach documented in TESTING.md.
-    resp = requests.post("http://registry:8000/subscribe", json={})
+    resp = requests.post("http://registry:8000/subscribe", json={}, timeout=5)
     assert resp.json()["status"] == "UNDER_SUBSCRIPTION"
     assert len(responses.calls) == 1
     assert responses.calls[0].request.url == "http://registry:8000/subscribe"

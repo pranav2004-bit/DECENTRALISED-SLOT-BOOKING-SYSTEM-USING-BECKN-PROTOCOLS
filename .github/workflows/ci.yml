@@ -199,7 +199,12 @@ jobs:
       - name: Bandit (Python security linting)
         run: |
           pip install bandit
-          for app in registry beckn-gateway BAP/backend BPP/backend; do
+          # `shared/` (Phase 4.7 gap found and fixed): every app-scoped loop before this one
+          # copied `shared/beckn_crypto`/`shared/inventory_core`/etc. into each container's
+          # image, but this scan itself never touched the source directory directly — the
+          # actual business logic built across Phases 1-4 (`shared/inventory_core`) had zero
+          # bandit coverage until this fix.
+          for app in registry beckn-gateway BAP/backend BPP/backend shared; do
             if [ -d "$app" ]; then bandit -r "$app" -ll || true; fi
           done
 

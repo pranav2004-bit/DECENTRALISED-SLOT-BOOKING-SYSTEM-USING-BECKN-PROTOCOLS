@@ -2,7 +2,7 @@
 
 System-level index for the BECKN project. Component-level detail lives in each `*_details_v1.1.md` file; this document covers decisions that span all four applications.
 
-**Related documents:** [project_details.md](project_details.md) · [registry_details_v1.1.md](registry/registry_details_v1.1.md) · [beckn_gateway_details_v1.1.md](beckn-gateway/beckn_gateway_details_v1.1.md) · [BAP_details_v1.1.md](BAP/BAP_details_v1.1.md) · [BPP_details_v1.1.md](BPP/BPP_details_v1.1.md) · [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) · [livetracker1.md](livetracker1.md)
+**Related documents:** [project_details.md](project_details.md) · [registry_details_v1.1.md](registry/registry_details_v1.1.md) · [beckn_gateway_details_v1.1.md](beckn-gateway/beckn_gateway_details_v1.1.md) · [BAP_details_v1.1.md](BAP/BAP_details_v1.1.md) · [BPP_details_v1.1.md](BPP/BPP_details_v1.1.md) · [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) · [livetracker1.md](livetracker1.md) (trust layer, closed) · [livetracker2.md](livetracker2.md) (business workflow, closed) · [livetracker3.md](livetracker3.md) (functional/UX gaps, designed) · [livetracker4.md](livetracker4.md) (infrastructure/scale readiness, designed)
 
 ## System Overview
 

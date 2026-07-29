@@ -1,6 +1,6 @@
 # Runbook
 
-**Status: stub.** This fills in with real, battle-tested procedures as Phase 2–4 of [livetracker1.md](livetracker1.md) produce actual incidents, onboarding runs, and operational experience. An early, honest stub beats a fabricated "complete" runbook nobody has actually exercised — false confidence in an incident is worse than an acknowledged gap.
+**Status update (2026-07-29), correcting a stale claim found during a repo-wide documentation sweep:** this banner previously said the whole document was a stub, written when it genuinely was one. It no longer is — five of its six sections below are real, live-verified operational findings accumulated across the trust layer and business-workflow trackers (Registry/business metrics and alerting thresholds, rate limits, resilience/failure-injection results, and a real, growing "Known Operational Facts" incident history), not placeholders. The one section still genuinely a placeholder is "Incident Procedure" below — closing it for real, using this document's own accumulated incident history as worked examples, is [livetracker4.md](livetracker4.md) §8.2's explicit, not-yet-implemented task.
 
 ## Where to Look
 
@@ -119,6 +119,6 @@ All scenarios below run live against the real Docker stack on 2026-07-23, follow
 
 ## To Be Added
 
-- Real incident postmortems, once any occur.
-- Specific dashboard links, once Phase 2.6/4.4 stand up real monitoring dashboards.
+- **Corrected (2026-07-29):** the item previously here — "real incident postmortems, once any occur" — is stale; they've occurred repeatedly and are already documented above (the Docker/OneDrive overlapping-build incident, the circuit-breaker per-worker bug, the metrics-zeroing bug, the `participant_keys.py` thread-race, the onboarding-status race). What's still genuinely missing: a **formalized on-call arrangement** (the Incident Procedure section above still says "not yet formalized — foundation stage," accurate as of this writing) and the real dashboard links below.
+- Specific Grafana dashboard links/panel IDs for the business-metrics panels built in `livetracker2.md` §3.10 (the dashboard itself exists and is live-verified; this file doesn't yet link to specific panels by name).
 - On-call rotation and escalation policy, once the team formalizes one.

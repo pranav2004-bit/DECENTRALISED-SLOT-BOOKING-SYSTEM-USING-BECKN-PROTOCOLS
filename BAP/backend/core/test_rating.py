@@ -118,7 +118,8 @@ def _mock_bpp_registry_lookup(rsps, *, bpp_id="bpp.example.com", url="https://bp
     def callback(request):
         filters = json.loads(request.body)
         assert filters["subscriber_id"] == bpp_id
-        return (200, {}, json.dumps([{"subscriber_id": bpp_id, "status": "SUBSCRIBED", "url": url}]))
+        body = [{"subscriber_id": bpp_id, "status": "SUBSCRIBED", "url": url}]
+        return (200, {}, json.dumps(body))
 
     rsps.add_callback(responses.POST, "http://registry:8000/lookup", callback=callback)
 

@@ -240,7 +240,7 @@ async function seedBusinessAndResource(): Promise<SeedData> {
   const businessName = `Playwright E2E Salon ${runId}`;
   const itemName = `Playwright E2E Haircut ${runId}`;
   const contact = `pw-e2e-${runId}@example.com`;
-  const password = `Playwright-E2E-Pass-${runId}!`;
+  const password = `Playwright-E2E-Pass-${runId}!`; // pragma: allowlist secret
 
   // --- csrf cookie (required for signup/login, neither of which is @csrf_exempt) ---
   await bpp(jar, 'GET', '/api/v1/auth/csrf');

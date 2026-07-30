@@ -273,6 +273,21 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Create real .env files from committed templates
+        # Real gap found live on this PR's own first E2E run: every service in docker-compose.yml
+        # has `env_file: ./<app>/.env`, but `.env` is gitignored everywhere (only `.env.example`
+        # is committed) — a fresh CI checkout has none of them, and `docker compose up` fails
+        # immediately with "env file .../.env not found". docker-compose.override.yml (gitignored
+        # too) is the *other*, separate gap docker-compose.e2e.yml below already closes for
+        # SUBSCRIBER_ID/SUBSCRIBER_URL specifically — this step is the base-.env half nothing else
+        # was covering. `.env.example`'s own committed placeholder values are already the correct,
+        # safe local/CI defaults (same file a developer copies for local setup) — no substitution
+        # needed, just materializing them.
+        run: |
+          for app in registry beckn-gateway BAP/backend BAP/web BPP/backend BPP/web; do
+            cp "$app/.env.example" "$app/.env"
+          done
+
       - name: Build the real docker-compose stack
         # `docker-compose.e2e.yml` layers two E2E-only things on top of the base file (see its
         # own header comment for the full why): a short RECONCILIATION_INTERVAL_SECONDS for

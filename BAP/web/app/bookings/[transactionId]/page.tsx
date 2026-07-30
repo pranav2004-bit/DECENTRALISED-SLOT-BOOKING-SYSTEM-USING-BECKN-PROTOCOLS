@@ -9,13 +9,19 @@ import { BookingFailedError } from '@/components/ui/BookingErrorStates';
 import {
   getCancelResult,
   getConfirmResult,
+  getRatingResult,
   getStatusResult,
+  getSupportResult,
+  getTrackResult,
   triggerCancel,
+  triggerRating,
   triggerStatus,
+  triggerSupport,
+  triggerTrack,
 } from '@/lib/booking-api';
 import { ApiError } from '@/lib/api-client';
 import { formatDateTime, formatPrice } from '@/lib/format';
-import type { Order } from '@/lib/beckn-types';
+import type { Order, Support } from '@/lib/beckn-types';
 
 const STATUS_LABEL: Record<string, string> = {
   HELD: 'Held',
@@ -43,6 +49,20 @@ export default function BookingStatusPage() {
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [cancelled, setCancelled] = useState(false);
+
+  const [ratingValue, setRatingValue] = useState<number | null>(null);
+  const [ratingSubmitting, setRatingSubmitting] = useState(false);
+  const [ratingError, setRatingError] = useState<string | null>(null);
+  const [ratingSubmitted, setRatingSubmitted] = useState(false);
+  const [showRatingForm, setShowRatingForm] = useState(true);
+
+  const [supportRequesting, setSupportRequesting] = useState(false);
+  const [supportError, setSupportError] = useState<string | null>(null);
+  const [supportContact, setSupportContact] = useState<Support | null>(null);
+
+  const [trackChecking, setTrackChecking] = useState(false);
+  const [trackError, setTrackError] = useState<string | null>(null);
+  const [trackStatus, setTrackStatus] = useState<'active' | 'inactive' | null>(null);
 
   useEffect(() => {
     let cancelledEffect = false;
@@ -125,6 +145,83 @@ export default function BookingStatusPage() {
     }
   }
 
+  async function handleSubmitRating(value: number) {
+    setRatingValue(value);
+    setRatingSubmitting(true);
+    setRatingError(null);
+    try {
+      await triggerRating(transactionId, 'Order', String(value));
+      for (let attempt = 0; attempt < 15; attempt++) {
+        const result = await getRatingResult(transactionId);
+        if (result.rating_result) {
+          setRatingSubmitted(true);
+          setShowRatingForm(false);
+          return;
+        }
+        if (result.rating_error) {
+          setRatingError(result.rating_error.message);
+          return;
+        }
+        await sleep(1200);
+      }
+      setRatingError('Submitting your rating is taking longer than expected — please try again.');
+    } catch (err) {
+      setRatingError(err instanceof ApiError ? err.message : 'Could not submit your rating');
+    } finally {
+      setRatingSubmitting(false);
+    }
+  }
+
+  async function handleRequestSupport() {
+    setSupportRequesting(true);
+    setSupportError(null);
+    try {
+      await triggerSupport(transactionId);
+      for (let attempt = 0; attempt < 15; attempt++) {
+        const result = await getSupportResult(transactionId);
+        if (result.support_result) {
+          setSupportContact(result.support_result);
+          return;
+        }
+        if (result.support_error) {
+          setSupportError(result.support_error.message);
+          return;
+        }
+        await sleep(1200);
+      }
+      setSupportError('Getting support info is taking longer than expected — please try again.');
+    } catch (err) {
+      setSupportError(err instanceof ApiError ? err.message : 'Could not request support');
+    } finally {
+      setSupportRequesting(false);
+    }
+  }
+
+  async function handleCheckTracking() {
+    setTrackChecking(true);
+    setTrackError(null);
+    try {
+      await triggerTrack(transactionId);
+      for (let attempt = 0; attempt < 15; attempt++) {
+        const result = await getTrackResult(transactionId);
+        if (result.tracking) {
+          setTrackStatus(result.tracking.status ?? 'inactive');
+          return;
+        }
+        if (result.tracking_error) {
+          setTrackError(result.tracking_error.message);
+          return;
+        }
+        await sleep(1200);
+      }
+      setTrackError('Checking tracking status is taking longer than expected — please try again.');
+    } catch (err) {
+      setTrackError(err instanceof ApiError ? err.message : 'Could not check tracking status');
+    } finally {
+      setTrackChecking(false);
+    }
+  }
+
   if (loading) {
     return <LoadingState label="Loading your booking…" />;
   }
@@ -194,6 +291,102 @@ export default function BookingStatusPage() {
           {cancelling ? 'Cancelling…' : 'Cancel booking'}
         </button>
       )}
+
+      {currentStatus === 'COMPLETE' && (
+        <div className="mt-6 flex flex-col gap-3 rounded-lg border border-neutral-200 p-4">
+          <p className="font-medium text-neutral-900">Rate this booking</p>
+          {ratingSubmitted && !showRatingForm ? (
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-neutral-700">
+                Thanks — you rated this {ratingValue} {ratingValue === 1 ? 'star' : 'stars'}.
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowRatingForm(true)}
+                className="text-sm text-neutral-600 underline"
+              >
+                Change rating
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="flex gap-2" role="group" aria-label="Rate this booking">
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => handleSubmitRating(n)}
+                    disabled={ratingSubmitting}
+                    aria-label={`Rate ${n} ${n === 1 ? 'star' : 'stars'}`}
+                    className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 disabled:opacity-50"
+                  >
+                    {n} ★
+                  </button>
+                ))}
+              </div>
+              {ratingSubmitting && (
+                <p className="text-xs text-neutral-500" aria-live="polite">
+                  Submitting…
+                </p>
+              )}
+              {ratingError && (
+                <BookingFailedError
+                  onRetry={() => ratingValue !== null && handleSubmitRating(ratingValue)}
+                />
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      <div className="mt-6 flex flex-col gap-3 rounded-lg border border-neutral-200 p-4">
+        <div className="flex items-center justify-between gap-4">
+          <p className="font-medium text-neutral-900">Need help?</p>
+          {!supportContact && (
+            <button
+              type="button"
+              onClick={handleRequestSupport}
+              disabled={supportRequesting}
+              className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 disabled:opacity-50"
+            >
+              {supportRequesting ? 'Requesting…' : 'Get support'}
+            </button>
+          )}
+        </div>
+        {supportContact && (
+          <div className="text-sm text-neutral-700">
+            {supportContact.email && <p>Email: {supportContact.email}</p>}
+            {supportContact.phone && <p>Phone: {supportContact.phone}</p>}
+            {supportContact.url && <p>More info: {supportContact.url}</p>}
+            {!supportContact.email && !supportContact.phone && !supportContact.url && (
+              <p>No contact info is available for this booking yet.</p>
+            )}
+          </div>
+        )}
+        {supportError && <BookingFailedError onRetry={handleRequestSupport} />}
+      </div>
+
+      <div className="mt-6 flex flex-col gap-3 rounded-lg border border-neutral-200 p-4">
+        <div className="flex items-center justify-between gap-4">
+          <p className="font-medium text-neutral-900">Tracking</p>
+          <button
+            type="button"
+            onClick={handleCheckTracking}
+            disabled={trackChecking}
+            className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 disabled:opacity-50"
+          >
+            {trackChecking ? 'Checking…' : 'Check status'}
+          </button>
+        </div>
+        {trackStatus && (
+          <p className="text-sm text-neutral-700">
+            {trackStatus === 'active'
+              ? 'Active — this booking’s fulfillment is currently in progress.'
+              : 'No live tracking update to show right now.'}
+          </p>
+        )}
+        {trackError && <BookingFailedError onRetry={handleCheckTracking} />}
+      </div>
     </div>
   );
 }

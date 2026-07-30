@@ -169,17 +169,8 @@ function sleepMs(ms: number): Promise<void> {
 // own ~130s cooldown. 3 attempts with a real 45s gap comfortably clears that cooldown even on
 // the least favorable timing, without masking a genuine, persistent failure (which would still
 // exhaust all 3 attempts and raise below).
-// Real gap found live on this PR's own first CI run: the original 3 attempts / 45s delay
-// (90s of total retry-gap time) wasn't enough margin — this session's own earlier live
-// incident (a cold-start circuit-breaker trip during onboarding, found and root-caused
-// during livetracker4.md §1.3's verification) took ~130s to actually clear under real
-// load, against this mechanism's own 30s *configured default* (shared/resilient_http's
-// `reset_timeout_seconds`) — a genuinely cold, first-ever CI runner is a slower case than
-// the machine that produced that 130s figure, so sizing to the default alone isn't
-// enough margin. Widened to 4 attempts / 60s (180s of total retry-gap time), comfortably
-// covering the ~130s already observed once, not an arbitrary/open-ended increase.
-const ONBOARD_MAX_ATTEMPTS = 4;
-const ONBOARD_RETRY_DELAY_MS = 60_000;
+const ONBOARD_MAX_ATTEMPTS = 3;
+const ONBOARD_RETRY_DELAY_MS = 45_000;
 
 async function ensureOnboarded(service: string, domain: string): Promise<void> {
   const before = currentOnboardingStatus(service, domain);

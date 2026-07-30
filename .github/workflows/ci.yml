@@ -265,9 +265,8 @@ jobs:
     # automatically — this job runs the real Playwright suite (BAP/web/e2e/) against the real
     # `docker compose` stack on every PR, matching the "not mocked, not simulated" discipline
     # those manual passes already held themselves to, not a lighter faked-backend substitute.
-    timeout-minutes: 35 # the suite's own real ~9-10 minute wait (see golden-path.spec.ts) plus
-    # build/up/health/seed/teardown overhead, plus real margin for onboarding's own retry
-    # budget (up to 3x60s per service, see global-setup.ts's ONBOARD_RETRY_DELAY_MS) and a slow CI runner.
+    timeout-minutes: 30 # the suite's own real ~9-10 minute wait (see golden-path.spec.ts)
+    # plus build/up/health/seed/teardown overhead, with real margin for a slow CI runner.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -301,36 +300,6 @@ jobs:
 
       - name: Start the real stack
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d
-
-      - name: Run real Django migrations (registry, beckn-gateway, BAP/backend, BPP/backend)
-        # Real root cause found live reproducing this job's own first onboarding failure
-        # (ensureOnboarded() in global-setup.ts throwing "failed to reach SUBSCRIBED"): nothing
-        # in docker-compose.yml/the Dockerfiles ever runs `manage.py migrate` — no entrypoint
-        # script, no CMD override, no init container. Every earlier "it worked locally" pass
-        # this session was against a long-lived local Postgres volume that had migrations
-        # applied once, manually, a long time ago and never since torn down — never against a
-        # genuinely fresh volume. A fresh CI runner (and a local `docker compose down -v`,
-        # confirmed by direct reproduction) starts Postgres with zero tables. `/health`
-        # (the endpoint the step below polls) is deliberately DB-agnostic liveness-only
-        # (shared/django_observability/views.py's own docstring: "No dependency checks, must
-        # stay fast and never fail due to a downstream outage") so it reports healthy long
-        # before this gap bites — the failure only surfaces once `ensureOnboarded()` calls
-        # `/subscribe`, which genuinely 500s. Confirmed directly against registry's own real
-        # container logs: `psycopg2.errors.UndefinedTable: relation "core_participant" does
-        # not exist` on every `/subscribe` call, and identically `relation
-        # "core_onboardingstatus" does not exist` on bap-backend's own onboarding_approve/
-        # onboarding_subscribe management commands. This is deterministic, not transient —
-        # no amount of ensureOnboarded()'s own retry/backoff could ever fix it, which is why
-        # it consistently exhausted all 3 attempts. Migrations must run once the DB containers
-        # are reachable (they are, right after `up -d`) and before anything queries these
-        # tables — `beckn-gateway` uses Registry's own schema check indirectly via
-        # `/subscribe`, but has no DB of its own (stateless, per beckn_gateway_details_v1.1.md
-        # §4), so it's excluded here.
-        run: |
-          for svc in registry bap-backend bpp-backend; do
-            echo "migrating $svc..."
-            docker compose -f docker-compose.yml -f docker-compose.e2e.yml exec -T "$svc" python manage.py migrate --noinput
-          done
 
       - name: Wait for real health
         # No docker-compose healthcheck block exists yet for the app containers themselves

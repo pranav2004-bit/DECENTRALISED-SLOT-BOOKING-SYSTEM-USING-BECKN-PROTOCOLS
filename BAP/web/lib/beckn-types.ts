@@ -85,3 +85,22 @@ export interface Order {
   quote?: Quote;
   payments?: { status: string }[];
 }
+
+/** livetracker3.md §3.2 — real Support.yaml shape; all fields optional. */
+export interface Support {
+  ref_id?: string;
+  callback_phone?: string;
+  phone?: string;
+  email?: string;
+  url?: string;
+}
+
+/**
+ * livetracker3.md §3.3 — real Tracking.yaml shape. `location`/`url` are never
+ * populated by this project (no real GPS data source) — only read `status`.
+ */
+export interface Tracking {
+  id?: string;
+  url?: string;
+  status?: 'active' | 'inactive';
+}

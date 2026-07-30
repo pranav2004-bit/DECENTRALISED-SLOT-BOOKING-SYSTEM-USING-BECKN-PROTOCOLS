@@ -1,5 +1,5 @@
 import { apiFetch } from './api-client';
-import type { BecknError, Order, SearchResultsResponse } from './beckn-types';
+import type { BecknError, Order, SearchResultsResponse, Support, Tracking } from './beckn-types';
 
 /**
  * Thin wrappers around the customer-facing trigger/result endpoints
@@ -128,5 +128,73 @@ export interface CancelResultResponse {
 
 export async function getCancelResult(transactionId: string): Promise<CancelResultResponse> {
   const resp = await apiFetch(`/api/v1/cancel/${transactionId}`);
+  return resp.json();
+}
+
+/** livetracker3.md §3.1 — `entityId` defaults server-side to the confirmed order's own id. */
+export async function triggerRating(
+  transactionId: string,
+  ratingCategory: string,
+  value: string,
+  entityId = ''
+): Promise<void> {
+  await apiFetch('/api/v1/rating', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({
+      transaction_id: transactionId,
+      rating_category: ratingCategory,
+      value,
+      entity_id: entityId,
+    }),
+  });
+}
+
+export interface RatingResultResponse {
+  transaction_id: string;
+  rating_result: Record<string, unknown> | null;
+  rating_error: BecknError | null;
+}
+
+export async function getRatingResult(transactionId: string): Promise<RatingResultResponse> {
+  const resp = await apiFetch(`/api/v1/rating/${transactionId}`);
+  return resp.json();
+}
+
+export async function triggerSupport(transactionId: string): Promise<void> {
+  await apiFetch('/api/v1/support', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ transaction_id: transactionId }),
+  });
+}
+
+export interface SupportResultResponse {
+  transaction_id: string;
+  support_result: Support | null;
+  support_error: BecknError | null;
+}
+
+export async function getSupportResult(transactionId: string): Promise<SupportResultResponse> {
+  const resp = await apiFetch(`/api/v1/support/${transactionId}`);
+  return resp.json();
+}
+
+export async function triggerTrack(transactionId: string): Promise<void> {
+  await apiFetch('/api/v1/track', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ transaction_id: transactionId }),
+  });
+}
+
+export interface TrackResultResponse {
+  transaction_id: string;
+  tracking: Tracking | null;
+  tracking_error: BecknError | null;
+}
+
+export async function getTrackResult(transactionId: string): Promise<TrackResultResponse> {
+  const resp = await apiFetch(`/api/v1/track/${transactionId}`);
   return resp.json();
 }

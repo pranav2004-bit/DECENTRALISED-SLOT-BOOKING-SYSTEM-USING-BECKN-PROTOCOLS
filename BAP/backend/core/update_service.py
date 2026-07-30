@@ -27,6 +27,7 @@ from django_observability.context import correlation_id_var
 from . import registry_client, trust
 from .crypto import sign_outbound_request
 from .models import SearchSession
+from .notifications import notify_booking_rescheduled_in_background
 from .participant_keys import get_signing_keys
 from .session_authz import SessionAccessError, resolve_owned_session
 
@@ -198,3 +199,9 @@ def record_on_update_result(*, payload: dict) -> None:
         session.updated_order = payload["message"]["order"]
         session.updated_error = None
     session.save(update_fields=["updated_order", "updated_error", "updated_at"])
+
+    # livetracker3.md §4.1: same discipline as record_on_confirm_result — only
+    # on genuine success, backgrounded so a mail-send failure never affects
+    # this already-completed reschedule.
+    if error is None:
+        notify_booking_rescheduled_in_background(session=session, order=session.updated_order)

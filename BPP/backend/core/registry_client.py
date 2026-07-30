@@ -16,6 +16,7 @@ from core.participant_keys import get_signing_keys
 
 _client: ResilientHttpClient | None = None
 _gateway_client: ResilientHttpClient | None = None
+_bap_clients: dict[str, ResilientHttpClient] = {}
 
 
 def get_client() -> ResilientHttpClient:
@@ -50,6 +51,28 @@ def get_gateway_client() -> ResilientHttpClient:
             circuit_breaker_key="bpp-gateway-client",
         )
     return _gateway_client
+
+
+def get_bap_client(bap_id: str) -> ResilientHttpClient:
+    """livetracker4.md §1.2: one isolated circuit breaker per counterparty BAP for
+    the 9 direct on_X callbacks, mirroring `BAP/backend/core/registry_client.py`'s
+    `get_bpp_client()` (itself mirroring Gateway's own `get_participant_client`,
+    `livetracker2.md` §3.6) — a single slow/unreachable BAP must not fail-fast this
+    BPP's callbacks to every *other* BAP it also serves. Keyed by `bap_id`, same
+    stability-across-URL-rotation reasoning as the BAP-side sibling."""
+    client = _bap_clients.get(bap_id)
+    if client is None:
+        client = ResilientHttpClient(
+            timeout_seconds=settings.HTTP_CLIENT_TIMEOUT_MS / 1000,
+            max_retries=settings.HTTP_CLIENT_MAX_RETRIES,
+            circuit_breaker_threshold=settings.HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD,
+            redis_client=redis.Redis.from_url(
+                settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5
+            ),
+            circuit_breaker_key=f"bpp-outbound:{bap_id}",
+        )
+        _bap_clients[bap_id] = client
+    return client
 
 
 def _signed_post(path: str, payload: dict) -> dict:

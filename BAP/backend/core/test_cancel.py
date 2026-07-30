@@ -109,6 +109,20 @@ def _lookup_callback(known_participants):
     return callback
 
 
+def _mock_bpp_registry_lookup(rsps, *, bpp_id="bpp.example.com", url="https://bpp.example.com"):
+    """livetracker4.md §1.1: every direct trigger_cancel call now does a fresh
+    Registry lookup (registry_client.resolve_subscribed_bpp) immediately before
+    dispatch — every trigger test needs this mocked, same as it always needed
+    Gateway mocked before this phase."""
+
+    def callback(request):
+        filters = json.loads(request.body)
+        assert filters["subscriber_id"] == bpp_id
+        return (200, {}, json.dumps([{"subscriber_id": bpp_id, "status": "SUBSCRIBED", "url": url}]))
+
+    rsps.add_callback(responses.POST, "http://registry:8000/lookup", callback=callback)
+
+
 @pytest.mark.django_db
 def test_trigger_cancel_targets_the_same_bpp_from_confirm_and_sends_a_real_signed_order_id(
     bap_identity_settings, client
@@ -116,7 +130,7 @@ def test_trigger_cancel_targets_the_same_bpp_from_confirm_and_sends_a_real_signe
     _session_with_confirmed_order()
     captured_requests = []
 
-    def gateway_cancel_callback(request):
+    def bpp_cancel_callback(request):
         captured_requests.append(request)
         body = json.loads(request.body)
         return (
@@ -126,8 +140,9 @@ def test_trigger_cancel_targets_the_same_bpp_from_confirm_and_sends_a_real_signe
         )
 
     with responses.RequestsMock() as rsps:
+        _mock_bpp_registry_lookup(rsps)
         rsps.add_callback(
-            responses.POST, "http://gateway:8000/cancel", callback=gateway_cancel_callback
+            responses.POST, "https://bpp.example.com/cancel", callback=bpp_cancel_callback
         )
         resp = client.post(
             reverse("cancel-trigger"),
@@ -148,13 +163,14 @@ def test_trigger_cancel_forwards_the_optional_cancellation_reason(bap_identity_s
     _session_with_confirmed_order()
     captured_requests = []
 
-    def gateway_cancel_callback(request):
+    def bpp_cancel_callback(request):
         captured_requests.append(request)
         return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
 
     with responses.RequestsMock() as rsps:
+        _mock_bpp_registry_lookup(rsps)
         rsps.add_callback(
-            responses.POST, "http://gateway:8000/cancel", callback=gateway_cancel_callback
+            responses.POST, "https://bpp.example.com/cancel", callback=bpp_cancel_callback
         )
         client.post(
             reverse("cancel-trigger"),
@@ -247,7 +263,7 @@ def test_cancel_trigger_view_allows_the_owning_customer(bap_identity_settings, c
     _session_with_confirmed_order(customer=owner)
     client.force_login(owner)
 
-    def gateway_cancel_callback(request):
+    def bpp_cancel_callback(request):
         body = json.loads(request.body)
         return (
             200,
@@ -256,8 +272,9 @@ def test_cancel_trigger_view_allows_the_owning_customer(bap_identity_settings, c
         )
 
     with responses.RequestsMock() as rsps:
+        _mock_bpp_registry_lookup(rsps)
         rsps.add_callback(
-            responses.POST, "http://gateway:8000/cancel", callback=gateway_cancel_callback
+            responses.POST, "https://bpp.example.com/cancel", callback=bpp_cancel_callback
         )
         resp = client.post(
             reverse("cancel-trigger"),
@@ -307,7 +324,13 @@ def test_on_cancel_view_acks_when_both_bpp_and_gateway_signatures_are_valid(mock
 
 
 @pytest.mark.django_db
-def test_on_cancel_view_rejects_missing_gateway_authorization(client):
+def test_on_cancel_view_accepts_missing_gateway_authorization_now_that_gateway_is_optional(
+    client,
+):
+    """livetracker4.md §1.2: on_cancel now arrives directly from the BPP with no
+    Gateway hop — a missing X-Gateway-Authorization header must be accepted, not
+    rejected, as long as the BPP's own signature is genuinely valid
+    (require_gateway=False for this action)."""
     bpp_pub, bpp_priv = generate_signing_key_pair()
     payload = _build_on_cancel_payload()
     body = json.dumps(payload).encode()
@@ -329,6 +352,23 @@ def test_on_cancel_view_rejects_missing_gateway_authorization(client):
             content_type="application/json",
             HTTP_AUTHORIZATION=bpp_header,
         )
+
+    assert resp.status_code == 200
+    assert resp.json()["message"]["ack"]["status"] == "ACK"
+
+
+@pytest.mark.django_db
+def test_on_cancel_view_rejects_missing_bpp_authorization_even_without_gateway(client):
+    """NEG: require_gateway=False only makes the Gateway signature optional — the
+    BPP's own signature is still mandatory."""
+    payload = _build_on_cancel_payload()
+    body = json.dumps(payload).encode()
+
+    resp = client.post(
+        reverse("on_cancel"),
+        data=body,
+        content_type="application/json",
+    )
 
     assert resp.status_code == 401
 

@@ -256,6 +256,98 @@ jobs:
           esac
           docker build -t "$tag" -f ${{ matrix.service }}/Dockerfile "$context"
 
+  e2e-golden-path:
+    name: E2E — Customer Golden Path (Playwright)
+    runs-on: ubuntu-latest
+    needs: [build]
+    # livetracker3.md §5.2: closes the audit's own finding that every prior "Live E2E verify"
+    # across livetracker2.md/livetracker3.md was a one-time manual check, never repeated
+    # automatically — this job runs the real Playwright suite (BAP/web/e2e/) against the real
+    # `docker compose` stack on every PR, matching the "not mocked, not simulated" discipline
+    # those manual passes already held themselves to, not a lighter faked-backend substitute.
+    timeout-minutes: 30 # the suite's own real ~9-10 minute wait (see golden-path.spec.ts)
+    # plus build/up/health/seed/teardown overhead, with real margin for a slow CI runner.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build the real docker-compose stack
+        # `docker-compose.e2e.yml` layers two E2E-only things on top of the base file (see its
+        # own header comment for the full why): a short RECONCILIATION_INTERVAL_SECONDS for
+        # bpp-backend only (the real background sweep this suite's own completion-wait depends
+        # on), and the local SUBSCRIBER_ID/SUBSCRIBER_URL identity docker-compose.override.yml
+        # normally supplies on a developer machine — that file is gitignored, so CI has no
+        # other source for it. One `docker compose build` at a time, per RUNBOOK.md's own
+        # documented "don't stack overlapping builds" lesson from this exact repo's history.
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml build
+
+      - name: Start the real stack
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d
+
+      - name: Wait for real health
+        # No docker-compose healthcheck block exists yet for the app containers themselves
+        # (only the Postgres/Redis services have one) — polling each app's own real `/health`
+        # endpoint (RUNBOOK.md's "Where to Look" section) directly is the real readiness gate.
+        run: |
+          for target in \
+            "registry:http://localhost:8000/health" \
+            "beckn-gateway:http://localhost:8003/health" \
+            "bap-backend:http://localhost:8001/health" \
+            "bpp-backend:http://localhost:8002/health" \
+            "bap-web:http://localhost:3000"; do
+            name="${target%%:*}"
+            url="${target#*:}"
+            echo "waiting for $name ($url)..."
+            for i in $(seq 1 60); do
+              if curl -sf "$url" >/dev/null 2>&1; then
+                echo "$name is up."
+                break
+              fi
+              if [ "$i" -eq 60 ]; then
+                echo "$name never became healthy" >&2
+                docker compose -f docker-compose.yml -f docker-compose.e2e.yml logs "$name" || true
+                exit 1
+              fi
+              sleep 3
+            done
+          done
+
+      - name: Install BAP/web dependencies + Playwright browser
+        working-directory: BAP/web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run the real Playwright golden-path suite
+        # global-setup.ts does the real onboarding (docker compose exec .../manage.py
+        # onboarding_approve/onboarding_subscribe) + business/resource/availability seeding via
+        # real HTTP calls against this same stack before the one spec file runs — see that
+        # file's own docstring for the full sequence. `E2E_RECONCILIATION_INTERVAL_SECONDS`
+        # must match docker-compose.e2e.yml's own bpp-backend override above.
+        working-directory: BAP/web
+        env:
+          E2E_BASE_URL: http://localhost:3000
+          BPP_BASE_URL: http://localhost:8002
+          E2E_RECONCILIATION_INTERVAL_SECONDS: "15"
+        run: npm run test:e2e
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: BAP/web/playwright-report/
+          retention-days: 7
+
+      - name: Tear down the stack
+        if: always()
+        # Always runs, pass or fail — `-v` also drops the named volumes (registry/gateway/BAP/
+        # BPP signing-key secrets, DB data) so the next run starts from a genuinely clean state,
+        # not a stale onboarding/session carryover from this run.
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml down -v
+
   container-scan:
     name: Container Image Scan (Trivy)
     runs-on: ubuntu-latest

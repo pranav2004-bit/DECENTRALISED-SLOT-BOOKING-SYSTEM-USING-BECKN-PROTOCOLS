@@ -189,7 +189,15 @@ def test_confirm_view_acks_when_both_bap_and_gateway_signatures_are_valid(
 
 
 @pytest.mark.django_db
-def test_confirm_view_rejects_missing_gateway_authorization(client):
+def test_confirm_view_accepts_missing_gateway_authorization_now_that_gateway_is_optional(
+    client,
+):
+    """livetracker4.md §1.2: /confirm now arrives directly from the BAP with no
+    Gateway hop at all — a missing X-Gateway-Authorization header must be
+    *accepted*, not rejected, as long as the BAP's own signature is genuinely
+    valid (require_gateway=False for this action's trust check). This is the
+    behavior this exact test asserted the opposite of before this phase — the
+    change is deliberate, not a regression."""
     bap_pub, bap_priv = generate_signing_key_pair()
     payload = _build_confirm_payload(booking_id="11111111-1111-1111-1111-111111111111")
     body = json.dumps(payload).encode()
@@ -201,7 +209,10 @@ def test_confirm_view_rejects_missing_gateway_authorization(client):
     )
     known = _known(bap_pub=bap_pub)
 
-    with responses.RequestsMock() as rsps:
+    with (
+        patch("core.confirm_service.dispatch_on_confirm_in_background"),
+        responses.RequestsMock() as rsps,
+    ):
         rsps.add_callback(
             responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(known)
         )
@@ -211,6 +222,24 @@ def test_confirm_view_rejects_missing_gateway_authorization(client):
             content_type="application/json",
             HTTP_AUTHORIZATION=bap_header,
         )
+
+    assert resp.status_code == 200
+    assert resp.json()["message"]["ack"]["status"] == "ACK"
+
+
+@pytest.mark.django_db
+def test_confirm_view_rejects_missing_bap_authorization_even_without_gateway(client):
+    """NEG: require_gateway=False only makes the Gateway signature optional — the
+    BAP's own signature is still mandatory. Proves the two checks are genuinely
+    independent, not that authentication was accidentally dropped entirely."""
+    payload = _build_confirm_payload(booking_id="11111111-1111-1111-1111-111111111111")
+    body = json.dumps(payload).encode()
+
+    resp = client.post(
+        reverse("confirm"),
+        data=body,
+        content_type="application/json",
+    )
 
     assert resp.status_code == 401
 
@@ -267,15 +296,15 @@ def test_dispatch_on_confirm_activates_the_booking_and_returns_a_real_confirmed_
 
     captured_requests = []
 
-    def gateway_on_confirm_callback(request):
+    def bap_on_confirm_callback(request):
         captured_requests.append(request)
         return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
 
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_confirm",
-            callback=gateway_on_confirm_callback,
+            "https://bap.example.com/on_confirm",
+            callback=bap_on_confirm_callback,
         )
         confirm_service.dispatch_on_confirm(payload=payload)
 
@@ -314,15 +343,15 @@ def test_dispatch_on_confirm_rejects_a_booking_held_by_a_different_transaction(
 
     captured_requests = []
 
-    def gateway_on_confirm_callback(request):
+    def bap_on_confirm_callback(request):
         captured_requests.append(request)
         return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
 
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_confirm",
-            callback=gateway_on_confirm_callback,
+            "https://bap.example.com/on_confirm",
+            callback=bap_on_confirm_callback,
         )
         confirm_service.dispatch_on_confirm(payload=payload)
 
@@ -345,15 +374,15 @@ def test_dispatch_on_confirm_rejects_a_released_hold(bpp_identity_settings, bus)
 
     captured_requests = []
 
-    def gateway_on_confirm_callback(request):
+    def bap_on_confirm_callback(request):
         captured_requests.append(request)
         return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
 
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_confirm",
-            callback=gateway_on_confirm_callback,
+            "https://bap.example.com/on_confirm",
+            callback=bap_on_confirm_callback,
         )
         confirm_service.dispatch_on_confirm(payload=payload)
 
@@ -369,15 +398,15 @@ def test_dispatch_on_confirm_rejects_an_unknown_booking_id(bpp_identity_settings
 
     captured_requests = []
 
-    def gateway_on_confirm_callback(request):
+    def bap_on_confirm_callback(request):
         captured_requests.append(request)
         return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
 
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_confirm",
-            callback=gateway_on_confirm_callback,
+            "https://bap.example.com/on_confirm",
+            callback=bap_on_confirm_callback,
         )
         confirm_service.dispatch_on_confirm(payload=payload)
 
@@ -399,15 +428,15 @@ def test_dispatch_on_confirm_retried_is_idempotent_and_fires_the_event_only_once
 
     captured_requests = []
 
-    def gateway_on_confirm_callback(request):
+    def bap_on_confirm_callback(request):
         captured_requests.append(request)
         return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
 
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_confirm",
-            callback=gateway_on_confirm_callback,
+            "https://bap.example.com/on_confirm",
+            callback=bap_on_confirm_callback,
         )
         confirm_service.dispatch_on_confirm(payload=payload)
         confirm_service.dispatch_on_confirm(payload=payload)
@@ -447,7 +476,7 @@ def test_concurrent_confirm_on_the_same_booking_yields_exactly_one_real_transiti
 
     captured_requests = []
 
-    def gateway_on_confirm_callback(request):
+    def bap_on_confirm_callback(request):
         captured_requests.append(request)
         return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
 
@@ -458,8 +487,8 @@ def test_concurrent_confirm_on_the_same_booking_yields_exactly_one_real_transiti
     with responses.RequestsMock(assert_all_requests_are_fired=False) as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_confirm",
-            callback=gateway_on_confirm_callback,
+            "https://bap.example.com/on_confirm",
+            callback=bap_on_confirm_callback,
         )
         with ThreadPoolExecutor(max_workers=2) as executor:
             list(executor.map(lambda _: attempt(), range(2)))

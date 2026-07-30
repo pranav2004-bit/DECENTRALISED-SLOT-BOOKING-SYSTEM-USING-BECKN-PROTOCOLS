@@ -50,6 +50,12 @@ build/
 *.log
 docker-compose.override.yml
 
+# --- Playwright E2E (livetracker3.md §5.2, BAP/web/e2e) ---
+BAP/web/e2e/.seed-data.json
+BAP/web/test-results/
+BAP/web/playwright-report/
+BAP/web/blob-report/
+
 # --- IDE / OS ---
 .vscode/
 .idea/

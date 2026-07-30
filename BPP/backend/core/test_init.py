@@ -178,7 +178,11 @@ def test_init_view_acks_when_both_bap_and_gateway_signatures_are_valid(
 
 
 @pytest.mark.django_db
-def test_init_view_rejects_missing_gateway_authorization(client):
+def test_init_view_accepts_missing_gateway_authorization_now_that_gateway_is_optional(client):
+    """livetracker4.md §1.2: /init now arrives directly from the BAP with no
+    Gateway hop — a missing X-Gateway-Authorization header must be accepted, not
+    rejected, as long as the BAP's own signature is genuinely valid
+    (require_gateway=False for this action)."""
     bap_pub, bap_priv = generate_signing_key_pair()
     payload = _build_init_payload(booking_id="11111111-1111-1111-1111-111111111111")
     body = json.dumps(payload).encode()
@@ -190,7 +194,10 @@ def test_init_view_rejects_missing_gateway_authorization(client):
     )
     known = _known(bap_pub=bap_pub)
 
-    with responses.RequestsMock() as rsps:
+    with (
+        patch("core.init_service.dispatch_on_init_in_background"),
+        responses.RequestsMock() as rsps,
+    ):
         rsps.add_callback(
             responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(known)
         )
@@ -200,6 +207,23 @@ def test_init_view_rejects_missing_gateway_authorization(client):
             content_type="application/json",
             HTTP_AUTHORIZATION=bap_header,
         )
+
+    assert resp.status_code == 200
+    assert resp.json()["message"]["ack"]["status"] == "ACK"
+
+
+@pytest.mark.django_db
+def test_init_view_rejects_missing_bap_authorization_even_without_gateway(client):
+    """NEG: require_gateway=False only makes the Gateway signature optional — the
+    BAP's own signature is still mandatory."""
+    payload = _build_init_payload(booking_id="11111111-1111-1111-1111-111111111111")
+    body = json.dumps(payload).encode()
+
+    resp = client.post(
+        reverse("init"),
+        data=body,
+        content_type="application/json",
+    )
 
     assert resp.status_code == 401
 
@@ -254,13 +278,13 @@ def test_dispatch_on_init_returns_a_real_quotation_for_a_held_booking(bpp_identi
 
     captured_requests = []
 
-    def gateway_on_init_callback(request):
+    def bap_on_init_callback(request):
         captured_requests.append(request)
         return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
 
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
-            responses.POST, "http://gateway:8000/on_init", callback=gateway_on_init_callback
+            responses.POST, "https://bap.example.com/on_init", callback=bap_on_init_callback
         )
         init_service.dispatch_on_init(payload=payload)
 
@@ -300,13 +324,13 @@ def test_dispatch_on_init_rejects_a_booking_held_by_a_different_transaction(bpp_
 
     captured_requests = []
 
-    def gateway_on_init_callback(request):
+    def bap_on_init_callback(request):
         captured_requests.append(request)
         return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
 
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
-            responses.POST, "http://gateway:8000/on_init", callback=gateway_on_init_callback
+            responses.POST, "https://bap.example.com/on_init", callback=bap_on_init_callback
         )
         init_service.dispatch_on_init(payload=payload)
 
@@ -328,13 +352,13 @@ def test_dispatch_on_init_rejects_a_released_hold(bpp_identity_settings):
 
     captured_requests = []
 
-    def gateway_on_init_callback(request):
+    def bap_on_init_callback(request):
         captured_requests.append(request)
         return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
 
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
-            responses.POST, "http://gateway:8000/on_init", callback=gateway_on_init_callback
+            responses.POST, "https://bap.example.com/on_init", callback=bap_on_init_callback
         )
         init_service.dispatch_on_init(payload=payload)
 
@@ -350,13 +374,13 @@ def test_dispatch_on_init_rejects_an_unknown_booking_id(bpp_identity_settings):
 
     captured_requests = []
 
-    def gateway_on_init_callback(request):
+    def bap_on_init_callback(request):
         captured_requests.append(request)
         return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
 
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
-            responses.POST, "http://gateway:8000/on_init", callback=gateway_on_init_callback
+            responses.POST, "https://bap.example.com/on_init", callback=bap_on_init_callback
         )
         init_service.dispatch_on_init(payload=payload)
 

@@ -90,11 +90,15 @@ def validate_and_ack_select(
         )
 
     try:
+        # livetracker4.md §1.2: /select now arrives directly from BAP, no Gateway
+        # hop — require_gateway=False (trust.py's own docstring explains why this
+        # only makes the Gateway signature optional, not weaker when present).
         trust.verify_bap_and_gateway(
             context=context,
             authorization_header=authorization_header,
             gateway_authorization_header=gateway_authorization_header,
             body=body,
+            require_gateway=False,
         )
     except trust.TrustEstablishmentError as exc:
         return (
@@ -320,17 +324,21 @@ def dispatch_on_select(*, payload: dict) -> None:
         signing_private_key_b64=signing_priv,
     )
 
-    gateway_on_select_url = settings.GATEWAY_BASE_URL.rstrip("/") + "/on_select"
+    # livetracker4.md §1.2: sent directly to the calling BAP's own subscriber_url
+    # (already known from the request's own context) instead of Gateway's relay —
+    # /select is one of the 9 post-search actions the real protocol never routes
+    # through Gateway once discovery has happened.
+    bap_on_select_url = context["bap_uri"].rstrip("/") + "/on_select"
     try:
-        response = registry_client.get_gateway_client().post(
-            gateway_on_select_url,
+        response = registry_client.get_bap_client(context["bap_id"]).post(
+            bap_on_select_url,
             data=body,
             headers={"Content-Type": "application/json", "Authorization": auth_header},
         )
         response.raise_for_status()
     except Exception:
         logger.exception(
-            "dispatch_on_select: sending on_select to %s failed", gateway_on_select_url
+            "dispatch_on_select: sending on_select to %s failed", bap_on_select_url
         )
 
 

@@ -178,6 +178,57 @@ def test_support_view_acks_when_both_bap_and_gateway_signatures_are_valid(
 
 
 @pytest.mark.django_db
+def test_support_view_accepts_missing_gateway_authorization_now_that_gateway_is_optional(client):
+    """livetracker4.md §1.2: /support now arrives directly from the BAP with no
+    Gateway hop — a missing X-Gateway-Authorization header must be accepted, not
+    rejected, as long as the BAP's own signature is genuinely valid
+    (require_gateway=False for this action)."""
+    bap_pub, bap_priv = generate_signing_key_pair()
+    payload = _build_support_payload(ref_id="11111111-1111-1111-1111-111111111111")
+    body = json.dumps(payload).encode()
+    bap_header = sign_outbound_request(
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
+    )
+    known = _known(bap_pub=bap_pub)
+
+    with (
+        patch("core.support_service.dispatch_on_support_in_background"),
+        responses.RequestsMock() as rsps,
+    ):
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(known)
+        )
+        resp = client.post(
+            reverse("support"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=bap_header,
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["message"]["ack"]["status"] == "ACK"
+
+
+@pytest.mark.django_db
+def test_support_view_rejects_missing_bap_authorization_even_without_gateway(client):
+    """NEG: require_gateway=False only makes the Gateway signature optional — the
+    BAP's own signature is still mandatory."""
+    payload = _build_support_payload(ref_id="11111111-1111-1111-1111-111111111111")
+    body = json.dumps(payload).encode()
+
+    resp = client.post(
+        reverse("support"),
+        data=body,
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.django_db
 def test_support_view_rejects_a_missing_ref_id_before_acking(client):
     bap_pub, bap_priv = generate_signing_key_pair()
     gateway_pub, gateway_priv = generate_signing_key_pair()
@@ -222,15 +273,15 @@ def test_dispatch_on_support_returns_the_owning_businesss_email_contact(bpp_iden
 
     captured_requests = []
 
-    def gateway_on_support_callback(request):
+    def bap_on_support_callback(request):
         captured_requests.append(request)
         return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
 
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_support",
-            callback=gateway_on_support_callback,
+            "https://bap.example.com/on_support",
+            callback=bap_on_support_callback,
         )
         support_service.dispatch_on_support(payload=payload)
 
@@ -254,7 +305,7 @@ def test_dispatch_on_support_returns_the_owning_businesss_phone_contact(bpp_iden
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_support",
+            "https://bap.example.com/on_support",
             callback=lambda r: (captured_requests.append(r), (200, {}, json.dumps({})))[1],
         )
         support_service.dispatch_on_support(payload=payload)
@@ -276,7 +327,7 @@ def test_dispatch_on_support_rejects_a_booking_held_by_a_different_transaction(
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_support",
+            "https://bap.example.com/on_support",
             callback=lambda r: (captured_requests.append(r), (200, {}, json.dumps({})))[1],
         )
         support_service.dispatch_on_support(payload=payload)

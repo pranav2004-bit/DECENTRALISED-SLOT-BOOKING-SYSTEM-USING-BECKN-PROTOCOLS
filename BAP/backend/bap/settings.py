@@ -197,6 +197,20 @@ OBSERVABILITY_READINESS_CHECKS = [
 # §3.10: real search-to-confirm funnel counters, Redis-backed — see core/metrics.py.
 EXTRA_METRICS_PROVIDERS = ["core.metrics.render_metrics"]
 
+# livetracker3.md §4.1: real transactional email — a local, file-based dev backend is
+# an honest, correct MVP-scale default (Django's own django.core.mail, zero extra
+# dependencies), not a fabricated integration against a real provider account that
+# doesn't exist. A real SES/SendGrid swap is a later, genuine decision once one does
+# (matches this project's own "no invented infra ahead of real need" discipline,
+# already applied to the event bus/task-queue decisions in both prior trackers).
+# Django's own test runner swaps this to `locmem` automatically during tests
+# (`django.core.mail.outbox`) — no override needed here for that.
+EMAIL_BACKEND = env(
+    "EMAIL_BACKEND", default="django.core.mail.backends.filebased.EmailBackend"
+)
+EMAIL_FILE_PATH = env("EMAIL_FILE_PATH", default=str(BASE_DIR / "data" / "sent_emails"))
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="noreply@bap-backend.local")
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

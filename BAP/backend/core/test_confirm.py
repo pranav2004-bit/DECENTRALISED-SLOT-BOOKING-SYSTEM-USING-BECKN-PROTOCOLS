@@ -543,3 +543,39 @@ def test_record_on_confirm_result_drops_a_callback_for_an_unknown_transaction():
     payload["context"]["transaction_id"] = "unknown-txn"
     # must not raise:
     confirm_service.record_on_confirm_result(payload=payload)
+
+
+@pytest.mark.django_db
+@patch("core.confirm_service.notify_booking_confirmed_in_background")
+def test_record_on_confirm_result_triggers_a_real_confirmation_email(mock_notify):
+    """livetracker3.md §4.1 — a real confirm produces a real notification
+    trigger with the real session and the real confirmed order, backgrounded
+    (mocked here, matching this codebase's own established pattern for
+    verifying a `_in_background` call without racing the real thread)."""
+    owner = Customer.objects.create_user(
+        contact="owner@example.com", name="Owner", password=TEST_PASSWORD
+    )
+    _session_with_init(customer=owner)
+    payload = _build_on_confirm_payload()
+
+    confirm_service.record_on_confirm_result(payload=payload)
+
+    mock_notify.assert_called_once()
+    _, kwargs = mock_notify.call_args
+    assert kwargs["session"].transaction_id == "txn-1"
+    assert kwargs["order"]["status"] == "ACTIVE"
+
+
+@pytest.mark.django_db
+@patch("core.confirm_service.notify_booking_confirmed_in_background")
+def test_record_on_confirm_result_does_not_email_on_a_real_error(mock_notify):
+    """A rejected confirm (e.g. SLOT_UNAVAILABLE) never fired — there is no
+    real booking to notify anyone about."""
+    _session_with_init()
+    payload = _build_on_confirm_payload(
+        error={"code": "SLOT_UNAVAILABLE", "message": "No matching booking for this order"}
+    )
+
+    confirm_service.record_on_confirm_result(payload=payload)
+
+    mock_notify.assert_not_called()

@@ -27,6 +27,7 @@ from . import registry_client, trust
 from .crypto import sign_outbound_request
 from .metrics import record_confirm_succeeded
 from .models import SearchSession
+from .notifications import notify_booking_confirmed_in_background
 from .participant_keys import get_signing_keys
 from .session_authz import SessionAccessError, resolve_owned_session
 
@@ -198,3 +199,9 @@ def record_on_confirm_result(*, payload: dict) -> None:
         session.confirmed_error = None
         record_confirm_succeeded()
     session.save(update_fields=["confirmed_order", "confirmed_error", "updated_at"])
+
+    # livetracker3.md §4.1: fired after the real save above, only on genuine
+    # success — a mail-send failure (backgrounded, logged, never raised) must
+    # never affect this already-completed booking action.
+    if error is None:
+        notify_booking_confirmed_in_background(session=session, order=session.confirmed_order)

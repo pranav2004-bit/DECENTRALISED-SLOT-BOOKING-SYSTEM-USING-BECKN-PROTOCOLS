@@ -13,9 +13,16 @@ import responses
 from django.test import Client
 from django.urls import reverse
 
+from django.contrib.auth import get_user_model
+
 from core import update_service
 from core.crypto import generate_signing_key_pair, sign_outbound_request
 from core.models import SearchSession
+
+Customer = get_user_model()
+
+# Test fixture value, not a real credential.
+TEST_PASSWORD = "a-strong-passw0rd!"  # pragma: allowlist secret
 
 
 @pytest.fixture
@@ -304,3 +311,38 @@ def test_record_on_update_result_drops_a_callback_for_an_unknown_transaction():
     payload["context"]["transaction_id"] = "unknown-txn"
     # must not raise:
     update_service.record_on_update_result(payload=payload)
+
+
+@pytest.mark.django_db
+@patch("core.update_service.notify_booking_rescheduled_in_background")
+def test_record_on_update_result_triggers_a_real_reschedule_email(mock_notify):
+    """livetracker3.md §4.1 — a real reschedule produces a real notification
+    trigger, backgrounded (mocked here, matching this codebase's own
+    established pattern for verifying a `_in_background` call)."""
+    owner = Customer.objects.create_user(
+        contact="owner@example.com", name="Owner", password=TEST_PASSWORD
+    )
+    session = _session_with_confirmed_order()
+    session.customer = owner
+    session.save()
+    payload = _build_on_update_payload()
+
+    update_service.record_on_update_result(payload=payload)
+
+    mock_notify.assert_called_once()
+    _, kwargs = mock_notify.call_args
+    assert kwargs["session"].transaction_id == "txn-1"
+    assert kwargs["order"]["id"] == "booking-1"
+
+
+@pytest.mark.django_db
+@patch("core.update_service.notify_booking_rescheduled_in_background")
+def test_record_on_update_result_does_not_email_on_a_real_error(mock_notify):
+    _session_with_confirmed_order()
+    payload = _build_on_update_payload(
+        error={"code": "SLOT_UNAVAILABLE", "message": "The requested slot is no longer available"}
+    )
+
+    update_service.record_on_update_result(payload=payload)
+
+    mock_notify.assert_not_called()

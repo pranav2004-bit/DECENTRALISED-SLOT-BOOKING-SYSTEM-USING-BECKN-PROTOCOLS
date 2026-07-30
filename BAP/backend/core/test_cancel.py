@@ -368,3 +368,71 @@ def test_record_on_cancel_result_drops_a_callback_for_an_unknown_transaction():
     payload["context"]["transaction_id"] = "unknown-txn"
     # must not raise:
     cancel_service.record_on_cancel_result(payload=payload)
+
+
+@pytest.mark.django_db
+@patch("core.cancel_service.notify_booking_cancelled_in_background")
+def test_record_on_cancel_result_triggers_a_real_cancellation_email_with_real_details(
+    mock_notify,
+):
+    """livetracker3.md §4.1 — a real cancel produces a real notification
+    trigger, backgrounded (mocked here, matching this codebase's own
+    established pattern for verifying a `_in_background` call).
+
+    Real gap found and fixed via this tracker's own re-verification pass: the
+    real `/on_cancel` order (confirmed by reading `BPP/backend/core/
+    cancel_service.py` directly) never carries `quote`/`breakup`, and its
+    `fulfillments[]` carry only an `id`, no `stops` — so the notification must
+    use `session.confirmed_order` (the original, richer order from booking
+    time, matching this project's own real `/on_confirm` payload shape) for
+    the email's real details, not the sparse `cancelled_order` the wire
+    payload below deliberately mimics."""
+    owner = Customer.objects.create_user(
+        contact="owner@example.com", name="Owner", password=TEST_PASSWORD
+    )
+    session = _session_with_confirmed_order(customer=owner)
+    session.confirmed_order = {
+        "id": "booking-1",
+        "status": "ACTIVE",
+        "provider": {"id": "biz-1"},
+        "items": [{"id": "item-1"}],
+        "quote": {
+            "price": {"currency": "INR", "value": "500.00"},
+            "breakup": [
+                {"item": {"id": "item-1"}, "title": "Stylist A",
+                 "price": {"currency": "INR", "value": "500.00"}}
+            ],
+        },
+        "fulfillments": [
+            {"id": "booking-1", "stops": [{"type": "start", "time": {"timestamp": "2026-08-01T10:00:00+00:00"}}]}
+        ],
+    }
+    session.save()
+    # The real, sparse /on_cancel shape — no quote, fulfillments carry only an id.
+    payload = _build_on_cancel_payload()
+    assert "quote" not in payload["message"]["order"]
+
+    cancel_service.record_on_cancel_result(payload=payload)
+
+    mock_notify.assert_called_once()
+    _, kwargs = mock_notify.call_args
+    assert kwargs["session"].transaction_id == "txn-1"
+    # The real item name/time come from the richer confirmed_order, not the
+    # sparse cancelled_order the wire callback actually carried.
+    assert kwargs["order"]["quote"]["breakup"][0]["title"] == "Stylist A"
+    assert kwargs["order"]["fulfillments"][0]["stops"][0]["time"]["timestamp"] == (
+        "2026-08-01T10:00:00+00:00"
+    )
+
+
+@pytest.mark.django_db
+@patch("core.cancel_service.notify_booking_cancelled_in_background")
+def test_record_on_cancel_result_does_not_email_on_a_real_error(mock_notify):
+    _session_with_confirmed_order()
+    payload = _build_on_cancel_payload(
+        error={"code": "SLOT_UNAVAILABLE", "message": "No matching booking for this order"}
+    )
+
+    cancel_service.record_on_cancel_result(payload=payload)
+
+    mock_notify.assert_not_called()

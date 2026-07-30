@@ -28,6 +28,7 @@ from django_observability.context import correlation_id_var
 from . import registry_client, trust
 from .crypto import sign_outbound_request
 from .models import SearchSession
+from .notifications import notify_booking_cancelled_in_background
 from .participant_keys import get_signing_keys
 from .session_authz import SessionAccessError, resolve_owned_session
 
@@ -190,3 +191,21 @@ def record_on_cancel_result(*, payload: dict) -> None:
         session.cancelled_order = payload["message"]["order"]
         session.cancelled_error = None
     session.save(update_fields=["cancelled_order", "cancelled_error", "updated_at"])
+
+    # livetracker3.md §4.1: same discipline as record_on_confirm_result — only
+    # on genuine success, backgrounded so a mail-send failure never affects
+    # this already-completed cancellation.
+    #
+    # Real gap found and fixed via this tracker's own re-verification pass, before
+    # this closed: the real /on_cancel order (`cancel_service.py` on BPP's own side)
+    # never carries `quote`/`breakup` and its `fulfillments[]` entries carry only an
+    # `id`, no `stops` — confirmed by direct inspection, not assumed. Emailing off
+    # `session.cancelled_order` would have produced a real "Time: None" and a
+    # generic "your service" in every real cancellation email — technically no
+    # crash, but not "correct booking details" either. `session.confirmed_order`
+    # (the original, richer order from booking time — never cleared by
+    # cancellation, only ever set/cleared by confirm's own success/error branch)
+    # already has the real item name and real original time; the booking `id` is
+    # the same value either way.
+    if error is None:
+        notify_booking_cancelled_in_background(session=session, order=session.confirmed_order)

@@ -42,6 +42,14 @@ Frontend apps (BAP/web, BPP/web) expose the same `/health` (liveness only — no
 
 **Business metrics (livetracker2.md §3.10):** BAP exposes `bap_booking_funnel_total{stage=...}` (search-to-confirm conversion funnel) and BPP exposes `bpp_booking_lifecycle_total{event=...}` (confirmed/cancelled/hold-created/hold-expired) — real, Redis-backed counters (`core/metrics.py` in each app), not the in-process pattern Registry's own `core/metrics.py` uses. See `RUNBOOK.md`'s "Beauty Booking Business Metrics & Alerting Thresholds" table for the full metric list and suggested alert thresholds.
 
+## Notification Delivery (livetracker3.md §4.1)
+
+Real transactional email — booking confirmed/cancelled/rescheduled — is fired from BAP's own `record_on_confirm_result`/`record_on_cancel_result`/`record_on_update_result` (`BAP/backend/core/notifications.py`), backgrounded on a daemon thread so a slow/unreachable mail backend never delays the real wire-callback response or fails the underlying booking action.
+
+**Delivery visibility, honestly scoped to what's actually built:** a send failure is logged (`logger.exception("notifications: failed to send %r to %r", ...)`, `bap` logger, structured per this doc's own JSON shape) but there is no dedicated success/failure counter yet — at this project's current traffic (dev/test sessions, not real concurrent users), `grep`-ing `bap` logs for `notifications:` entries is sufficient to answer "did this send," the same reasoning already applied to deferring Distributed Tracing below. A real `bap_notification_total{channel="email",outcome="sent"|"failed"}` counter (matching the existing `bap_booking_funnel_total` pattern in `core/metrics.py`) is a natural, low-effort addition once real send volume exists to make a dashboard worth building — not fabricated now.
+
+`EMAIL_BACKEND` defaults to Django's own file-based backend (`BAP/backend/data/sent_emails/`) — every real send is a genuinely inspectable file, the most direct dev-time delivery visibility available without inventing a metrics dashboard for a `[BETA]`-tagged, still-single-tester-volume feature.
+
 ## Distributed Tracing
 
 `[MVP]`/`[PILOT]`: correlation-ID-based log correlation (above) is sufficient — searching logs by `correlation_id` across services reconstructs a request's path.

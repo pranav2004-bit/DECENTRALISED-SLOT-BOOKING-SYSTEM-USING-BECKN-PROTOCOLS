@@ -29,6 +29,7 @@ COPY registry/ ./registry/
 # rather than being covered by the `chown -R app:app /app` below.
 RUN mkdir -p /run/secrets && chown -R app:app /run/secrets
 RUN chown -R app:app /app
+RUN chmod +x /app/registry/entrypoint.sh
 USER app
 WORKDIR /app/registry
 
@@ -36,4 +37,7 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()" || exit 1
 
+# Real gap found live (2026-07-31): nothing ever ran `manage.py migrate` against a
+# genuinely fresh database — see entrypoint.sh's own comment for the full story.
+ENTRYPOINT ["./entrypoint.sh"]
 CMD ["gunicorn", "registry.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2"]

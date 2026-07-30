@@ -31,7 +31,9 @@
         "items": {
           "type": "array",
           "items": { "$ref": "#/definitions/item" }
-        }
+        },
+        "rating": { "type": "string" },
+        "rating_count": { "type": "integer" }
       }
     },
     "item": {
@@ -45,7 +47,9 @@
           "items": { "type": "string" }
         },
         "rateable": { "type": "boolean" },
-        "price": { "$ref": "#/definitions/price" }
+        "price": { "$ref": "#/definitions/price" },
+        "rating": { "type": "string" },
+        "rating_count": { "type": "integer" }
       }
     },
     "price": {

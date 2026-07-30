@@ -283,3 +283,45 @@ def test_dispatch_on_support_rejects_a_booking_held_by_a_different_transaction(
 
     forwarded = json.loads(captured_requests[0].body)
     assert forwarded["error"]["code"] == "SLOT_UNAVAILABLE"
+
+
+@pytest.mark.django_db
+def test_support_view_is_rate_limited(client):
+    """livetracker3.md §2.1 bullet 4: the same real, live gap and fix as
+    `rating_view` — BPP's own /support endpoint had no rate limiting at all."""
+    from django.core.cache import cache
+
+    cache.clear()
+    bap_pub, bap_priv = generate_signing_key_pair()
+    gateway_pub, gateway_priv = generate_signing_key_pair()
+    payload = _build_support_payload(ref_id="11111111-1111-1111-1111-111111111111")
+    body = json.dumps(payload).encode()
+    bap_header = sign_outbound_request(
+        body=body, subscriber_id="bap.example.com", unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
+    )
+    gateway_header = sign_outbound_request(
+        body=body, subscriber_id="gateway.local", unique_key_id="key-1",
+        signing_private_key_b64=gateway_priv,
+    )
+    known = _known(bap_pub=bap_pub, gateway_pub=gateway_pub)
+
+    with (
+        patch("core.support_service.dispatch_on_support_in_background"),
+        responses.RequestsMock() as rsps,
+    ):
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(known)
+        )
+        for _ in range(30):
+            resp = client.post(
+                reverse("support"), data=body, content_type="application/json",
+                HTTP_AUTHORIZATION=bap_header, HTTP_X_GATEWAY_AUTHORIZATION=gateway_header,
+            )
+            assert resp.status_code == 200
+        resp = client.post(
+            reverse("support"), data=body, content_type="application/json",
+            HTTP_AUTHORIZATION=bap_header, HTTP_X_GATEWAY_AUTHORIZATION=gateway_header,
+        )
+    assert resp.status_code == 429
+    cache.clear()

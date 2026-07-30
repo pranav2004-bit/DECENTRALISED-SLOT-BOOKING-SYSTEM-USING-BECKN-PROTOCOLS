@@ -73,6 +73,31 @@ describe('SearchPage', () => {
     expect(link.getAttribute('href')).toContain('transaction_id=tx-1');
   });
 
+  it('shows a rated item\'s real average rating and count, and omits it for an unrated item', async () => {
+    const user = userEvent.setup({ delay: null });
+    const result = catalogResult();
+    result.results[0].catalog.providers[0].items[0].rating = '4.33';
+    result.results[0].catalog.providers[0].items[0].rating_count = 3;
+    result.results[0].catalog.providers[0].items.push({
+      id: 'item-2',
+      descriptor: { name: 'Beard Trim' },
+      price: { currency: 'INR', value: '200.00' },
+    });
+    vi.spyOn(bookingApi, 'triggerSearch').mockResolvedValue('tx-1');
+    vi.spyOn(bookingApi, 'getSearchResults').mockResolvedValue(result);
+    render(<SearchPage />);
+
+    await user.type(screen.getByLabelText('What are you looking for?'), 'haircut');
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() => expect(screen.getByText('Haircut')).toBeInTheDocument());
+    expect(screen.getByText('★ 4.33')).toBeInTheDocument();
+    expect(screen.getByText('(3 ratings)')).toBeInTheDocument();
+
+    const beardTrimItem = screen.getByText('Beard Trim').closest('li');
+    expect(beardTrimItem?.textContent).not.toContain('★');
+  });
+
   it('shows an empty state once polling exhausts its attempts with no results', async () => {
     const user = userEvent.setup({ delay: null });
     vi.spyOn(bookingApi, 'triggerSearch').mockResolvedValue('tx-empty');

@@ -21,12 +21,18 @@ export interface CatalogItem {
   id: string;
   descriptor: ItemDescriptor;
   price: Price;
+  /** livetracker3.md §2.2 — only present once a real aggregate-eligible rating exists. */
+  rating?: string;
+  rating_count?: number;
 }
 
 export interface Provider {
   id: string;
   descriptor: { name: string };
   items: CatalogItem[];
+  /** livetracker3.md §2.2 — a rating_count-weighted rollup across this provider's own rated items. */
+  rating?: string;
+  rating_count?: number;
 }
 
 export interface CatalogResult {

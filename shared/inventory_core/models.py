@@ -59,6 +59,15 @@ class Resource(models.Model):
     # per domain.
     domain_data = models.JSONField(default=dict, blank=True)
 
+    # livetracker3.md §2.1: the real rating aggregate, updated incrementally on write (not a
+    # periodic sweep — rating submission volume is nowhere near a real scale problem, per that
+    # section's own recorded decision). `null` (not `0.00`) means "no aggregate-eligible rating
+    # yet" — an honest absence, not a fabricated score. Only ratings that FK-link to a `Booking`
+    # this project's own IDOR check already verifies the caller owns ever move these two fields;
+    # see `rating_service.py::dispatch_on_rating`.
+    average_rating = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
+    rating_count = models.PositiveIntegerField(default=0)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -365,6 +374,22 @@ class Rating(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [
+            # livetracker3.md §2.1: one rating per (booking, rating_category) from its true
+            # owning transaction — a second real /rating call against the same already-rated
+            # booking updates this row in place (rating_service.py), never creates a second
+            # row or double-counts in the aggregate, even under a race between two
+            # near-simultaneous submissions. Scoped to `booking__isnull=False` deliberately:
+            # unlinked submissions (IDOR-mismatched or unresolvable entity_id) share no real
+            # identity to dedupe against and must remain independently storable — Postgres's
+            # own NULL semantics already allow this without the explicit condition, but it's
+            # recorded here rather than left for a reader to infer.
+            models.UniqueConstraint(
+                fields=["booking", "rating_category"],
+                condition=models.Q(booking__isnull=False),
+                name="unique_rating_per_booking_category",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"Rating({self.booking_id_text}, {self.rating_category}, {self.value})"

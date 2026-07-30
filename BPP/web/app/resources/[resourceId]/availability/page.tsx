@@ -6,7 +6,7 @@ import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { FormField } from '@/components/ui/FormField';
 import { login, me, type BusinessAccount } from '@/lib/auth-api';
-import { getSlots, blockSlots, type SlotInfo } from '@/lib/availability-api';
+import { getSlots, blockSlots, type SlotInfo, type ResourceInfo } from '@/lib/availability-api';
 import { ApiError } from '@/lib/api-client';
 import { useRealtimeConnection } from '@/lib/realtime/useRealtimeConnection';
 
@@ -99,19 +99,24 @@ function LoginForm({ onLoggedIn }: { onLoggedIn: (account: BusinessAccount) => v
 }
 
 function AvailabilityDashboard({ resourceId }: { resourceId: string }) {
+  const [resource, setResource] = useState<ResourceInfo | null>(null);
   const [slots, setSlots] = useState<SlotInfo[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [blockingId, setBlockingId] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
 
-  const applySlotsResult = useCallback((result: SlotInfo[] | null, err: unknown) => {
-    if (result !== null) {
-      setSlots(result);
-      setLoadError(null);
-    } else {
-      setLoadError(err instanceof ApiError ? err.message : 'Could not load this resource');
-    }
-  }, []);
+  const applySlotsResult = useCallback(
+    (result: { resource: ResourceInfo; slots: SlotInfo[] } | null, err: unknown) => {
+      if (result !== null) {
+        setResource(result.resource);
+        setSlots(result.slots);
+        setLoadError(null);
+      } else {
+        setLoadError(err instanceof ApiError ? err.message : 'Could not load this resource');
+      }
+    },
+    []
+  );
 
   // React's own recommended shape for a data-fetching effect (react.dev/learn/you-
   // might-not-need-an-effect's "Fetching data" example): the state-setting calls live
@@ -186,7 +191,22 @@ function AvailabilityDashboard({ resourceId }: { resourceId: string }) {
   return (
     <div className="mx-auto w-full max-w-2xl px-4 py-8">
       <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-neutral-900">Availability</h1>
+        <div>
+          <h1 className="text-lg font-semibold text-neutral-900">Availability</h1>
+          {resource && (
+            <p className="text-sm text-neutral-600">
+              {resource.average_rating ? (
+                <>
+                  <span className="text-amber-600">★ {resource.average_rating}</span>
+                  {' '}
+                  ({resource.rating_count} {resource.rating_count === 1 ? 'rating' : 'ratings'})
+                </>
+              ) : (
+                'No ratings yet'
+              )}
+            </p>
+          )}
+        </div>
         <span className="flex items-center gap-2 text-xs text-neutral-600">
           <span
             className={`h-2 w-2 rounded-full ${status === 'open' ? 'bg-green-500' : 'bg-neutral-400'}`}

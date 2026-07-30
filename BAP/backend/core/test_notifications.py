@@ -81,7 +81,10 @@ def test_notify_booking_rescheduled_sends_a_real_email_with_correct_details():
         "id": "booking-1",
         "status": "ACTIVE",
         "fulfillments": [
-            {"id": "booking-1", "stops": [{"type": "start", "time": {"timestamp": "2026-08-06T14:00:00+00:00"}}]}
+            {
+                "id": "booking-1",
+                "stops": [{"type": "start", "time": {"timestamp": "2026-08-06T14:00:00+00:00"}}],
+            }
         ],
     }
     assert "quote" not in sparse_updated_order

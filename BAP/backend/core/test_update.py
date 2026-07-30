@@ -10,10 +10,9 @@ from unittest.mock import patch
 
 import pytest
 import responses
+from django.contrib.auth import get_user_model
 from django.test import Client
 from django.urls import reverse
-
-from django.contrib.auth import get_user_model
 
 from core import update_service
 from core.crypto import generate_signing_key_pair, sign_outbound_request

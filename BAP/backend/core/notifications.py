@@ -139,7 +139,9 @@ def notify_booking_rescheduled(*, session, order: dict) -> None:
             f"Booking reference: {_order_id(order)}"
         )
     except Exception:
-        logger.exception("notifications: failed to build rescheduled-booking email for %r", recipient)
+        logger.exception(
+            "notifications: failed to build rescheduled-booking email for %r", recipient
+        )
         return
     _send(subject=subject, message=message, recipient=recipient)
 

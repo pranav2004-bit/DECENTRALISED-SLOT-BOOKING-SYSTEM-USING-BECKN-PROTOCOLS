@@ -404,7 +404,10 @@ def test_record_on_cancel_result_triggers_a_real_cancellation_email_with_real_de
             ],
         },
         "fulfillments": [
-            {"id": "booking-1", "stops": [{"type": "start", "time": {"timestamp": "2026-08-01T10:00:00+00:00"}}]}
+            {
+                "id": "booking-1",
+                "stops": [{"type": "start", "time": {"timestamp": "2026-08-01T10:00:00+00:00"}}],
+            }
         ],
     }
     session.save()

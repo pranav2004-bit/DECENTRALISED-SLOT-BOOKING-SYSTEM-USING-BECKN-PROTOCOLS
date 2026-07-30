@@ -44,6 +44,20 @@ const SLOTS: availabilityApi.SlotInfo[] = [
   },
 ];
 
+const RESOURCE: availabilityApi.ResourceInfo = {
+  id: 'resource-1',
+  name: 'Stylist A',
+  average_rating: null,
+  rating_count: 0,
+};
+
+const RATED_RESOURCE: availabilityApi.ResourceInfo = {
+  id: 'resource-1',
+  name: 'Stylist A',
+  average_rating: '4.33',
+  rating_count: 3,
+};
+
 describe('ResourceAvailabilityPage', () => {
   let capturedOnMessage: ((message: unknown) => void) | undefined;
 
@@ -71,7 +85,7 @@ describe('ResourceAvailabilityPage', () => {
   it('logs in and then shows the resource slot list', async () => {
     vi.spyOn(authApi, 'me').mockResolvedValue(null);
     vi.spyOn(authApi, 'login').mockResolvedValue(OWNER);
-    vi.spyOn(availabilityApi, 'getSlots').mockResolvedValue(SLOTS);
+    vi.spyOn(availabilityApi, 'getSlots').mockResolvedValue({ resource: RESOURCE, slots: SLOTS });
     render(<ResourceAvailabilityPage />);
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Business login' })).toBeInTheDocument());
@@ -84,9 +98,27 @@ describe('ResourceAvailabilityPage', () => {
     expect(screen.getByText('Held')).toBeInTheDocument();
   });
 
+  it('shows "No ratings yet" for an unrated resource, and the real average for a rated one', async () => {
+    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
+    vi.spyOn(availabilityApi, 'getSlots').mockResolvedValue({ resource: RESOURCE, slots: SLOTS });
+    const { unmount } = render(<ResourceAvailabilityPage />);
+
+    await waitFor(() => expect(screen.getByText('No ratings yet')).toBeInTheDocument());
+    unmount();
+
+    vi.spyOn(availabilityApi, 'getSlots').mockResolvedValue({
+      resource: RATED_RESOURCE,
+      slots: SLOTS,
+    });
+    render(<ResourceAvailabilityPage />);
+
+    await waitFor(() => expect(screen.getByText('★ 4.33')).toBeInTheDocument());
+    expect(screen.getByText('(3 ratings)')).toBeInTheDocument();
+  });
+
   it('already-logged-in: lists slots and patches a slot live on a slot.update message', async () => {
     vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
-    vi.spyOn(availabilityApi, 'getSlots').mockResolvedValue(SLOTS);
+    vi.spyOn(availabilityApi, 'getSlots').mockResolvedValue({ resource: RESOURCE, slots: SLOTS });
     render(<ResourceAvailabilityPage />);
 
     await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument());
@@ -106,7 +138,7 @@ describe('ResourceAvailabilityPage', () => {
 
   it('blocks a slot over the socket when open, without calling the REST endpoint', async () => {
     vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
-    vi.spyOn(availabilityApi, 'getSlots').mockResolvedValue(SLOTS);
+    vi.spyOn(availabilityApi, 'getSlots').mockResolvedValue({ resource: RESOURCE, slots: SLOTS });
     const blockSlotsSpy = vi.spyOn(availabilityApi, 'blockSlots');
     const send = vi.fn(() => true);
     mockUseRealtimeConnection.mockImplementation((_path: string, onMessage?: (m: unknown) => void) => {
@@ -124,7 +156,7 @@ describe('ResourceAvailabilityPage', () => {
 
   it('falls back to the REST endpoint when the socket is not open', async () => {
     vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
-    vi.spyOn(availabilityApi, 'getSlots').mockResolvedValue(SLOTS);
+    vi.spyOn(availabilityApi, 'getSlots').mockResolvedValue({ resource: RESOURCE, slots: SLOTS });
     vi.spyOn(availabilityApi, 'blockSlots').mockResolvedValue({ blocked: ['slot-1'], skipped: [] });
     mockUseRealtimeConnection.mockImplementation((_path: string, onMessage?: (m: unknown) => void) => {
       capturedOnMessage = onMessage;

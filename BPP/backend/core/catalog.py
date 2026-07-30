@@ -49,8 +49,21 @@ def visible_resources(domain_code: str):
 def _resource_to_item(resource: Resource) -> dict:
     """A real `Item` (confirmed shape, protocol_compliance_notes_v1.1.md §F) built from a
     `Resource` — `descriptor` fields map directly since `Resource`'s own descriptive fields
-    were already grounded in the same real `Descriptor.yaml` shape in Phase 1.1."""
-    return {
+    were already grounded in the same real `Descriptor.yaml` shape in Phase 1.1.
+
+    livetracker3.md §2.2: `rating` is only included once a real aggregate-eligible rating
+    exists (`resource.average_rating is not None`) — an honestly absent field, matching
+    `build_catalog()`'s own established "a real schema field left out is honest; a guessed
+    one wouldn't be" precedent for `fulfillments`/`payments`/`offers`, rather than a
+    fabricated `0`/`"0"`. The real confirmed schema shape for `Item.rating` is the single
+    scalar `Rating.yaml#/properties/value` (protocol_compliance_notes_v1.1.md §O/§F) — a
+    string, so `average_rating` is serialized as one here. `rating_count` alongside it is
+    this project's own additive, non-protocol field (same "project-defined, not
+    protocol-confirmed" territory already established elsewhere in this file), needed
+    because the real schema's single scalar can't distinguish "5.0 from one rating" from
+    "5.0 from a hundred."
+    """
+    item = {
         "id": str(resource.id),
         "descriptor": {
             "name": resource.name,
@@ -65,6 +78,10 @@ def _resource_to_item(resource: Resource) -> dict:
             "value": str(resource.price_value),
         },
     }
+    if resource.average_rating is not None:
+        item["rating"] = str(resource.average_rating)
+        item["rating_count"] = resource.rating_count
+    return item
 
 
 def _business_to_provider(business: BusinessAccount) -> dict:
@@ -72,17 +89,31 @@ def _business_to_provider(business: BusinessAccount) -> dict:
     currently-visible `Resource`s. Only ever built for `ACTIVE` businesses with at least
     one `Resource` — an inactive or empty business simply isn't represented, the same
     "stops appearing" behavior as §2.2's `visible_resources()`, expressed at the Provider
-    level here instead of a flat Resource list."""
-    items = [
-        _resource_to_item(r)
-        for r in Resource.objects.filter(owner_ref=str(business.id)).order_by("name", "id")
-    ]
-    return {
+    level here instead of a flat Resource list.
+
+    livetracker3.md §2.2: `Provider.rating`/`rating_count` are a weighted rollup across
+    this business's own already-fetched `Resource` rows (no extra query — the same rows
+    already used to build `items` above) — a rating-count-weighted mean of each rated
+    `Resource`'s own `average_rating`, not a separate persisted field of its own. Omitted
+    entirely when none of this business's resources have any aggregate-eligible rating
+    yet, same "honestly absent, not fabricated" rule as `Item.rating`."""
+    resources = list(
+        Resource.objects.filter(owner_ref=str(business.id)).order_by("name", "id")
+    )
+    items = [_resource_to_item(r) for r in resources]
+    provider = {
         "id": str(business.id),
         "descriptor": {"name": business.business_name},
         "category_id": business.domain_code,
         "items": items,
     }
+    rated_resources = [r for r in resources if r.average_rating is not None]
+    if rated_resources:
+        total_count = sum(r.rating_count for r in rated_resources)
+        weighted_sum = sum(float(r.average_rating) * r.rating_count for r in rated_resources)
+        provider["rating"] = f"{weighted_sum / total_count:.2f}"
+        provider["rating_count"] = total_count
+    return provider
 
 
 def _tokenize(query_text: str) -> list[str]:

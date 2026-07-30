@@ -210,6 +210,84 @@ def test_two_domains_never_leak_into_each_others_catalog():
     assert [p["descriptor"]["name"] for p in healthcare_catalog["providers"]] == ["City Clinic"]
 
 
+@pytest.mark.django_db
+def test_catalog_omits_rating_for_an_unrated_resource_and_provider():
+    """livetracker3.md §2.2: an honestly absent field (no `rating` key at all), not a
+    fabricated `0`/`"0"` — matching build_catalog()'s own established precedent for
+    fulfillments/payments/offers."""
+    business = BusinessAccount.objects.create_user(
+        contact="salon@example.com",
+        business_name="Glow Salon",
+        password=TEST_PASSWORD,
+        domain_code=BEAUTY,
+    )
+    Resource.objects.create(owner_ref=str(business.id), name="Stylist A")
+
+    catalog = build_catalog(BEAUTY)
+    jsonschema.validate(instance=catalog, schema=_schema())
+
+    provider = catalog["providers"][0]
+    assert "rating" not in provider
+    assert "rating_count" not in provider
+    assert "rating" not in provider["items"][0]
+    assert "rating_count" not in provider["items"][0]
+
+
+@pytest.mark.django_db
+def test_catalog_surfaces_a_resources_real_rating_aggregate():
+    """livetracker3.md §2.2 Test Gate: a real aggregate is reflected in the next
+    catalog build — Item.rating is the real Rating.yaml#/properties/value scalar
+    (a string), rating_count is this project's own additive field alongside it."""
+    business = BusinessAccount.objects.create_user(
+        contact="salon@example.com",
+        business_name="Glow Salon",
+        password=TEST_PASSWORD,
+        domain_code=BEAUTY,
+    )
+    resource = Resource.objects.create(owner_ref=str(business.id), name="Stylist A")
+    resource.average_rating = "4.33"
+    resource.rating_count = 3
+    resource.save(update_fields=["average_rating", "rating_count"])
+
+    catalog = build_catalog(BEAUTY)
+    jsonschema.validate(instance=catalog, schema=_schema())
+
+    provider = catalog["providers"][0]
+    item = provider["items"][0]
+    assert item["rating"] == "4.33"
+    assert item["rating_count"] == 3
+    # Provider rollup: one rated resource, so the weighted rollup equals its own average.
+    assert provider["rating"] == "4.33"
+    assert provider["rating_count"] == 3
+
+
+@pytest.mark.django_db
+def test_catalog_provider_rating_is_a_count_weighted_rollup_across_its_resources():
+    """A business with two rated resources of different weight gets a real
+    count-weighted mean, not a naive average of the two averages."""
+    business = BusinessAccount.objects.create_user(
+        contact="salon@example.com",
+        business_name="Glow Salon",
+        password=TEST_PASSWORD,
+        domain_code=BEAUTY,
+    )
+    r1 = Resource.objects.create(owner_ref=str(business.id), name="Stylist A")
+    r1.average_rating, r1.rating_count = "5.00", 1
+    r1.save(update_fields=["average_rating", "rating_count"])
+    r2 = Resource.objects.create(owner_ref=str(business.id), name="Stylist B")
+    r2.average_rating, r2.rating_count = "3.00", 9
+    r2.save(update_fields=["average_rating", "rating_count"])
+    # An unrated third resource must not pull the rollup toward zero.
+    Resource.objects.create(owner_ref=str(business.id), name="Stylist C")
+
+    catalog = build_catalog(BEAUTY)
+
+    provider = catalog["providers"][0]
+    # (5*1 + 3*9) / 10 = 3.20
+    assert provider["rating"] == "3.20"
+    assert provider["rating_count"] == 10
+
+
 def _seed_two_stylists():
     """A real catalog with one provider ("Glow Salon") offering two named resources —
     one that should match a "Priya" query, one that shouldn't."""

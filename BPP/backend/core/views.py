@@ -298,7 +298,14 @@ def resource_availability_create_view(request, resource_id):
 
     §4.4: `GET` lists the resource's current slots — owner or assigned staff, the
     same access model as the block view — feeding a live availability dashboard's
-    initial render before its WebSocket connection takes over."""
+    initial render before its WebSocket connection takes over.
+
+    livetracker3.md §2.2: also returns the resource's own real rating aggregate
+    (`average_rating`/`rating_count`) alongside the slot list — one wire call, not a
+    second endpoint, since the dashboard already fetches this resource by id here.
+    `average_rating` is `None` (not a fabricated `0`) when no aggregate-eligible
+    rating exists yet — the business side seeing its own honest, real rating is the
+    whole point of this addition (§2.2 bullet 2's own reasoning)."""
     if not request.user.is_authenticated:
         return error_response("UNAUTHORIZED", "not logged in", 401)
 
@@ -312,6 +319,16 @@ def resource_availability_create_view(request, resource_id):
         slots = Slot.objects.filter(resource=resource).order_by("start_time")
         return JsonResponse(
             {
+                "resource": {
+                    "id": str(resource.id),
+                    "name": resource.name,
+                    "average_rating": (
+                        str(resource.average_rating)
+                        if resource.average_rating is not None
+                        else None
+                    ),
+                    "rating_count": resource.rating_count,
+                },
                 "slots": [
                     {
                         "id": str(s.id),
@@ -848,11 +865,21 @@ def track_view(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=30, scope="bpp-rating")
 def rating_view(request):
     """Real /rating business logic (livetracker2.md Phase 4.5) — receives Gateway's
     forwarded rating submission, ACKs the calling Gateway/BAP pair synchronously,
     then records every submitted rating in the background (see
-    core/rating_service.py's module docstring)."""
+    core/rating_service.py's module docstring).
+
+    livetracker3.md §2.1 bullet 4: BAP's own customer-facing `rating_trigger_view`
+    already carries `@rate_limit(limit_per_minute=10, scope="rating")` — this is a
+    real, live gap that was distinct from that: BPP's own Gateway-receiving endpoint
+    had no rate limiting at all, unlike this project's audit note assumed. A generous
+    30/min defense-in-depth ceiling (matching `resource_create_view`'s own tier), not
+    the primary customer-facing limiter — that's BAP's job, keyed per real customer IP;
+    this is IP-keyed against Gateway's own relaying connection, protecting BPP itself
+    from being flooded regardless of which BAP the traffic originated from."""
     try:
         payload = json.loads(request.body)
     except json.JSONDecodeError:
@@ -871,11 +898,15 @@ def rating_view(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=30, scope="bpp-support")
 def support_view(request):
     """Real /support business logic (livetracker2.md Phase 4.5) — receives Gateway's
     forwarded support lookup, ACKs the calling Gateway/BAP pair synchronously, then
     returns the owning business's real contact info in the background (see
-    core/support_service.py's module docstring)."""
+    core/support_service.py's module docstring).
+
+    livetracker3.md §2.1 bullet 4: same real, live BPP-side gap and same fix as
+    `rating_view` above — see that view's docstring for the full reasoning."""
     try:
         payload = json.loads(request.body)
     except json.JSONDecodeError:

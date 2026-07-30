@@ -17,15 +17,25 @@ export interface SlotInfo {
   capacity_total: number;
 }
 
+/** livetracker3.md §2.2 — the resource's own real rating aggregate, `null` when none exists yet. */
+export interface ResourceInfo {
+  id: string;
+  name: string;
+  average_rating: string | null;
+  rating_count: number;
+}
+
 export interface BlockResult {
   blocked: string[];
   skipped: { slot_id: string; reason: string }[];
 }
 
-export async function getSlots(resourceId: string): Promise<SlotInfo[]> {
+export async function getSlots(
+  resourceId: string
+): Promise<{ resource: ResourceInfo; slots: SlotInfo[] }> {
   const resp = await apiFetch(`/api/v1/resources/${resourceId}/availability`);
   const body = await resp.json();
-  return body.slots;
+  return { resource: body.resource, slots: body.slots };
 }
 
 export async function blockSlots(resourceId: string, slotIds: string[]): Promise<BlockResult> {

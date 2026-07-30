@@ -154,6 +154,15 @@ export default function SearchPage() {
                       {item.descriptor.short_desc && (
                         <p className="mt-1 text-sm text-neutral-500">{item.descriptor.short_desc}</p>
                       )}
+                      {item.rating && (
+                        <p className="mt-1 text-sm text-amber-600">
+                          ★ {item.rating}
+                          <span className="text-neutral-500">
+                            {' '}
+                            ({item.rating_count} {item.rating_count === 1 ? 'rating' : 'ratings'})
+                          </span>
+                        </p>
+                      )}
                     </div>
                     <p className="whitespace-nowrap text-sm font-semibold text-neutral-900">
                       {formatPrice(item.price)}

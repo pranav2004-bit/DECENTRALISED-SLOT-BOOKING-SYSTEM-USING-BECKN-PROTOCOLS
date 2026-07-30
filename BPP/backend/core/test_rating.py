@@ -10,6 +10,7 @@ trigger, not a hand-set status).
 
 import datetime as dt
 import json
+from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -202,6 +203,14 @@ def test_rating_view_acks_when_both_bap_and_gateway_signatures_are_valid(
         [{"id": "x", "value": "5"}],  # missing rating_category
         [{"id": "x", "rating_category": "NotARealCategory", "value": "5"}],
         [{"id": "x", "rating_category": "Order"}],  # missing value
+        # livetracker3.md §2.1 bullet 5: the real schema's value latitude (a bare
+        # number OR a comparison/logical expression) is deliberately narrowed to a
+        # plain 1-5 int for this project's own use case — each of these must be
+        # cleanly rejected before ever reaching the aggregation function.
+        [{"id": "x", "rating_category": "Order", "value": "gte 3"}],
+        [{"id": "x", "rating_category": "Order", "value": "99"}],
+        [{"id": "x", "rating_category": "Order", "value": "0"}],
+        [{"id": "x", "rating_category": "Order", "value": "3.5"}],
     ],
 )
 @pytest.mark.django_db
@@ -320,3 +329,200 @@ def test_dispatch_on_rating_records_a_rating_with_no_resolvable_booking(bpp_iden
     assert rating.booking is None
     assert rating.rating_category == "Provider"
     assert rating.value == "up"
+
+
+def _dispatch_rating(*, booking, value, rating_category="Order", transaction_id="txn-1"):
+    payload = _build_rating_payload(
+        ratings=[{"id": str(booking.id), "rating_category": rating_category, "value": value}],
+        transaction_id=transaction_id,
+    )
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://gateway:8000/on_rating",
+            callback=lambda r: (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}})),
+        )
+        rating_service.dispatch_on_rating(payload=payload)
+
+
+@pytest.mark.django_db
+def test_dispatch_on_rating_aggregates_real_ratings_into_a_real_average(bpp_identity_settings):
+    """livetracker3.md §2.1 Test Gate: three real ratings (4, 5, 3), each against its
+    own genuinely completed booking for the same resource, from each booking's true
+    owning transaction, produce average_rating == 4.0, rating_count == 3."""
+    resource, first_slot = _make_slot_and_business(ended=True)
+    start_time = timezone.now() - dt.timedelta(hours=2)
+    for value, txn in [("4", "txn-1"), ("5", "txn-2"), ("3", "txn-3")]:
+        # A fresh slot per rating — the same resource can have many real,
+        # independently-completed bookings over time; reusing one capacity-1 slot
+        # would leave the second/third `hold_slot()` with nothing left to hold.
+        slot = Slot.objects.create(
+            resource=resource,
+            start_time=start_time,
+            end_time=start_time + dt.timedelta(minutes=30),
+            capacity_total=1,
+            capacity_remaining=1,
+        )
+        booking = hold_slot(slot.id, holder_ref=txn, redis_client=_redis_client(), ttl_seconds=600)
+        confirm_hold(booking.id, redis_client=_redis_client())
+        assert complete_active_booking(booking.id) is True
+        _dispatch_rating(booking=booking, value=value, transaction_id=txn)
+
+    resource.refresh_from_db()
+    assert resource.average_rating == Decimal("4.00")
+    assert resource.rating_count == 3
+
+
+@pytest.mark.django_db
+def test_dispatch_on_rating_initializes_the_aggregate_without_dividing_by_zero(
+    bpp_identity_settings,
+):
+    """A rating against a resource with zero prior ratings correctly initializes
+    (average_rating starts null, per Resource's own honest-absence design) rather
+    than erroring or fabricating a value."""
+    resource, slot, booking = _make_completed_booking(holder_ref="txn-1")
+    assert resource.average_rating is None
+    assert resource.rating_count == 0
+
+    _dispatch_rating(booking=booking, value="5")
+
+    resource.refresh_from_db()
+    assert resource.average_rating == Decimal("5.00")
+    assert resource.rating_count == 1
+
+
+@pytest.mark.django_db
+def test_dispatch_on_rating_idor_mismatched_rating_never_moves_the_public_aggregate(
+    bpp_identity_settings,
+):
+    """livetracker3.md §2.1's own security correction: a rating against a booking the
+    caller doesn't own is stored (real feedback, unchanged §4.5 behavior) but provably
+    does not move that resource's public average_rating/rating_count — comparing the
+    aggregate before and after, not just asserting it's absent."""
+    resource, slot, booking = _make_completed_booking(holder_ref="txn-owner")
+    before_average, before_count = resource.average_rating, resource.rating_count
+
+    _dispatch_rating(booking=booking, value="1", transaction_id="txn-attacker")
+
+    resource.refresh_from_db()
+    assert resource.average_rating == before_average
+    assert resource.rating_count == before_count
+    rating = Rating.objects.get(booking_id_text=str(booking.id))
+    assert rating.booking is None
+    assert rating.value == "1"
+
+
+@pytest.mark.django_db
+def test_dispatch_on_rating_resubmission_updates_the_existing_row_in_place(
+    bpp_identity_settings,
+):
+    """A second real rating from the true owner against the same booking corrects the
+    existing Rating row (an honest "I meant 5, not 3") rather than creating a second
+    row or double-counting in the aggregate — livetracker3.md §2.1's duplicate-
+    handling requirement, enforced by the real DB uniqueness constraint."""
+    resource, slot, booking = _make_completed_booking(holder_ref="txn-1")
+
+    _dispatch_rating(booking=booking, value="3")
+    resource.refresh_from_db()
+    assert resource.average_rating == Decimal("3.00")
+    assert resource.rating_count == 1
+
+    _dispatch_rating(booking=booking, value="5")
+    resource.refresh_from_db()
+    assert resource.average_rating == Decimal("5.00")
+    assert resource.rating_count == 1  # corrected in place, not double-counted
+
+    assert Rating.objects.filter(booking=booking, rating_category="Order").count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_dispatch_on_rating_concurrent_resubmission_never_overcounts(bpp_identity_settings):
+    """Real race found and fixed 2026-07-29: two genuinely near-simultaneous submissions
+    for the same (booking, rating_category) — a real, plausible case (a double-click, a
+    client retry) — must never leave rating_count/average_rating reflecting two ratings
+    when only one Rating row actually exists. `transaction=True` (not the default
+    `django_db`) is required for real independently-committing threads, same reasoning
+    already established in TESTING.md for this exact concurrency-testing pattern."""
+    import threading
+
+    resource, slot, booking = _make_completed_booking(holder_ref="txn-race")
+
+    def submit(value):
+        payload = _build_rating_payload(
+            ratings=[{"id": str(booking.id), "rating_category": "Order", "value": value}],
+            transaction_id="txn-race",
+        )
+        rating_service.dispatch_on_rating(payload=payload)
+
+    # One shared mock covering both threads' outbound /on_rating relay — `responses`
+    # patches the HTTP layer process-wide, not per-thread, so each thread opening its
+    # own `RequestsMock()` context (as `_dispatch_rating` does elsewhere in this file)
+    # races the other's teardown and flakes. `assert_all_requests_are_fired=False`
+    # because this test's real subject is the aggregate math, not the relay call.
+    with responses.RequestsMock(assert_all_requests_are_fired=False) as rsps:
+        rsps.add_callback(
+            responses.POST,
+            "http://gateway:8000/on_rating",
+            callback=lambda r: (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}})),
+        )
+        t1 = threading.Thread(target=submit, args=("2",))
+        t2 = threading.Thread(target=submit, args=("5",))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+    row_count = Rating.objects.filter(booking=booking, rating_category="Order").count()
+    assert row_count == 1
+
+    resource.refresh_from_db()
+    assert resource.rating_count == 1
+    assert resource.average_rating in (Decimal("2.00"), Decimal("5.00"))
+
+
+@pytest.mark.django_db
+def test_rating_view_is_rate_limited(client):
+    """livetracker3.md §2.1 bullet 4: a real, live gap found on audit — BPP's own
+    Gateway-receiving /rating endpoint had no rate limiting at all, unlike the
+    original 8 wire actions' own BAP-side coverage assumed. A rapid-fire burst is
+    now throttled the same way, against the real Redis-backed limiter (not mocked)."""
+    from django.core.cache import cache
+
+    cache.clear()
+    bap_pub, bap_priv = generate_signing_key_pair()
+    gateway_pub, gateway_priv = generate_signing_key_pair()
+    payload = _build_rating_payload(
+        ratings=[
+            {"id": "11111111-1111-1111-1111-111111111111", "rating_category": "Order", "value": "5"}
+        ]
+    )
+    body = json.dumps(payload).encode()
+    bap_header = sign_outbound_request(
+        body=body, subscriber_id="bap.example.com", unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
+    )
+    gateway_header = sign_outbound_request(
+        body=body, subscriber_id="gateway.local", unique_key_id="key-1",
+        signing_private_key_b64=gateway_priv,
+    )
+    known = _known(bap_pub=bap_pub, gateway_pub=gateway_pub)
+
+    with (
+        patch("core.rating_service.dispatch_on_rating_in_background"),
+        responses.RequestsMock() as rsps,
+    ):
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(known)
+        )
+        for _ in range(30):
+            resp = client.post(
+                reverse("rating"), data=body, content_type="application/json",
+                HTTP_AUTHORIZATION=bap_header, HTTP_X_GATEWAY_AUTHORIZATION=gateway_header,
+            )
+            assert resp.status_code == 200
+        resp = client.post(
+            reverse("rating"), data=body, content_type="application/json",
+            HTTP_AUTHORIZATION=bap_header, HTTP_X_GATEWAY_AUTHORIZATION=gateway_header,
+        )
+    assert resp.status_code == 429
+    cache.clear()

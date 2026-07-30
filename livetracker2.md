@@ -268,6 +268,7 @@
 - [x] `rating`/`on_rating` — post-completion feedback capture
 - [x] `support`/`on_support` — help/escalation info lookup for an existing transaction
 - **Test Gate:** `E2E` — both flows tested live against a completed Beauty (or Healthcare/Automotive) booking. **Passed 2026-07-29.** See Change Log for the full evidence.
+- **Pointer (2026-07-29):** this Test Gate proved `/rating` genuinely receives, validates, and stores a submission — it did not prove that submission ever became visible to anyone again. `livetracker3.md` §2 found and closed that real "stored but never surfaced" gap: rating aggregation (`Resource.average_rating`/`rating_count`), the aggregate's display in `/search` results and on BPP's own §4.4 dashboard, IDOR-safe aggregate-eligibility, duplicate-submission handling, and closing a real BPP-side rate-limit gap on `/rating`/`/support` this section's own review never caught. See that tracker for the full fix and its own Test Gate evidence.
 
 ### 4.6 Scale-Readiness Design (documented, not built) `[ENT]`
 - [x] Horizontal-scaling plan for BPP/BAP under real multi-provider traffic, inventory partitioning strategy (by provider/region), hotspot-management approach for a small number of highly-demanded slots, and **backpressure** (slowing producers when a consumer — e.g. the event bus, the notification stub — can't keep up, rather than letting it fall over) — documented as a design, the same way Phase 0.9 of `livetracker1.md` built the Terraform *skeleton* without provisioning real infrastructure ahead of need

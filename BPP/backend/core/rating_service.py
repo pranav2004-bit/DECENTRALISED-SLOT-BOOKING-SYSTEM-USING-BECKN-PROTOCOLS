@@ -268,7 +268,9 @@ def dispatch_on_rating(*, payload: dict, correlation_id: str | None = None) -> N
         if booking is not None and booking.holder_ref != transaction_id:
             booking = None
 
-        aggregate_eligible = booking is not None and rating_category in _AGGREGATE_ELIGIBLE_CATEGORIES
+        aggregate_eligible = (
+            booking is not None and rating_category in _AGGREGATE_ELIGIBLE_CATEGORIES
+        )
 
         if aggregate_eligible:
             # Real race found and fixed 2026-07-29: reading the "old value" via a separate

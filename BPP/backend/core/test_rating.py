@@ -492,7 +492,9 @@ def test_rating_view_is_rate_limited(client):
     bap_pub, bap_priv = generate_signing_key_pair()
     gateway_pub, gateway_priv = generate_signing_key_pair()
     payload = _build_rating_payload(
-        ratings=[{"id": "11111111-1111-1111-1111-111111111111", "rating_category": "Order", "value": "5"}]
+        ratings=[
+            {"id": "11111111-1111-1111-1111-111111111111", "rating_category": "Order", "value": "5"}
+        ]
     )
     body = json.dumps(payload).encode()
     bap_header = sign_outbound_request(

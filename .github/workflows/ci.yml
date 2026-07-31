@@ -284,8 +284,15 @@ jobs:
         # was covering. `.env.example`'s own committed placeholder values are already the correct,
         # safe local/CI defaults (same file a developer copies for local setup) — no substitution
         # needed, just materializing them.
+        # All 6 apps, including bpp-web, even though bpp-web itself is never built/started below
+        # (see the next step's own comment) — the later "Tear down the stack" step runs `down`
+        # unscoped against the full compose config, which still resolves bpp-web's own
+        # `env_file: ./BPP/web/.env` reference regardless of whether that container ever ran.
+        # A missing file there fails teardown itself — a real regression hit live once already
+        # on this exact PR. Creating one small unused .env file costs nothing; skipping it broke
+        # teardown for a resource saving that only ever needed the build/up scoping below.
         run: |
-          for app in registry beckn-gateway BAP/backend BAP/web BPP/backend; do
+          for app in registry beckn-gateway BAP/backend BAP/web BPP/backend BPP/web; do
             cp "$app/.env.example" "$app/.env"
           done
 

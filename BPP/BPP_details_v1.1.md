@@ -55,6 +55,8 @@ Contains the following individual workflow modules:
 
 **Note:** The Provider Transaction Module acts as a parent module that groups all Beckn transaction workflow modules.
 
+> **Implementation note (2026-07-31, `livetracker4.md` §1.2/§1.4):** every module above receives its request directly from the BAP and sends its own `on_X` callback directly back to `context["bap_uri"]` (via `get_bap_client()`) — **not** through the Beckn Gateway relay. Only the Provider Discovery Module's `/search`/`on_search` still round-trips through Gateway, per the real protocol's own scope (`protocol_compliance_notes_v1.1.md` §P).
+
 ### 4. Inventory & Resource Management Module
 Contains the following individual modules:
 - Inventory Module

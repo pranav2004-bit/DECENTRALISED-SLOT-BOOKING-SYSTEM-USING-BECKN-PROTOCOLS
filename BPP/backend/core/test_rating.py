@@ -352,6 +352,28 @@ def test_dispatch_on_rating_records_a_real_rating_against_a_completed_booking(
 
 
 @pytest.mark.django_db
+def test_dispatch_on_rating_does_not_raise_when_bap_is_unreachable(bpp_identity_settings):
+    """livetracker4.md §1.4 coverage-parity replacement for beckn-gateway's retired
+    test_relay_on_rating_does_not_raise_when_bap_is_unreachable."""
+    resource, slot, booking = _make_completed_booking(holder_ref="txn-1")
+    payload = _build_rating_payload(
+        ratings=[{"id": str(booking.id), "rating_category": "Order", "value": "5"}],
+        transaction_id="txn-1",
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(
+            responses.POST,
+            "https://bap.example.com/on_rating",
+            body=ConnectionError("simulated unreachable BAP"),
+        )
+        rating_service.dispatch_on_rating(payload=payload, correlation_id="corr-rating-1")
+
+    rating = Rating.objects.get(booking_id_text=str(booking.id))
+    assert rating.value == "5"
+
+
+@pytest.mark.django_db
 def test_dispatch_on_rating_records_but_does_not_fk_link_a_rating_for_another_transaction(
     bpp_identity_settings,
 ):

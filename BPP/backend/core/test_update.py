@@ -351,6 +351,31 @@ def test_dispatch_on_update_reschedules_to_the_real_new_slot(bpp_identity_settin
 
 
 @pytest.mark.django_db
+def test_dispatch_on_update_does_not_raise_when_bap_is_unreachable(bpp_identity_settings, bus):
+    """livetracker4.md §1.4 coverage-parity replacement for beckn-gateway's retired
+    test_relay_on_update_does_not_raise_when_bap_is_unreachable."""
+    resource, slot_a, slot_b = _make_resource_with_two_slots()
+    booking = _make_active_booking_on(resource, slot_a, holder_ref="txn-1")
+    payload = _build_update_payload(
+        booking_id=booking.id,
+        provider_id=resource.owner_ref,
+        requested_timestamp=slot_b.start_time.isoformat(),
+        transaction_id="txn-1",
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(
+            responses.POST,
+            "https://bap.example.com/on_update",
+            body=ConnectionError("simulated unreachable BAP"),
+        )
+        update_service.dispatch_on_update(payload=payload)
+
+    booking.refresh_from_db()
+    assert booking.slot_id == slot_b.id
+
+
+@pytest.mark.django_db
 def test_dispatch_on_update_rejects_a_full_new_slot(bpp_identity_settings, bus):
     resource, slot_a, slot_b = _make_resource_with_two_slots(second_slot_capacity=0)
     booking = _make_active_booking_on(resource, slot_a, holder_ref="txn-1")

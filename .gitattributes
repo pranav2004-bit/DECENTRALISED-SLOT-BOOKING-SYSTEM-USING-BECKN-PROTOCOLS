@@ -1,0 +1,6 @@
+# Shell scripts are executed inside Linux containers (Docker ENTRYPOINT). A CRLF
+# shebang line (`#!/bin/sh\r`) makes the kernel look for a literal `/bin/sh\r`
+# interpreter and fail with a misleading "no such file or directory" — this bit a
+# local Windows build (core.autocrlf=true, no prior .gitattributes) even though the
+# committed blobs and CI (Linux checkout) were never affected.
+*.sh text eol=lf

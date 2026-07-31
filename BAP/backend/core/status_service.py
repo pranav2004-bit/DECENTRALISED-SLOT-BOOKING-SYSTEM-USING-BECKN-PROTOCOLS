@@ -85,20 +85,29 @@ def trigger_status(*, transaction_id: str, customer=None) -> None:
         signing_private_key_b64=signing_priv,
     )
 
-    gateway_status_url = settings.GATEWAY_BASE_URL.rstrip("/") + "/status"
+    # livetracker4.md §1.1: direct BAP->BPP dispatch — /status is one of the 9
+    # post-search actions the real protocol never routes through Gateway once the
+    # BPP's address is known (protocol_compliance_notes_v1.1.md §P). A fresh
+    # Registry lookup immediately before dispatch both re-confirms this BPP is
+    # still SUBSCRIBED and resolves its real, current url.
     try:
-        response = registry_client.get_gateway_client().post(
-            gateway_status_url,
+        bpp_url = registry_client.resolve_subscribed_bpp(session.selected_bpp_id)
+    except registry_client.RegistryLookupError as exc:
+        raise StatusError(str(exc), status_code=502) from exc
+
+    try:
+        response = registry_client.get_bpp_client(session.selected_bpp_id).post(
+            bpp_url.rstrip("/") + "/status",
             data=body,
             headers={"Content-Type": "application/json", "Authorization": auth_header},
         )
         response.raise_for_status()
     except Exception as exc:
-        raise StatusError(f"Gateway unreachable: {exc}", status_code=502) from exc
+        raise StatusError(f"BPP unreachable: {exc}", status_code=502) from exc
 
     ack_status = response.json().get("message", {}).get("ack", {}).get("status")
     if ack_status != "ACK":
-        raise StatusError("Gateway rejected the status request (NACK)", status_code=502)
+        raise StatusError("BPP rejected the status request (NACK)", status_code=502)
 
 
 def get_status_result(*, transaction_id: str, customer=None) -> dict | None:
@@ -138,11 +147,16 @@ def validate_and_ack_on_status(
         )
 
     try:
+        # livetracker4.md §1.2: on_status now arrives directly from BPP, with no
+        # Gateway hop — require_gateway=False (see trust.py's own docstring for
+        # why this doesn't weaken the check, only makes the Gateway signature
+        # optional rather than removed).
         trust.verify_bpp_and_gateway(
             context=context,
             authorization_header=authorization_header,
             gateway_authorization_header=gateway_authorization_header,
             body=body,
+            require_gateway=False,
         )
     except trust.TrustEstablishmentError as exc:
         return (

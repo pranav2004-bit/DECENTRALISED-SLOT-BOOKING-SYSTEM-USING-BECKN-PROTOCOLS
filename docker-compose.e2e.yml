@@ -1,0 +1,40 @@
+# E2E-only compose overlay (livetracker3.md §5.2) — applied ON TOP of docker-compose.yml
+# ONLY for the automated Playwright golden-path suite (`docker compose -f docker-compose.yml
+# -f docker-compose.e2e.yml up -d`), never for normal local dev. Two, and only two, real
+# reasons this overlay exists instead of folding either change into docker-compose.yml or
+# each app's own .env directly:
+#
+# 1. `RECONCILIATION_INTERVAL_SECONDS` override (bpp-backend only). The golden path's booking
+#    only ever reaches Booking.Status.COMPLETE via the real, unmodified periodic sweep
+#    (`sweep_completed_bookings()`, BPP/backend/core/reconciliation.py) — there is no fixture
+#    or management-command shortcut for this by design (see that file's own docstring). The
+#    real default (60s, BPP/backend/.env's own committed value) would work fine correctness-
+#    wise but adds up to a full extra minute of pure idle CI time on top of the already-real
+#    ~9-minute wait for the slot's own fulfillment window to end (see golden-path.spec.ts's
+#    own comments for that wait's derivation) — shortened here to 15s for this job only. The
+#    default in BPP/backend/.env / .env.example is deliberately left untouched (60s remains
+#    correct for real dev/production use) — this override applies ONLY when this file is
+#    explicitly layered on top via -f, never implicitly.
+#
+# 2. Local participant identity (`SUBSCRIBER_ID`/`SUBSCRIBER_URL`) for bap-backend, bpp-backend,
+#    beckn-gateway. docker-compose.override.yml (gitignored, per its own header comment) is
+#    what supplies these on a developer's machine — CI has no such file, so onboarding would
+#    fail with "SUBSCRIBER_URL is not configured" (onboarding_service.py's own real check)
+#    without a committed equivalent. Values mirror docker-compose.override.yml's own
+#    convention exactly (real Docker service DNS names) — this is not new configuration, just
+#    the already-established local-identity pattern made available to a CI runner that can't
+#    read a gitignored file.
+services:
+  bpp-backend:
+    environment:
+      RECONCILIATION_INTERVAL_SECONDS: "15"
+      SUBSCRIBER_ID: bpp-backend.local
+      SUBSCRIBER_URL: http://bpp-backend:8000
+  bap-backend:
+    environment:
+      SUBSCRIBER_ID: bap-backend.local
+      SUBSCRIBER_URL: http://bap-backend:8000
+  beckn-gateway:
+    environment:
+      SUBSCRIBER_ID: beckn-gateway.local
+      SUBSCRIBER_URL: http://beckn-gateway:8000

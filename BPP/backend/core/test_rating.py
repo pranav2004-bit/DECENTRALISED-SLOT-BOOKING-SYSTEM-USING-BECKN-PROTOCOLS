@@ -194,6 +194,73 @@ def test_rating_view_acks_when_both_bap_and_gateway_signatures_are_valid(
     mock_dispatch.assert_called_once_with(payload=payload)
 
 
+@pytest.mark.django_db
+def test_rating_view_accepts_missing_gateway_authorization_now_that_gateway_is_optional(client):
+    """livetracker4.md §1.2: /rating now arrives directly from the BAP with no
+    Gateway hop — a missing X-Gateway-Authorization header must be accepted, not
+    rejected, as long as the BAP's own signature is genuinely valid
+    (require_gateway=False for this action)."""
+    bap_pub, bap_priv = generate_signing_key_pair()
+    payload = _build_rating_payload(
+        ratings=[
+            {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "rating_category": "Order",
+                "value": "5",
+            }
+        ]
+    )
+    body = json.dumps(payload).encode()
+    bap_header = sign_outbound_request(
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
+    )
+    known = _known(bap_pub=bap_pub)
+
+    with (
+        patch("core.rating_service.dispatch_on_rating_in_background"),
+        responses.RequestsMock() as rsps,
+    ):
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(known)
+        )
+        resp = client.post(
+            reverse("rating"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=bap_header,
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["message"]["ack"]["status"] == "ACK"
+
+
+@pytest.mark.django_db
+def test_rating_view_rejects_missing_bap_authorization_even_without_gateway(client):
+    """NEG: require_gateway=False only makes the Gateway signature optional — the
+    BAP's own signature is still mandatory."""
+    payload = _build_rating_payload(
+        ratings=[
+            {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "rating_category": "Order",
+                "value": "5",
+            }
+        ]
+    )
+    body = json.dumps(payload).encode()
+
+    resp = client.post(
+        reverse("rating"),
+        data=body,
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 401
+
+
 @pytest.mark.parametrize(
     "ratings",
     [
@@ -262,13 +329,13 @@ def test_dispatch_on_rating_records_a_real_rating_against_a_completed_booking(
 
     captured_requests = []
 
-    def gateway_on_rating_callback(request):
+    def bap_on_rating_callback(request):
         captured_requests.append(request)
         return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
 
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
-            responses.POST, "http://gateway:8000/on_rating", callback=gateway_on_rating_callback
+            responses.POST, "https://bap.example.com/on_rating", callback=bap_on_rating_callback
         )
         rating_service.dispatch_on_rating(payload=payload, correlation_id="corr-rating-1")
 
@@ -300,7 +367,7 @@ def test_dispatch_on_rating_records_but_does_not_fk_link_a_rating_for_another_tr
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_rating",
+            "https://bap.example.com/on_rating",
             callback=lambda r: (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}})),
         )
         rating_service.dispatch_on_rating(payload=payload)
@@ -320,7 +387,7 @@ def test_dispatch_on_rating_records_a_rating_with_no_resolvable_booking(bpp_iden
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_rating",
+            "https://bap.example.com/on_rating",
             callback=lambda r: (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}})),
         )
         rating_service.dispatch_on_rating(payload=payload)
@@ -339,7 +406,7 @@ def _dispatch_rating(*, booking, value, rating_category="Order", transaction_id=
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_rating",
+            "https://bap.example.com/on_rating",
             callback=lambda r: (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}})),
         )
         rating_service.dispatch_on_rating(payload=payload)
@@ -462,7 +529,7 @@ def test_dispatch_on_rating_concurrent_resubmission_never_overcounts(bpp_identit
     with responses.RequestsMock(assert_all_requests_are_fired=False) as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_rating",
+            "https://bap.example.com/on_rating",
             callback=lambda r: (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}})),
         )
         t1 = threading.Thread(target=submit, args=("2",))

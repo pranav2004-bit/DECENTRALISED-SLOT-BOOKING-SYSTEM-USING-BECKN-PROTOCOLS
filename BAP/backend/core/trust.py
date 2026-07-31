@@ -56,19 +56,33 @@ def verify_participant_signature(*, authorization_header: str, body: bytes) -> b
 
 
 def verify_bpp_and_gateway(
-    *, context: dict, authorization_header: str, gateway_authorization_header: str, body: bytes
+    *,
+    context: dict,
+    authorization_header: str,
+    gateway_authorization_header: str,
+    body: bytes,
+    require_gateway: bool = True,
 ) -> None:
-    """Defense in depth for every Gateway-relayed inbound callback (on_search, and
-    now on_select) — verifies BOTH the BPP's own signature (identity must match
-    context.bpp_id) AND the forwarding Gateway's own X-Gateway-Authorization signature
-    over the identical body. A callback reaching BAP directly — bypassing Gateway
-    entirely, even with a genuine BPP signature — is rejected for missing/invalid
-    X-Gateway-Authorization. Extracted from §3.1's search_service.py (originally
-    `_verify_bpp_and_gateway`, private to that module) once §3.2 needed the identical
-    check for on_select — a single shared version instead of two drifting copies,
-    mirroring the same extraction already done on BPP's side (core/trust.py's
-    verify_bap_and_gateway). Raises TrustEstablishmentError on any failure; the caller
-    decides the HTTP status code."""
+    """Defense in depth for every Gateway-relayed inbound callback — verifies the
+    BPP's own signature (identity must match context.bpp_id) and, when
+    `require_gateway=True` (the default), ALSO the forwarding Gateway's own
+    X-Gateway-Authorization signature over the identical body. A callback reaching
+    BAP directly — bypassing Gateway entirely, even with a genuine BPP signature — is
+    rejected for missing/invalid X-Gateway-Authorization in that mode. Extracted from
+    §3.1's search_service.py (originally `_verify_bpp_and_gateway`, private to that
+    module) once §3.2 needed the identical check for on_select — a single shared
+    version instead of two drifting copies, mirroring the same extraction already
+    done on BPP's side (core/trust.py's verify_bap_and_gateway). Raises
+    TrustEstablishmentError on any failure; the caller decides the HTTP status code.
+
+    `require_gateway=False` (livetracker4.md §1.1/§1.2): the 9 post-search
+    on_X callbacks now reach BAP directly from BPP, protocol-correctly, with no
+    Gateway hop at all — a missing X-Gateway-Authorization header is the expected,
+    correct shape now, not a rejection reason. `on_search` alone keeps
+    `require_gateway=True` (its own call site never passes this parameter). If a
+    caller in the False mode still sends a real X-Gateway-Authorization header (e.g.
+    during the §1.3 rollback window, a cheap config revert away from Gateway again),
+    it is still verified, not merely ignored."""
     if not authorization_header:
         raise TrustEstablishmentError("Missing Authorization header")
 
@@ -82,7 +96,9 @@ def verify_bpp_and_gateway(
         )
 
     if not gateway_authorization_header:
-        raise TrustEstablishmentError("Missing X-Gateway-Authorization header")
+        if require_gateway:
+            raise TrustEstablishmentError("Missing X-Gateway-Authorization header")
+        return
     verify_participant_signature(
         authorization_header=gateway_authorization_header, body=body
     )

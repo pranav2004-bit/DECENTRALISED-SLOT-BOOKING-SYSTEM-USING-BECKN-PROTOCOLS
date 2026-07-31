@@ -28,6 +28,7 @@ from core.participant_keys import get_signing_keys
 
 _client: ResilientHttpClient | None = None
 _gateway_client: ResilientHttpClient | None = None
+_bpp_clients: dict[str, ResilientHttpClient] = {}
 
 
 def get_client() -> ResilientHttpClient:
@@ -66,6 +67,57 @@ def get_gateway_client() -> ResilientHttpClient:
             circuit_breaker_key="bap-gateway-client",
         )
     return _gateway_client
+
+
+def get_bpp_client(bpp_id: str) -> ResilientHttpClient:
+    """livetracker4.md §1.1: one isolated circuit breaker per counterparty BPP, mirroring
+    Gateway's own existing `get_participant_client(subscriber_id)` pattern
+    (`livetracker2.md` §3.6, `beckn-gateway/core/registry_client.py`) rather than
+    inventing a new resilience primitive — a real Gateway outage must not fail-fast
+    every BPP too (that's what `get_gateway_client()`'s own separate breaker key already
+    protects against for `/search`), and a real single-BPP outage must not fail-fast
+    every *other* BPP this BAP is also talking to, which a single shared breaker key
+    would do. Keyed by `bpp_id` (not `bpp_uri`) for the same reason Gateway keys by
+    `subscriber_id`: identity is stable across a BPP's own URL rotation; a re-onboarded
+    BPP with a new `subscriber_url` should keep sharing its prior breaker state, not
+    reset to "healthy" purely because its address changed."""
+    client = _bpp_clients.get(bpp_id)
+    if client is None:
+        client = ResilientHttpClient(
+            timeout_seconds=settings.HTTP_CLIENT_TIMEOUT_MS / 1000,
+            max_retries=settings.HTTP_CLIENT_MAX_RETRIES,
+            circuit_breaker_threshold=settings.HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD,
+            redis_client=redis.Redis.from_url(
+                settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5
+            ),
+            circuit_breaker_key=f"bap-outbound:{bpp_id}",
+        )
+        _bpp_clients[bpp_id] = client
+    return client
+
+
+def resolve_subscribed_bpp(bpp_id: str) -> str:
+    """livetracker4.md §1.1: the fresh pre-dispatch SUBSCRIBED-status + address
+    re-check every direct BAP->BPP dispatch now performs, reusing the exact same
+    `lookup()` mechanism `trust.py` already uses for inbound-signature verification —
+    not a new one. Returns the BPP's real, currently-registered `url` — the actual
+    dispatch target for this call, not merely a pass/fail gate sitting in front of a
+    separately-remembered `session.selected_bpp_uri` (found on this tracker's own
+    second audit pass: a BPP that has genuinely re-onboarded with a new
+    `subscriber_url` since the customer's original search must be dispatched to at
+    its *current* address, not a stale one). Raises `RegistryLookupError` if the BPP
+    is missing or not SUBSCRIBED — the caller decides the HTTP status code, same
+    convention as every other service-layer error in this codebase."""
+    results = lookup({"subscriber_id": bpp_id})
+    if not results or results[0].get("status") != "SUBSCRIBED":
+        raise RegistryLookupError(
+            f"bpp_id={bpp_id!r} is not currently SUBSCRIBED — refusing to dispatch"
+        )
+    return results[0]["url"]
+
+
+class RegistryLookupError(Exception):
+    pass
 
 
 def _signed_post(path: str, payload: dict) -> dict:

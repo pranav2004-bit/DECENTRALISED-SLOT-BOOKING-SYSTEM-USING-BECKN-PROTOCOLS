@@ -142,20 +142,34 @@ def trigger_select(
         signing_private_key_b64=signing_priv,
     )
 
-    gateway_select_url = settings.GATEWAY_BASE_URL.rstrip("/") + "/select"
+    # livetracker4.md §1.1: direct BAP->BPP dispatch — /select is one of the 9
+    # post-search actions the real protocol never routes through Gateway once the
+    # BPP's address is known (protocol_compliance_notes_v1.1.md §P). Unlike the
+    # other 8 actions, select has no `session.selected_bpp_id` yet (that field is
+    # what /on_select itself sets, later, in record_on_select_result) — the
+    # target here is the `bpp_id` just resolved fresh above by
+    # `_find_item_provider`, from this session's own on_search results, not a
+    # session field. A fresh Registry lookup immediately before dispatch both
+    # re-confirms this BPP is still SUBSCRIBED and resolves its real, current
+    # url — not the possibly-stale one from the on_search result itself.
     try:
-        response = registry_client.get_gateway_client().post(
-            gateway_select_url,
+        bpp_url = registry_client.resolve_subscribed_bpp(bpp_id)
+    except registry_client.RegistryLookupError as exc:
+        raise SelectError(str(exc), status_code=502) from exc
+
+    try:
+        response = registry_client.get_bpp_client(bpp_id).post(
+            bpp_url.rstrip("/") + "/select",
             data=body,
             headers={"Content-Type": "application/json", "Authorization": auth_header},
         )
         response.raise_for_status()
     except Exception as exc:
-        raise SelectError(f"Gateway unreachable: {exc}", status_code=502) from exc
+        raise SelectError(f"BPP unreachable: {exc}", status_code=502) from exc
 
     ack_status = response.json().get("message", {}).get("ack", {}).get("status")
     if ack_status != "ACK":
-        raise SelectError("Gateway rejected the select request (NACK)", status_code=502)
+        raise SelectError("BPP rejected the select request (NACK)", status_code=502)
 
 
 def get_selection_result(*, transaction_id: str, customer=None) -> dict | None:
@@ -195,11 +209,16 @@ def validate_and_ack_on_select(
         )
 
     try:
+        # livetracker4.md §1.2: on_select now arrives directly from BPP, with no
+        # Gateway hop — require_gateway=False (see trust.py's own docstring for
+        # why this doesn't weaken the check, only makes the Gateway signature
+        # optional rather than removed).
         trust.verify_bpp_and_gateway(
             context=context,
             authorization_header=authorization_header,
             gateway_authorization_header=gateway_authorization_header,
             body=body,
+            require_gateway=False,
         )
     except trust.TrustEstablishmentError as exc:
         return (

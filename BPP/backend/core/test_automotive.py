@@ -234,7 +234,7 @@ def test_select_succeeds_when_both_bay_and_mechanic_are_available(bpp_identity_s
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_select",
+            "https://bap.example.com/on_select",
             callback=lambda r: (captured.append(r), (200, {}, json.dumps({"message": {}})))[1],
         )
         select_service.dispatch_on_select(payload=payload)
@@ -271,7 +271,7 @@ def test_select_fails_cleanly_when_only_the_mechanic_is_available(bpp_identity_s
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_select",
+            "https://bap.example.com/on_select",
             callback=lambda r: (captured.append(r), (200, {}, json.dumps({"message": {}})))[1],
         )
         select_service.dispatch_on_select(payload=payload)
@@ -321,7 +321,7 @@ def test_confirm_activates_every_booking_in_the_group(bpp_identity_settings, bus
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_confirm",
+            "https://bap.example.com/on_confirm",
             callback=lambda r: (captured.append(r), (200, {}, json.dumps({"message": {}})))[1],
         )
         confirm_service.dispatch_on_confirm(payload=payload)
@@ -362,7 +362,7 @@ def test_cancel_cancels_every_booking_in_the_group(bpp_identity_settings, bus):
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_cancel",
+            "https://bap.example.com/on_cancel",
             callback=lambda r: (captured.append(r), (200, {}, json.dumps({"message": {}})))[1],
         )
         cancel_service.dispatch_on_cancel(payload=payload)
@@ -415,7 +415,7 @@ def test_track_reports_active_once_a_technician_is_in_progress(bpp_identity_sett
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_track",
+            "https://bap.example.com/on_track",
             callback=lambda r: (captured.append(r), (200, {}, json.dumps({"message": {}})))[1],
         )
         track_service.dispatch_on_track(payload=payload)
@@ -438,7 +438,7 @@ def test_track_reports_inactive_before_a_technician_is_dispatched(bpp_identity_s
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_track",
+            "https://bap.example.com/on_track",
             callback=lambda r: (captured.append(r), (200, {}, json.dumps({"message": {}})))[1],
         )
         track_service.dispatch_on_track(payload=payload)
@@ -485,7 +485,7 @@ def test_init_reports_the_combined_quote_for_every_resource_in_the_group(bpp_ide
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_init",
+            "https://bap.example.com/on_init",
             callback=lambda r: (captured.append(r), (200, {}, json.dumps({"message": {}})))[1],
         )
         init_service.dispatch_on_init(payload=payload)
@@ -530,7 +530,7 @@ def test_status_reports_every_resource_in_the_group(bpp_identity_settings):
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_status",
+            "https://bap.example.com/on_status",
             callback=lambda r: (captured.append(r), (200, {}, json.dumps({"message": {}})))[1],
         )
         status_service.dispatch_on_status(payload=payload)
@@ -611,7 +611,7 @@ def test_update_reschedules_every_resource_in_the_group_together(bpp_identity_se
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_update",
+            "https://bap.example.com/on_update",
             callback=lambda r: (captured.append(r), (200, {}, json.dumps({"message": {}})))[1],
         )
         update_service.dispatch_on_update(payload=payload)
@@ -669,7 +669,7 @@ def test_update_fails_the_whole_group_if_only_one_new_slot_is_available(
     with responses.RequestsMock() as rsps:
         rsps.add_callback(
             responses.POST,
-            "http://gateway:8000/on_update",
+            "https://bap.example.com/on_update",
             callback=lambda r: (captured.append(r), (200, {}, json.dumps({"message": {}})))[1],
         )
         update_service.dispatch_on_update(payload=payload)

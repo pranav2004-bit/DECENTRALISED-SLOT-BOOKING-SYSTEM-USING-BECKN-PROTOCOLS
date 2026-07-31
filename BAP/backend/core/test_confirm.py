@@ -143,18 +143,34 @@ def _lookup_callback(known_participants):
     return callback
 
 
+def _mock_bpp_registry_lookup(rsps, *, bpp_id="bpp.example.com", url="https://bpp.example.com"):
+    """livetracker4.md §1.1: every direct trigger_confirm call now does a fresh
+    Registry lookup (registry_client.resolve_subscribed_bpp) immediately before
+    dispatch — every trigger test needs this mocked, same as it always needed
+    Gateway mocked before this phase."""
+
+    def callback(request):
+        filters = json.loads(request.body)
+        assert filters["subscriber_id"] == bpp_id
+        body = [{"subscriber_id": bpp_id, "status": "SUBSCRIBED", "url": url}]
+        return (200, {}, json.dumps(body))
+
+    rsps.add_callback(responses.POST, "http://registry:8000/lookup", callback=callback)
+
+
 @pytest.mark.django_db
 def test_trigger_confirm_targets_the_same_bpp_from_init_and_sends_a_real_signed_order(
     bap_identity_settings, client
 ):
     """FUNC (the core §3.4 flow, BAP's side): confirming after a real successful
-    initialization reaches Gateway as a real, signed Beckn Order targeting the
-    exact same BPP that /init already resolved to — the resent order drops the
-    stale quote (the BPP recomputes it fresh one final time)."""
+    initialization reaches the BPP directly (livetracker4.md §1.1 — no Gateway
+    hop for /confirm anymore) as a real, signed Beckn Order targeting the exact
+    same BPP that /init already resolved to — the resent order drops the stale
+    quote (the BPP recomputes it fresh one final time)."""
     _session_with_init()
     captured_requests = []
 
-    def gateway_confirm_callback(request):
+    def bpp_confirm_callback(request):
         captured_requests.append(request)
         body = json.loads(request.body)
         return (
@@ -164,8 +180,9 @@ def test_trigger_confirm_targets_the_same_bpp_from_init_and_sends_a_real_signed_
         )
 
     with responses.RequestsMock() as rsps:
+        _mock_bpp_registry_lookup(rsps)
         rsps.add_callback(
-            responses.POST, "http://gateway:8000/confirm", callback=gateway_confirm_callback
+            responses.POST, "https://bpp.example.com/confirm", callback=bpp_confirm_callback
         )
         resp = client.post(
             reverse("confirm-trigger"),
@@ -195,11 +212,13 @@ def test_trigger_confirm_forwards_the_real_inbound_correlation_id_to_gateway(
     """livetracker2.md §3.10: a real gap found live — BAP never forwarded
     X-Correlation-Id on its outbound call to Gateway, so every hop minted its
     own disconnected id. Confirmed fixed: the exact inbound id is echoed
-    unchanged on the outbound request, not silently dropped or regenerated."""
+    unchanged on the outbound request, not silently dropped or regenerated.
+    livetracker4.md §1.1: the outbound call is now direct to the BPP, one hop
+    shorter, but the same id still spans the whole request unchanged."""
     _session_with_init()
     captured_requests = []
 
-    def gateway_confirm_callback(request):
+    def bpp_confirm_callback(request):
         captured_requests.append(request)
         body = json.loads(request.body)
         return (
@@ -209,8 +228,9 @@ def test_trigger_confirm_forwards_the_real_inbound_correlation_id_to_gateway(
         )
 
     with responses.RequestsMock() as rsps:
+        _mock_bpp_registry_lookup(rsps)
         rsps.add_callback(
-            responses.POST, "http://gateway:8000/confirm", callback=gateway_confirm_callback
+            responses.POST, "https://bpp.example.com/confirm", callback=bpp_confirm_callback
         )
         resp = client.post(
             reverse("confirm-trigger"),
@@ -226,16 +246,17 @@ def test_trigger_confirm_forwards_the_real_inbound_correlation_id_to_gateway(
 @pytest.mark.django_db
 def test_trigger_confirm_is_idempotent_on_repeat_with_the_same_key(bap_identity_settings, client):
     """FUNC (§3.6): a flaky-connection retry of the confirm POST, carrying the same
-    real Idempotency-Key header, must not fire a second real Beckn /confirm at
-    Gateway — the exact recorded response is replayed instead. Proven by asserting
-    Gateway's /confirm was hit exactly once despite two identical POSTs."""
+    real Idempotency-Key header, must not fire a second real Beckn /confirm at the
+    BPP (livetracker4.md §1.1: direct dispatch, no Gateway hop) — the exact
+    recorded response is replayed instead. Proven by asserting the BPP's /confirm
+    was hit exactly once despite two identical POSTs."""
     from django.core.cache import cache
 
     cache.clear()
     _session_with_init()
     captured_requests = []
 
-    def gateway_confirm_callback(request):
+    def bpp_confirm_callback(request):
         captured_requests.append(request)
         body = json.loads(request.body)
         return (
@@ -245,8 +266,9 @@ def test_trigger_confirm_is_idempotent_on_repeat_with_the_same_key(bap_identity_
         )
 
     with responses.RequestsMock() as rsps:
+        _mock_bpp_registry_lookup(rsps)
         rsps.add_callback(
-            responses.POST, "http://gateway:8000/confirm", callback=gateway_confirm_callback
+            responses.POST, "https://bpp.example.com/confirm", callback=bpp_confirm_callback
         )
         first = client.post(
             reverse("confirm-trigger"),
@@ -272,15 +294,15 @@ def test_trigger_confirm_without_idempotency_key_is_not_deduplicated(
     bap_identity_settings, client
 ):
     """The header is opt-in (API_CONVENTIONS.md) — two requests with no key at all
-    are two independent real attempts, each forwarded to Gateway, same as before
-    this phase."""
+    are two independent real attempts, each dispatched directly to the BPP
+    (livetracker4.md §1.1), same as before this phase."""
     from django.core.cache import cache
 
     cache.clear()
     _session_with_init()
     captured_requests = []
 
-    def gateway_confirm_callback(request):
+    def bpp_confirm_callback(request):
         captured_requests.append(request)
         body = json.loads(request.body)
         return (
@@ -290,8 +312,9 @@ def test_trigger_confirm_without_idempotency_key_is_not_deduplicated(
         )
 
     with responses.RequestsMock() as rsps:
+        _mock_bpp_registry_lookup(rsps)
         rsps.add_callback(
-            responses.POST, "http://gateway:8000/confirm", callback=gateway_confirm_callback
+            responses.POST, "https://bpp.example.com/confirm", callback=bpp_confirm_callback
         )
         client.post(
             reverse("confirm-trigger"),
@@ -311,20 +334,23 @@ def test_trigger_confirm_without_idempotency_key_is_not_deduplicated(
 def test_trigger_confirm_retryable_failure_is_not_cached_so_a_real_retry_can_succeed(
     bap_identity_settings, client
 ):
-    """NEG (§3.6): a transient 502 (Gateway unreachable) must NOT be cached under
-    the Idempotency-Key — that response is `retryable: true`, so a genuine retry
-    with the same key must actually re-attempt the real call, not be stuck
-    replaying the stale failure. Proven by having the first call fail (Gateway
-    connection refused, no mock registered) and the second, same-key call succeed
-    once Gateway is reachable."""
+    """NEG (§3.6): a transient 502 (BPP unreachable, livetracker4.md §1.1's direct
+    dispatch) must NOT be cached under the Idempotency-Key — that response is
+    `retryable: true`, so a genuine retry with the same key must actually
+    re-attempt the real call, not be stuck replaying the stale failure. Proven by
+    having the first call fail (BPP connection refused, no mock registered for
+    its /confirm) and the second, same-key call succeed once the BPP is
+    reachable."""
     from django.core.cache import cache
 
     cache.clear()
     _session_with_init()
 
-    with responses.RequestsMock():
-        # No callback registered for /confirm -> requests raises ConnectionError,
+    with responses.RequestsMock() as rsps:
+        # Registry lookup succeeds (BPP is SUBSCRIBED), but no callback registered
+        # for the BPP's own /confirm -> requests raises ConnectionError,
         # trigger_confirm wraps it as ConfirmError(status_code=502).
+        _mock_bpp_registry_lookup(rsps)
         first = client.post(
             reverse("confirm-trigger"),
             data=json.dumps({"transaction_id": "txn-1"}),
@@ -336,7 +362,7 @@ def test_trigger_confirm_retryable_failure_is_not_cached_so_a_real_retry_can_suc
 
     captured_requests = []
 
-    def gateway_confirm_callback(request):
+    def bpp_confirm_callback(request):
         captured_requests.append(request)
         body = json.loads(request.body)
         return (
@@ -346,8 +372,9 @@ def test_trigger_confirm_retryable_failure_is_not_cached_so_a_real_retry_can_suc
         )
 
     with responses.RequestsMock() as rsps:
+        _mock_bpp_registry_lookup(rsps)
         rsps.add_callback(
-            responses.POST, "http://gateway:8000/confirm", callback=gateway_confirm_callback
+            responses.POST, "https://bpp.example.com/confirm", callback=bpp_confirm_callback
         )
         second = client.post(
             reverse("confirm-trigger"),
@@ -478,7 +505,15 @@ def test_on_confirm_view_acks_when_both_bpp_and_gateway_signatures_are_valid(moc
 
 
 @pytest.mark.django_db
-def test_on_confirm_view_rejects_missing_gateway_authorization(client):
+def test_on_confirm_view_accepts_missing_gateway_authorization_now_that_gateway_is_optional(
+    client,
+):
+    """livetracker4.md §1.2: on_confirm now arrives directly from the BPP with no
+    Gateway hop at all — a missing X-Gateway-Authorization header must be
+    *accepted*, not rejected, as long as the BPP's own signature is genuinely
+    valid (require_gateway=False for this action's trust check). This is the
+    behavior this exact test asserted the opposite of before this phase — the
+    change is deliberate, not a regression."""
     bpp_pub, bpp_priv = generate_signing_key_pair()
     payload = _build_on_confirm_payload()
     body = json.dumps(payload).encode()
@@ -500,6 +535,24 @@ def test_on_confirm_view_rejects_missing_gateway_authorization(client):
             content_type="application/json",
             HTTP_AUTHORIZATION=bpp_header,
         )
+
+    assert resp.status_code == 200
+    assert resp.json()["message"]["ack"]["status"] == "ACK"
+
+
+@pytest.mark.django_db
+def test_on_confirm_view_rejects_missing_bpp_authorization_even_without_gateway(client):
+    """NEG: require_gateway=False only makes the Gateway signature optional — the
+    BPP's own signature is still mandatory. Proves the two checks are genuinely
+    independent, not that authentication was accidentally dropped entirely."""
+    payload = _build_on_confirm_payload()
+    body = json.dumps(payload).encode()
+
+    resp = client.post(
+        reverse("on_confirm"),
+        data=body,
+        content_type="application/json",
+    )
 
     assert resp.status_code == 401
 

@@ -265,7 +265,8 @@ jobs:
     # automatically — this job runs the real Playwright suite (BAP/web/e2e/) against the real
     # `docker compose` stack on every PR, matching the "not mocked, not simulated" discipline
     # those manual passes already held themselves to, not a lighter faked-backend substitute.
-    timeout-minutes: 30 # the suite's own real ~9-10 minute wait (see golden-path.spec.ts)
+    timeout-minutes: 35 # the suite's own real ~9-10 minute wait plus up to 500s (widened
+    # 2026-07-31) completion-poll margin — see golden-path.spec.ts's own MAX_COMPLETION_POLL_ATTEMPTS
     # plus build/up/health/seed/teardown overhead, with real margin for a slow CI runner.
     steps:
       - uses: actions/checkout@v4
@@ -284,7 +285,7 @@ jobs:
         # safe local/CI defaults (same file a developer copies for local setup) — no substitution
         # needed, just materializing them.
         run: |
-          for app in registry beckn-gateway BAP/backend BAP/web BPP/backend BPP/web; do
+          for app in registry beckn-gateway BAP/backend BAP/web BPP/backend; do
             cp "$app/.env.example" "$app/.env"
           done
 
@@ -296,10 +297,17 @@ jobs:
         # normally supplies on a developer machine — that file is gitignored, so CI has no
         # other source for it. One `docker compose build` at a time, per RUNBOOK.md's own
         # documented "don't stack overlapping builds" lesson from this exact repo's history.
-        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml build
+        #
+        # Real gap found live (2026-07-31): `bpp-web` was being built and started here despite
+        # this suite never touching it at all — confirmed by grep, zero references anywhere in
+        # BAP/web/e2e/. The golden path only drives `bap-web`'s UI; BPP is seeded via direct
+        # HTTP calls (global-setup.ts's own docstring: "NOT through BPP's own web UI"). Scoped
+        # to exactly the 5 services this test actually needs, freeing real CPU/memory on the
+        # shared CI runner — a genuine resource-contention reduction, not a workaround.
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml build registry beckn-gateway bap-backend bap-web bpp-backend
 
       - name: Start the real stack
-        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d registry beckn-gateway bap-backend bap-web bpp-backend
 
       - name: Wait for real health
         # No docker-compose healthcheck block exists yet for the app containers themselves

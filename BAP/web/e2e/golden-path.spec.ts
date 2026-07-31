@@ -35,7 +35,14 @@ const seed: SeedData = JSON.parse(
 // (+10s) absorbs one extra reconciliation tick's worth of scheduling jitter.
 const RECONCILIATION_INTERVAL_SECONDS = Number(process.env.E2E_RECONCILIATION_INTERVAL_SECONDS ?? 15);
 const RECONCILIATION_POLL_MS = (RECONCILIATION_INTERVAL_SECONDS + 10) * 1000;
-const MAX_COMPLETION_POLL_ATTEMPTS = 10; // 10 * ~25s ceiling well beyond one real sweep tick
+// Real gap found live (2026-07-31): 10 attempts (250s, ~16 real reconciliation ticks) still
+// wasn't enough margin on a real CI run — a shared GitHub-hosted runner (2 cores/7GB) under
+// real contention from 5 live containers can genuinely delay the reconciliation thread's own
+// scheduling, not just the request-handling path this suite otherwise exercises. Widened to 20
+// attempts (500s, ~33 ticks) — a reasoned, bounded increase matched to the actual contention
+// class found, not an open-ended one; `bpp-web` (never used by this suite) was also removed
+// from the CI job entirely as the more direct fix for the same root cause (see ci.yml).
+const MAX_COMPLETION_POLL_ATTEMPTS = 20;
 
 function isoToDatetimeLocalUtc(iso: string): string {
   // The browser context is pinned to timezoneId: 'UTC' (playwright.config.ts), so a

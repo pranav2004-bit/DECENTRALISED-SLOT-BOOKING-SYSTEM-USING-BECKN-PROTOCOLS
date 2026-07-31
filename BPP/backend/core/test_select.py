@@ -300,6 +300,28 @@ def test_dispatch_on_select_holds_the_real_slot_and_returns_a_real_quote(bpp_ide
 
 
 @pytest.mark.django_db
+def test_dispatch_on_select_does_not_raise_when_bap_is_unreachable(bpp_identity_settings):
+    """livetracker4.md §1.4 coverage-parity replacement for beckn-gateway's retired
+    test_relay_on_select_does_not_raise_when_bap_is_unreachable."""
+    resource, slot = _make_resource_with_slot(price_value="750.00")
+    requested_timestamp = slot.start_time.isoformat()
+    payload = _build_select_payload(
+        item_id=str(resource.id), requested_timestamp=requested_timestamp
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(
+            responses.POST,
+            "https://bap.example.com/on_select",
+            body=ConnectionError("simulated unreachable BAP"),
+        )
+        select_service.dispatch_on_select(payload=payload)
+
+    slot.refresh_from_db()
+    assert slot.capacity_remaining == 0
+
+
+@pytest.mark.django_db
 def test_dispatch_on_select_returns_slot_unavailable_for_a_nonexistent_time(bpp_identity_settings):
     resource, _slot = _make_resource_with_slot()
     payload = _build_select_payload(

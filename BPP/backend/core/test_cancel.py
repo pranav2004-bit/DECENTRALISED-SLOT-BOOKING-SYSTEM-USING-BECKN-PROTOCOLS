@@ -302,6 +302,28 @@ def test_dispatch_on_cancel_cancels_the_booking_and_restores_capacity(bpp_identi
 
 
 @pytest.mark.django_db
+def test_dispatch_on_cancel_does_not_raise_when_bap_is_unreachable(bpp_identity_settings, bus):
+    """livetracker4.md §1.4 coverage-parity replacement for beckn-gateway's retired
+    test_relay_on_cancel_does_not_raise_when_bap_is_unreachable — dispatch_on_cancel
+    itself now owns the direct-to-BAP POST (§1.2), so its own fire-and-forget
+    log-don't-raise discipline is what protects the background thread, not
+    Gateway's relay anymore."""
+    resource, slot, booking = _make_active_booking(holder_ref="txn-1")
+    payload = _build_cancel_payload(order_id=booking.id, transaction_id="txn-1")
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(
+            responses.POST,
+            "https://bap.example.com/on_cancel",
+            body=ConnectionError("simulated unreachable BAP"),
+        )
+        cancel_service.dispatch_on_cancel(payload=payload)
+
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.CANCELLED
+
+
+@pytest.mark.django_db
 def test_dispatch_on_cancel_rejects_a_still_held_booking(bpp_identity_settings, bus):
     """§3.5's own explicit scope decision: a still-HELD hold was never actually
     offered to the customer as a confirmed, cancellable Order."""

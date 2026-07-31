@@ -70,6 +70,8 @@
 - The Discovery Module orchestrates the Beckn discovery workflow by processing buyer search requests, communicating with the Beckn Gateway, and processing the corresponding on_search responses received from Beckn Provider Platforms (BPPs).
 - Registry communication is handled through the Registry Client Service, which internally uses the HTTP Client Service.
 
+> **Implementation note (2026-07-31, `livetracker4.md` §1.1/§1.4):** the Select/Init/Confirm/Status/Cancel/Update/Track/Rating/Support modules above dispatch directly to the resolved BPP's own `subscriber_url` (via `get_bpp_client()`, with a fresh Registry `SUBSCRIBED` re-check on every call — `resolve_subscribed_bpp()`) — **not** through the Beckn Gateway. Only the Discovery Module's `/search` still routes through Gateway; that's the one action the real protocol actually requires it for (`protocol_compliance_notes_v1.1.md` §P). §5's "Communication Participants" list below still names Beckn Gateway because `/search` genuinely uses it, not because every module does.
+
 ## 4. Data Storage & Persistence
 
 | Storage Type | Technology |

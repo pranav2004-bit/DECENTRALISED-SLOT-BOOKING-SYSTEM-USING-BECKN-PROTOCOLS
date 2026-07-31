@@ -29,22 +29,9 @@ urlpatterns = [
     path("on_subscribe", core_views.on_subscribe_view, name="on_subscribe"),
     path("search", core_views.search_view, name="search"),
     path("on_search", core_views.on_search_view, name="on_search"),
-    path("select", core_views.select_view, name="select"),
-    path("on_select", core_views.on_select_view, name="on_select"),
-    path("init", core_views.init_view, name="init"),
-    path("on_init", core_views.on_init_view, name="on_init"),
-    path("confirm", core_views.confirm_view, name="confirm"),
-    path("on_confirm", core_views.on_confirm_view, name="on_confirm"),
-    path("status", core_views.status_view, name="status"),
-    path("on_status", core_views.on_status_view, name="on_status"),
-    path("cancel", core_views.cancel_view, name="cancel"),
-    path("on_cancel", core_views.on_cancel_view, name="on_cancel"),
-    path("update", core_views.update_view, name="update"),
-    path("on_update", core_views.on_update_view, name="on_update"),
-    path("track", core_views.track_view, name="track"),
-    path("on_track", core_views.on_track_view, name="on_track"),
-    path("rating", core_views.rating_view, name="rating"),
-    path("on_rating", core_views.on_rating_view, name="on_rating"),
-    path("support", core_views.support_view, name="support"),
-    path("on_support", core_views.on_support_view, name="on_support"),
+    # livetracker4.md §1.4 (2026-07-31): select/init/confirm/status/cancel/update/
+    # track/rating/support routes retired — per the real Beckn protocol
+    # (protocol_compliance_notes_v1.1.md §P), only /search routes through Gateway.
+    # Those 9 actions now dispatch directly BAP<->BPP (see gateway/core/routing.py's
+    # module docstring for the full story).
 ]

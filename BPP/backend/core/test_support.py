@@ -294,6 +294,24 @@ def test_dispatch_on_support_returns_the_owning_businesss_email_contact(bpp_iden
 
 
 @pytest.mark.django_db
+def test_dispatch_on_support_does_not_raise_when_bap_is_unreachable(bpp_identity_settings):
+    """livetracker4.md §1.4 coverage-parity replacement for beckn-gateway's retired
+    test_relay_on_support_does_not_raise_when_bap_is_unreachable."""
+    business, resource, slot, booking = _make_completed_booking(
+        holder_ref="txn-1", contact="owner@example.com"
+    )
+    payload = _build_support_payload(ref_id=booking.id, transaction_id="txn-1")
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(
+            responses.POST,
+            "https://bap.example.com/on_support",
+            body=ConnectionError("simulated unreachable BAP"),
+        )
+        support_service.dispatch_on_support(payload=payload)
+
+
+@pytest.mark.django_db
 def test_dispatch_on_support_returns_the_owning_businesss_phone_contact(bpp_identity_settings):
     business, resource, slot, booking = _make_completed_booking(
         holder_ref="txn-1", contact="+911234567890"

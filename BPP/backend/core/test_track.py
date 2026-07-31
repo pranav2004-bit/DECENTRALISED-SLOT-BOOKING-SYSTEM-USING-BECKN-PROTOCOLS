@@ -274,6 +274,22 @@ def test_dispatch_on_track_returns_a_real_inactive_tracking_object(bpp_identity_
 
 
 @pytest.mark.django_db
+def test_dispatch_on_track_does_not_raise_when_bap_is_unreachable(bpp_identity_settings):
+    """livetracker4.md §1.4 coverage-parity replacement for beckn-gateway's retired
+    test_relay_on_track_does_not_raise_when_bap_is_unreachable."""
+    resource, slot, booking = _make_active_booking(holder_ref="txn-1")
+    payload = _build_track_payload(order_id=booking.id, transaction_id="txn-1")
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(
+            responses.POST,
+            "https://bap.example.com/on_track",
+            body=ConnectionError("simulated unreachable BAP"),
+        )
+        track_service.dispatch_on_track(payload=payload)
+
+
+@pytest.mark.django_db
 def test_dispatch_on_track_rejects_a_booking_held_by_a_different_transaction(
     bpp_identity_settings,
 ):

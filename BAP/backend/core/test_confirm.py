@@ -206,6 +206,36 @@ def test_trigger_confirm_targets_the_same_bpp_from_init_and_sends_a_real_signed_
 
 
 @pytest.mark.django_db
+def test_trigger_confirm_rejects_when_bpp_no_longer_subscribed(bap_identity_settings, client):
+    """livetracker4.md §1.4 coverage-parity replacement for beckn-gateway's retired
+    test_dispatch_confirm_does_not_forward_when_bpp_no_longer_subscribed — Gateway no
+    longer re-checks SUBSCRIBED status for /confirm, so BAP's own
+    resolve_subscribed_bpp() fresh re-check (§1.1) is the only place this staleness
+    protection lives now."""
+    _session_with_init()
+
+    def not_subscribed_lookup(request):
+        filters = json.loads(request.body)
+        assert filters["subscriber_id"] == "bpp.example.com"
+        body = [
+            {"subscriber_id": "bpp.example.com", "status": "UNDER_SUBSCRIPTION", "url": "https://bpp.example.com"}
+        ]
+        return (200, {}, json.dumps(body))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/lookup", callback=not_subscribed_lookup
+        )
+        resp = client.post(
+            reverse("confirm-trigger"),
+            data=json.dumps({"transaction_id": "txn-1"}),
+            content_type="application/json",
+        )
+
+    assert resp.status_code == 502
+
+
+@pytest.mark.django_db
 def test_trigger_confirm_forwards_the_real_inbound_correlation_id_to_gateway(
     bap_identity_settings, client
 ):

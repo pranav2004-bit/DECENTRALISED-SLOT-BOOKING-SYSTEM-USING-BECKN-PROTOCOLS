@@ -330,6 +330,27 @@ def test_dispatch_on_confirm_activates_the_booking_and_returns_a_real_confirmed_
 
 
 @pytest.mark.django_db
+def test_dispatch_on_confirm_does_not_raise_when_bap_is_unreachable(bpp_identity_settings, bus):
+    """livetracker4.md §1.4 coverage-parity replacement for beckn-gateway's retired
+    test_relay_on_confirm_does_not_raise_when_bap_is_unreachable."""
+    resource, slot, booking = _make_held_booking(holder_ref="txn-1", price_value="899.00")
+    payload = _build_confirm_payload(
+        booking_id=booking.id, provider_id=resource.owner_ref, transaction_id="txn-1"
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(
+            responses.POST,
+            "https://bap.example.com/on_confirm",
+            body=ConnectionError("simulated unreachable BAP"),
+        )
+        confirm_service.dispatch_on_confirm(payload=payload)
+
+    booking.refresh_from_db()
+    assert booking.status == Booking.Status.ACTIVE
+
+
+@pytest.mark.django_db
 def test_dispatch_on_confirm_rejects_a_booking_held_by_a_different_transaction(
     bpp_identity_settings, bus
 ):

@@ -21,7 +21,7 @@ The Beckn Gateway is the network discovery component of the Beckn ecosystem. It 
 - Discover the appropriate BPPs.
 - Route / Multicast the search requests to the discovered BPPs.
 
-> **Implementation note:** a `POST /search` endpoint exists but is Phase-4.1-scoped trust-chain plumbing only — it verifies the caller's signature via Registry Lookup and returns which SUBSCRIBED BPPs it would route to. It does not implement real search/on_search business logic; intent parsing and catalog routing remain out of scope for now.
+> **Implementation note (updated 2026-07-31):** `POST /search` started as Phase-4.1-scoped trust-chain plumbing only (signature verification + Registry Lookup, no real forwarding); real forwarding to every SUBSCRIBED BPP was implemented in `livetracker2.md` Phase 3.1 and is what runs today. `livetracker4.md` §1.1-§1.4 (2026-07-31) additionally confirmed and enforced that `/search`/`/on_search` are the *only* actions Gateway routes — the other 9 action pairs (select/init/confirm/status/cancel/update/track/rating/support), which briefly also routed through Gateway during `livetracker2.md`, now dispatch directly BAP<->BPP per the real protocol's actual scope (`protocol_compliance_notes_v1.1.md` §P, `docs/adr/0005-gateway-search-only-routing.md`). Intent parsing (query-text/relevance filtering) is real as of `livetracker3.md` §1.1, living in BAP's/BPP's own catalog-building code, not Gateway.
 
 ### 2. Search Response Routing Module
 **Responsibilities**

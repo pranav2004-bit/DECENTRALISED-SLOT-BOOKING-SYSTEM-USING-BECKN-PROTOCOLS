@@ -58,3 +58,4 @@ Significant decisions get an ADR in [docs/adr/](docs/adr/) rather than being bur
 | [0002](docs/adr/0002-trunk-based-development.md) | Trunk-based development, no long-lived `develop` branch |
 | [0003](docs/adr/0003-generic-inventory-core.md) | Generic domain-agnostic inventory core, shared across Healthcare/Automotive/Beauty, proven on one category before widening |
 | [0004](docs/adr/0004-web-ui-duplicated-not-shared-package.md) | BAP/web and BPP/web's shared UI foundation is duplicated code, not a shared npm package — no JS monorepo tooling exists yet, revisit if drift becomes a real problem |
+| [0005](docs/adr/0005-gateway-search-only-routing.md) | Gateway routes only /search; the other 9 actions dispatch directly BAP<->BPP, trading network-wide Gateway visibility for lower latency/blast-radius, per the real protocol's own scope |

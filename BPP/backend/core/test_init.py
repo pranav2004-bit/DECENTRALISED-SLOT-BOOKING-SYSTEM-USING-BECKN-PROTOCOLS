@@ -313,6 +313,24 @@ def test_dispatch_on_init_returns_a_real_quotation_for_a_held_booking(bpp_identi
 
 
 @pytest.mark.django_db
+def test_dispatch_on_init_does_not_raise_when_bap_is_unreachable(bpp_identity_settings):
+    """livetracker4.md §1.4 coverage-parity replacement for beckn-gateway's retired
+    test_relay_on_init_does_not_raise_when_bap_is_unreachable."""
+    resource, slot, booking = _make_held_booking(holder_ref="txn-1", price_value="899.00")
+    payload = _build_init_payload(
+        booking_id=booking.id, provider_id=resource.owner_ref, transaction_id="txn-1"
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(
+            responses.POST,
+            "https://bap.example.com/on_init",
+            body=ConnectionError("simulated unreachable BAP"),
+        )
+        init_service.dispatch_on_init(payload=payload)
+
+
+@pytest.mark.django_db
 def test_dispatch_on_init_rejects_a_booking_held_by_a_different_transaction(bpp_identity_settings):
     """The IDOR-shaped gap closed via self-audit before implementing
     (protocol_compliance_notes_v1.1.md §J): a booking held under one transaction

@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { RealtimeStatus } from './RealtimeStatus';
+import { AccountStatus } from './AccountStatus';
 
 export function AppShell({ appName, children }: { appName: string; children: ReactNode }) {
   return (
@@ -19,7 +20,10 @@ export function AppShell({ appName, children }: { appName: string; children: Rea
           >
             {appName}
           </Link>
-          <RealtimeStatus />
+          <div className="flex items-center gap-4">
+            <AccountStatus />
+            <RealtimeStatus />
+          </div>
         </div>
       </header>
       <main id="main-content" className="flex flex-1 flex-col">

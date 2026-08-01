@@ -17,6 +17,8 @@ export interface BusinessAccount {
   role: 'OWNER' | 'STAFF';
   managed_by: string | null;
   assigned_resource_ids?: string[];
+  /** livetracker3.md §7.1 — an owner's own resources, mirroring assigned_resource_ids' shape. */
+  owned_resource_ids?: string[];
 }
 
 function readCookie(name: string): string | null {
@@ -33,6 +35,26 @@ async function csrfHeader(): Promise<Record<string, string>> {
 }
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
+
+/** livetracker3.md §7.1 — real business signup, mirroring BAP/web's own signup(). */
+export async function signup(
+  businessName: string,
+  contact: string,
+  password: string,
+  domainCode: string
+): Promise<BusinessAccount> {
+  const resp = await apiFetch('/api/v1/auth/signup', {
+    method: 'POST',
+    headers: { ...JSON_HEADERS, ...(await csrfHeader()) },
+    body: JSON.stringify({
+      business_name: businessName,
+      contact,
+      password,
+      domain_code: domainCode,
+    }),
+  });
+  return resp.json();
+}
 
 export async function login(contact: string, password: string): Promise<BusinessAccount> {
   const resp = await apiFetch('/api/v1/auth/login', {

@@ -69,7 +69,13 @@ describe('DashboardPage', () => {
       owned_resource_ids: ['res-1', 'res-2'],
     });
     const getSlotsSpy = vi.spyOn(availabilityApi, 'getSlots').mockImplementation(async (id) => ({
-      resource: { id, name: id === 'res-1' ? 'Stylist A' : 'Stylist B', average_rating: null, rating_count: 0 },
+      resource: {
+        id,
+        name: id === 'res-1' ? 'Stylist A' : 'Stylist B',
+        average_rating: null,
+        rating_count: 0,
+        assigned_staff_id: null,
+      },
       slots: [],
     }));
     render(<DashboardPage />);

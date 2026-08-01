@@ -209,10 +209,23 @@ function AvailabilityDashboard({ resourceId }: { resourceId: string }) {
         </div>
         <span className="flex items-center gap-2 text-xs text-neutral-600">
           <span
-            className={`h-2 w-2 rounded-full ${status === 'open' ? 'bg-green-500' : 'bg-neutral-400'}`}
+            className={`h-2 w-2 rounded-full ${
+              status === 'open'
+                ? 'bg-green-500'
+                : status === 'forbidden'
+                  ? 'bg-red-500'
+                  : 'bg-neutral-400'
+            }`}
             aria-hidden="true"
           />
-          <span aria-live="polite">{status === 'open' ? 'Live' : 'Connecting…'}</span>
+          {/* livetracker3.md §8.1's own sixth post-close audit: `forbidden` (a real,
+              permanent access-revoked close, e.g. after being unassigned) must read
+              distinctly from `Connecting…` — a staff account whose access just ended
+              would otherwise see an endlessly "connecting" dashboard that never
+              resolves and never explains why. */}
+          <span aria-live="polite">
+            {status === 'open' ? 'Live' : status === 'forbidden' ? 'Access ended' : 'Connecting…'}
+          </span>
         </span>
       </div>
       {actionMessage && (

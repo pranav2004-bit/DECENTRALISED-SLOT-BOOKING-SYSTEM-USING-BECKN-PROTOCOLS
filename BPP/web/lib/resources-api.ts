@@ -1,5 +1,6 @@
 import { apiFetch } from './api-client';
 import { csrfHeader } from './auth-api';
+import { getSlots, type ResourceInfo } from './availability-api';
 
 /**
  * livetracker3.md §7.1: the resource-creation/availability-generation half of the
@@ -54,4 +55,17 @@ export async function createAvailability(
     }),
   });
   return resp.json();
+}
+
+/**
+ * livetracker3.md §8.1: shared with `app/dashboard/page.tsx` (which introduced this
+ * pattern in §7.1) and the new `app/staff/page.tsx` — a business's own resource count
+ * is small, and every resource here is already individually fetched again on its own
+ * availability page regardless, so no second bulk-listing endpoint is needed for
+ * either the dashboard's own resource list or the staff page's resource picker.
+ */
+export async function fetchOwnedResources(ids: string[]): Promise<ResourceInfo[]> {
+  if (ids.length === 0) return [];
+  const results = await Promise.all(ids.map((id) => getSlots(id)));
+  return results.map((r) => r.resource);
 }

@@ -339,6 +339,11 @@ def resource_availability_create_view(request, resource_id):
                         else None
                     ),
                     "rating_count": resource.rating_count,
+                    # livetracker3.md §8.1: lets the owner-side resource list show
+                    # each resource's current staff assignment (or lack of one)
+                    # without a second endpoint — same resource this dashboard
+                    # already fetches via `getSlots()`.
+                    "assigned_staff_id": resource.domain_data.get("assigned_staff_id"),
                 },
                 "slots": [
                     {
@@ -462,7 +467,29 @@ def staff_view(request):
 
     if request.method == "GET":
         staff = request.user.staff_members.values("id", "business_name", "contact", "is_active")
-        return JsonResponse({"staff": list({**s, "id": str(s["id"])} for s in staff)}, status=200)
+        # livetracker3.md §8.1: the staff-management UI needs to show each staff
+        # account's current resource assignment (or lack of one) without a second,
+        # per-row round trip — cheaper to compute here, same "one wire call" reasoning
+        # as `_business_account_json`'s own owned/assigned id fields.
+        assigned_by_staff: dict[str, list[str]] = {}
+        for resource in Resource.objects.filter(owner_ref=str(request.user.id)).only(
+            "id", "domain_data"
+        ):
+            staff_id = resource.domain_data.get("assigned_staff_id")
+            if staff_id:
+                assigned_by_staff.setdefault(staff_id, []).append(str(resource.id))
+        return JsonResponse(
+            {
+                "staff": [
+                    {
+                        **{**s, "id": str(s["id"])},
+                        "assigned_resource_ids": assigned_by_staff.get(str(s["id"]), []),
+                    }
+                    for s in staff
+                ]
+            },
+            status=200,
+        )
 
     try:
         payload = json.loads(request.body or b"{}")
@@ -511,13 +538,132 @@ def staff_view(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
+@rate_limit(limit_per_minute=30, scope="staff-status", key_func=by_authenticated_account)
+def staff_status_view(request, staff_id):
+    """livetracker3.md §8.1's own seventh post-close audit: the real gap flagged and now
+    closed — deactivating/reactivating a staff account was previously only possible via
+    Django admin (`models.py`'s own documented "Provider Lifecycle Management"
+    mechanism, `admin.py`'s own explicit "the real deactivation mechanism, not a
+    placeholder"), with no real path for an owner to do it themselves. Reuses the same
+    `is_active` flag `authenticate()` already refuses a login for (`models.py`'s own
+    docstring) — no new auth machinery, matching this project's own established
+    `role=STAFF` precedent of reusing existing plumbing rather than inventing a second.
+    Deactivating also clears any resource this staff account was assigned to — the same
+    real gap the earlier unassign work closed one level up applies here too: a
+    deactivated-but-still-assigned staff account would otherwise leave that resource
+    silently unreachable (nobody could log in and manage it) until an owner happened to
+    notice and manually unassign it separately."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+    BusinessAccount = get_user_model()
+    if request.user.role != BusinessAccount.Role.OWNER:
+        return error_response("FORBIDDEN", "only a business owner account can manage staff", 403)
+
+    try:
+        staff = BusinessAccount.objects.get(
+            id=staff_id, role=BusinessAccount.Role.STAFF, managed_by=request.user
+        )
+    except (BusinessAccount.DoesNotExist, DjangoValidationError, ValueError):
+        return error_response("NOT_FOUND", "no such staff account for this business", 404)
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    is_active = payload.get("is_active")
+    if not isinstance(is_active, bool):
+        return error_response(
+            "VALIDATION_ERROR", "is_active (boolean) is required", 400, field="is_active"
+        )
+
+    staff.is_active = is_active
+    staff.save(update_fields=["is_active", "updated_at"])
+
+    if not staff.is_active:
+        affected = Resource.objects.filter(
+            owner_ref=str(request.user.id), domain_data__assigned_staff_id=str(staff.id)
+        )
+        for resource in affected:
+            resource.domain_data = {
+                k: v for k, v in resource.domain_data.items() if k != "assigned_staff_id"
+            }
+            resource.save(update_fields=["domain_data", "updated_at"])
+
+    return JsonResponse({"id": str(staff.id), "is_active": staff.is_active}, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+@rate_limit(limit_per_minute=10, scope="staff-password-reset", key_func=by_authenticated_account)
+def staff_password_reset_view(request, staff_id):
+    """livetracker3.md §8.1's own ninth post-close audit: a real gap found and closed
+    — `set_password()` is called exactly once anywhere in this entire codebase (BAP or
+    BPP), at account creation, confirmed by direct grep; there was no way for a staff
+    account's password to ever change again short of the owner deleting and re-creating
+    the whole account. No self-service "forgot password" flow exists anywhere in this
+    project (no email/token infrastructure at all), and building one would be a much
+    larger, cross-cutting feature spanning BAP customers and BPP owners too — genuinely
+    out of this phase's own scope. The proportionate fix matching the trust model
+    already established here: the owner, who already chooses the staff account's
+    password once at creation (`staff_view`'s own `POST`), can reset it again later —
+    the same real, direct control they already had over `is_active`, not a new
+    boundary. Same `10/min` tier as `business-signup`/`business-login` (the closest
+    existing precedent for a credential-setting action), tighter than the other
+    staff-management endpoints' `30/min`."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+    BusinessAccount = get_user_model()
+    if request.user.role != BusinessAccount.Role.OWNER:
+        return error_response("FORBIDDEN", "only a business owner account can manage staff", 403)
+
+    try:
+        staff = BusinessAccount.objects.get(
+            id=staff_id, role=BusinessAccount.Role.STAFF, managed_by=request.user
+        )
+    except (BusinessAccount.DoesNotExist, DjangoValidationError, ValueError):
+        return error_response("NOT_FOUND", "no such staff account for this business", 404)
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    password = payload.get("password") or ""
+    if not password:
+        return error_response("VALIDATION_ERROR", "password is required", 400, field="password")
+    try:
+        password_validation.validate_password(password, user=staff)
+    except DjangoValidationError as exc:
+        return error_response("VALIDATION_ERROR", " ".join(exc.messages), 400, field="password")
+
+    staff.set_password(password)
+    staff.save(update_fields=["password", "updated_at"])
+    return JsonResponse({"id": str(staff.id)}, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
 @rate_limit(limit_per_minute=30, scope="resource-assign-staff", key_func=by_authenticated_account)
 def resource_assign_staff_view(request, resource_id):
     """§4.3: the owner assigns one of its own `Resource`s to one of its own staff
     accounts — `Resource.domain_data["assigned_staff_id"]` is the opaque link the
     availability-block view below trusts for staff-scoped authorization. Owner-only,
     same IDOR posture as `resource_availability_create_view` (404, not 403, on
-    mismatch, so a caller can't distinguish "not yours" from "doesn't exist")."""
+    mismatch, so a caller can't distinguish "not yours" from "doesn't exist").
+
+    livetracker3.md §8.1's own third post-close audit, two real gaps closed together
+    (unassign has to exist before the second one is safe to add, or a staff account
+    assigned once would be permanently stuck there with no way to move):
+    `staff_id: null` (the key present, explicitly `null` — distinct from the key being
+    entirely absent, which stays the pre-existing validation error) now clears the
+    resource's own assignment. And: a staff account already assigned to a *different*
+    resource of this same owner is now rejected up front — `SECURITY.md`'s own
+    IDOR-boundary doc already frames this system as one-Resource-per-staff by design
+    (`_resource_accessible_to()`'s own comment: "the *one* Resource its owner
+    explicitly assigned to it"), but nothing here previously enforced it; a second
+    assignment would have silently left that second resource unreachable via login
+    (`assigned_resource_ids[0]` is all any client ever reads)."""
     if not request.user.is_authenticated:
         return error_response("UNAUTHORIZED", "not logged in", 401)
     BusinessAccount = get_user_model()
@@ -534,7 +680,17 @@ def resource_assign_staff_view(request, resource_id):
     except json.JSONDecodeError:
         return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
 
-    staff_id = payload.get("staff_id")
+    if "staff_id" not in payload:
+        return error_response("VALIDATION_ERROR", "staff_id is required", 400, field="staff_id")
+
+    staff_id = payload["staff_id"]
+    if staff_id is None:
+        resource.domain_data = {
+            k: v for k, v in resource.domain_data.items() if k != "assigned_staff_id"
+        }
+        resource.save(update_fields=["domain_data", "updated_at"])
+        return JsonResponse({"id": str(resource.id), "assigned_staff_id": None}, status=200)
+
     if not staff_id:
         return error_response("VALIDATION_ERROR", "staff_id is required", 400, field="staff_id")
     if not BusinessAccount.objects.filter(
@@ -542,6 +698,19 @@ def resource_assign_staff_view(request, resource_id):
     ).exists():
         return error_response(
             "VALIDATION_ERROR", "no such staff account for this business", 400, field="staff_id"
+        )
+    if (
+        Resource.objects.filter(
+            owner_ref=str(request.user.id), domain_data__assigned_staff_id=str(staff_id)
+        )
+        .exclude(id=resource.id)
+        .exists()
+    ):
+        return error_response(
+            "VALIDATION_ERROR",
+            "this staff account is already assigned to a different resource",
+            400,
+            field="staff_id",
         )
 
     resource.domain_data = {**resource.domain_data, "assigned_staff_id": str(staff_id)}

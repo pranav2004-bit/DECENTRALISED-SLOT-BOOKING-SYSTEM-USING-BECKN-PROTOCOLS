@@ -23,6 +23,8 @@ export interface ResourceInfo {
   name: string;
   average_rating: string | null;
   rating_count: number;
+  /** livetracker3.md §8.1 — the staff account id currently assigned to self-manage this resource, or `null`. */
+  assigned_staff_id: string | null;
 }
 
 export interface BlockResult {

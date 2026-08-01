@@ -19,6 +19,27 @@ function setParams(entries: Record<string, string>) {
   mockUseSearchParams.mockReturnValue(new URLSearchParams(entries));
 }
 
+/**
+ * Real bug found live in CI, not a flake: every test in this file used a
+ * hardcoded '2026-08-01T10:00' as the value typed into the "Date and time"
+ * input — safely in the future when this file was first written, but the
+ * page's own `minDateTimeLocal()` (`app/select/page.tsx`) computes its
+ * `min` attribute from the *real* `Date.now()`. Once real time passed that
+ * hardcoded date, the browser's own native `<input type="datetime-local">`
+ * constraint validation silently rejected the now-past value, blocking
+ * form submission before `handleSubmit` ever ran — every test past the
+ * first one failed identically, with the form still showing its untouched
+ * initial state. A value computed from the real clock at test-run time
+ * can never go stale the same way again.
+ */
+function futureDateTimeLocal(): string {
+  const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${future.getFullYear()}-${pad(future.getMonth() + 1)}-${pad(future.getDate())}T${pad(
+    future.getHours()
+  )}:${pad(future.getMinutes())}`;
+}
+
 describe('SelectPage', () => {
   beforeEach(() => {
     setParams({
@@ -54,7 +75,7 @@ describe('SelectPage', () => {
     render(<SelectPage />);
 
     const input = screen.getByLabelText('Date and time');
-    fireEvent.change(input, { target: { value: '2026-08-01T10:00' } });
+    fireEvent.change(input, { target: { value: futureDateTimeLocal() } });
     await user.click(screen.getByRole('button', { name: 'Reserve this slot' }));
 
     expect(await screen.findByRole('status')).toHaveTextContent('Checking availability');
@@ -76,7 +97,7 @@ describe('SelectPage', () => {
     render(<SelectPage />);
 
     const input = screen.getByLabelText('Date and time');
-    fireEvent.change(input, { target: { value: '2026-08-01T10:00' } });
+    fireEvent.change(input, { target: { value: futureDateTimeLocal() } });
     await user.click(screen.getByRole('button', { name: 'Reserve this slot' }));
 
     expect(await screen.findByText('Slot no longer available')).toBeInTheDocument();
@@ -109,7 +130,7 @@ describe('SelectPage', () => {
     render(<SelectPage />);
 
     const input = screen.getByLabelText('Date and time');
-    fireEvent.change(input, { target: { value: '2026-08-01T10:00' } });
+    fireEvent.change(input, { target: { value: futureDateTimeLocal() } });
     await user.click(screen.getByRole('button', { name: 'Reserve this slot' }));
 
     await waitFor(() => expect(screen.getByText(/Includes:/)).toBeInTheDocument());
@@ -123,7 +144,7 @@ describe('SelectPage', () => {
     render(<SelectPage />);
 
     const input = screen.getByLabelText('Date and time');
-    fireEvent.change(input, { target: { value: '2026-08-01T10:00' } });
+    fireEvent.change(input, { target: { value: futureDateTimeLocal() } });
     await user.click(screen.getByRole('button', { name: 'Reserve this slot' }));
 
     expect(await screen.findByText('too many holds')).toBeInTheDocument();

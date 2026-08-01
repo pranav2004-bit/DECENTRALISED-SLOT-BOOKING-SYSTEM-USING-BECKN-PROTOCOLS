@@ -91,6 +91,35 @@ def test_owner_can_create_and_list_staff(client):
     assert list_resp.status_code == 200
     assert len(list_resp.json()["staff"]) == 1
     assert list_resp.json()["staff"][0]["contact"] == "stylist1@example.com"
+    # livetracker3.md §8.1: the staff-management UI's own "already assigned to X"
+    # state needs this without a second, per-row round trip.
+    assert list_resp.json()["staff"][0]["assigned_resource_ids"] == []
+
+
+@pytest.mark.django_db
+def test_staff_list_and_resource_dashboard_both_reflect_a_real_assignment(client):
+    """livetracker3.md §8.1: `staff_view` GET's `assigned_resource_ids` and
+    `resource_availability_create_view` GET's `assigned_staff_id` are two different
+    call sites reading the same underlying `domain_data["assigned_staff_id"]` link —
+    both must agree once a real assignment happens, not just the block-view's own
+    IDOR check the pre-existing tests already cover."""
+    _signup_and_login(client)
+    resource_id = _create_resource(client, name="Stylist A").json()["id"]
+    staff_id = _create_staff(client).json()["id"]
+
+    assign_resp = client.post(
+        reverse("resource-assign-staff", args=[resource_id]),
+        data={"staff_id": staff_id},
+        content_type="application/json",
+    )
+    assert assign_resp.status_code == 200
+
+    staff_list = client.get(reverse("staff")).json()["staff"]
+    assert staff_list[0]["assigned_resource_ids"] == [resource_id]
+
+    _create_availability(client, resource_id)
+    dashboard_resp = client.get(reverse("resource-availability-create", args=[resource_id]))
+    assert dashboard_resp.json()["resource"]["assigned_staff_id"] == staff_id
 
 
 @pytest.mark.django_db
@@ -117,6 +146,242 @@ def test_staff_account_cannot_create_or_list_staff(client):
     assert resp.status_code == 403
 
     resp = staff_client.get(reverse("staff"))
+    assert resp.status_code == 403
+
+
+# --- Staff deactivation/reactivation (owner-only) ------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_owner_can_deactivate_and_reactivate_a_staff_account(client):
+    """livetracker3.md §8.1's seventh post-close audit: a real gap found and closed —
+    deactivation was previously only possible via Django admin, with no real path for
+    an owner to do it themselves."""
+    _signup_and_login(client)
+    staff_id = _create_staff(client).json()["id"]
+
+    resp = client.post(
+        reverse("staff-status", args=[staff_id]),
+        data={"is_active": False},
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"id": staff_id, "is_active": False}
+    assert BusinessAccount.objects.get(id=staff_id).is_active is False
+    assert client.get(reverse("staff")).json()["staff"][0]["is_active"] is False
+
+    resp = client.post(
+        reverse("staff-status", args=[staff_id]),
+        data={"is_active": True},
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"id": staff_id, "is_active": True}
+    assert BusinessAccount.objects.get(id=staff_id).is_active is True
+
+
+@pytest.mark.django_db
+def test_deactivated_staff_account_cannot_log_in(client):
+    _signup_and_login(client)
+    staff_id = _create_staff(client).json()["id"]
+    client.post(
+        reverse("staff-status", args=[staff_id]),
+        data={"is_active": False},
+        content_type="application/json",
+    )
+
+    staff_client = Client()
+    resp = staff_client.post(
+        reverse("business-login"),
+        data={"contact": "stylist1@example.com", "password": TEST_PASSWORD},
+        content_type="application/json",
+    )
+    assert resp.status_code == 401
+
+
+@pytest.mark.django_db
+def test_deactivating_staff_clears_their_resource_assignment(client):
+    """The same real gap the earlier unassign work closed one level up applies here
+    too: a deactivated-but-still-assigned staff account would otherwise leave that
+    resource silently unreachable, with no one able to log in and manage it."""
+    _signup_and_login(client)
+    resource_id = _create_resource(client).json()["id"]
+    staff_id = _create_staff(client).json()["id"]
+    client.post(
+        reverse("resource-assign-staff", args=[resource_id]),
+        data={"staff_id": staff_id},
+        content_type="application/json",
+    )
+
+    resp = client.post(
+        reverse("staff-status", args=[staff_id]),
+        data={"is_active": False},
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+
+    resource = Resource.objects.get(id=resource_id)
+    assert "assigned_staff_id" not in resource.domain_data
+    assert client.get(reverse("staff")).json()["staff"][0]["assigned_resource_ids"] == []
+
+
+@pytest.mark.django_db
+def test_owner_cannot_deactivate_someone_elses_staff(client):
+    _signup_and_login(client, business_name="Salon A", contact="ownerA@example.com")
+    other_client = Client()
+    _signup_and_login(other_client, business_name="Salon B", contact="ownerB@example.com")
+    foreign_staff_id = _create_staff(
+        other_client, contact="foreign-stylist@example.com"
+    ).json()["id"]
+
+    resp = client.post(
+        reverse("staff-status", args=[foreign_staff_id]),
+        data={"is_active": False},
+        content_type="application/json",
+    )
+    assert resp.status_code == 404
+    assert BusinessAccount.objects.get(id=foreign_staff_id).is_active is True
+
+
+@pytest.mark.django_db
+def test_staff_status_requires_an_is_active_boolean(client):
+    _signup_and_login(client)
+    staff_id = _create_staff(client).json()["id"]
+
+    resp = client.post(
+        reverse("staff-status", args=[staff_id]),
+        data={},
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["field"] == "is_active"
+
+    resp = client.post(
+        reverse("staff-status", args=[staff_id]),
+        data={"is_active": "false"},
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.django_db
+def test_staff_account_cannot_change_staff_status(client):
+    _signup_and_login(client)
+    staff_id = _create_staff(client).json()["id"]
+
+    staff_client = Client()
+    staff_client.post(
+        reverse("business-login"),
+        data={"contact": "stylist1@example.com", "password": TEST_PASSWORD},
+        content_type="application/json",
+    )
+    resp = staff_client.post(
+        reverse("staff-status", args=[staff_id]),
+        data={"is_active": False},
+        content_type="application/json",
+    )
+    assert resp.status_code == 403
+
+
+# --- Staff password reset (owner-only) ------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_owner_can_reset_a_staff_accounts_password(client):
+    """livetracker3.md §8.1's ninth post-close audit: a real gap found and closed —
+    `set_password()` was previously called exactly once anywhere in this codebase, at
+    account creation, with no way for a staff account's password to ever change again."""
+    _signup_and_login(client)
+    staff_id = _create_staff(client).json()["id"]
+    new_password = "a-different-strong-passw0rd!"  # pragma: allowlist secret
+
+    resp = client.post(
+        reverse("staff-password-reset", args=[staff_id]),
+        data={"password": new_password},
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"id": staff_id}
+
+    staff_client = Client()
+    old_login = staff_client.post(
+        reverse("business-login"),
+        data={"contact": "stylist1@example.com", "password": TEST_PASSWORD},
+        content_type="application/json",
+    )
+    assert old_login.status_code == 401
+
+    new_login = staff_client.post(
+        reverse("business-login"),
+        data={"contact": "stylist1@example.com", "password": new_password},
+        content_type="application/json",
+    )
+    assert new_login.status_code == 200
+
+
+@pytest.mark.django_db
+def test_staff_password_reset_validates_the_new_password(client):
+    _signup_and_login(client)
+    staff_id = _create_staff(client).json()["id"]
+
+    resp = client.post(
+        reverse("staff-password-reset", args=[staff_id]),
+        data={"password": ""},
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["field"] == "password"
+
+    resp = client.post(
+        reverse("staff-password-reset", args=[staff_id]),
+        data={"password": "short"},  # pragma: allowlist secret
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["field"] == "password"
+
+
+@pytest.mark.django_db
+def test_owner_cannot_reset_someone_elses_staff_password(client):
+    _signup_and_login(client, business_name="Salon A", contact="ownerA@example.com")
+    other_client = Client()
+    _signup_and_login(other_client, business_name="Salon B", contact="ownerB@example.com")
+    foreign_staff_id = _create_staff(
+        other_client, contact="foreign-stylist@example.com"
+    ).json()["id"]
+
+    resp = client.post(
+        reverse("staff-password-reset", args=[foreign_staff_id]),
+        data={"password": "a-different-strong-passw0rd!"},  # pragma: allowlist secret
+        content_type="application/json",
+    )
+    assert resp.status_code == 404
+
+    foreign_client = Client()
+    still_works = foreign_client.post(
+        reverse("business-login"),
+        data={"contact": "foreign-stylist@example.com", "password": TEST_PASSWORD},
+        content_type="application/json",
+    )
+    assert still_works.status_code == 200
+
+
+@pytest.mark.django_db
+def test_staff_account_cannot_reset_a_password(client):
+    _signup_and_login(client)
+    staff_id = _create_staff(client).json()["id"]
+
+    staff_client = Client()
+    staff_client.post(
+        reverse("business-login"),
+        data={"contact": "stylist1@example.com", "password": TEST_PASSWORD},
+        content_type="application/json",
+    )
+    resp = staff_client.post(
+        reverse("staff-password-reset", args=[staff_id]),
+        data={"password": "a-different-strong-passw0rd!"},  # pragma: allowlist secret
+        content_type="application/json",
+    )
     assert resp.status_code == 403
 
 
@@ -209,6 +474,137 @@ def test_owner_cannot_assign_someone_elses_staff(client):
     assert "assigned_staff_id" not in resource.domain_data
 
 
+@pytest.mark.django_db
+def test_assign_staff_requires_the_staff_id_key(client):
+    """livetracker3.md §8.1's third post-close audit: omitting `staff_id` entirely
+    must stay a validation error — only an explicit `null` means unassign."""
+    _signup_and_login(client)
+    resource_id = _create_resource(client).json()["id"]
+
+    resp = client.post(
+        reverse("resource-assign-staff", args=[resource_id]),
+        data={},
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["field"] == "staff_id"
+
+
+@pytest.mark.django_db
+def test_owner_can_unassign_a_resource(client):
+    """livetracker3.md §8.1's third post-close audit: a real gap found and closed —
+    there was previously no way to clear a resource's assignment once made."""
+    _signup_and_login(client)
+    resource_id = _create_resource(client).json()["id"]
+    staff_id = _create_staff(client).json()["id"]
+
+    client.post(
+        reverse("resource-assign-staff", args=[resource_id]),
+        data={"staff_id": staff_id},
+        content_type="application/json",
+    )
+    resp = client.post(
+        reverse("resource-assign-staff", args=[resource_id]),
+        data={"staff_id": None},
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    assert resp.json()["assigned_staff_id"] is None
+    resource = Resource.objects.get(id=resource_id)
+    assert "assigned_staff_id" not in resource.domain_data
+
+    staff_list = client.get(reverse("staff")).json()["staff"]
+    assert staff_list[0]["assigned_resource_ids"] == []
+
+
+@pytest.mark.django_db
+def test_unassigned_staff_loses_access_to_the_resource(client):
+    """livetracker3.md §8.1's third post-close audit: unassigning must actually
+    revoke `_resource_accessible_to()`'s own IDOR boundary, not just cosmetically
+    clear the owner-side display."""
+    owner_client = client
+    _signup_and_login(owner_client)
+    resource_id = _create_resource(owner_client).json()["id"]
+    _create_availability(owner_client, resource_id)
+    staff_id = _create_staff(owner_client).json()["id"]
+    owner_client.post(
+        reverse("resource-assign-staff", args=[resource_id]),
+        data={"staff_id": staff_id},
+        content_type="application/json",
+    )
+
+    staff_client = Client()
+    staff_client.post(
+        reverse("business-login"),
+        data={"contact": "stylist1@example.com", "password": TEST_PASSWORD},
+        content_type="application/json",
+    )
+    assert (
+        staff_client.get(reverse("resource-availability-create", args=[resource_id])).status_code
+        == 200
+    )
+
+    owner_client.post(
+        reverse("resource-assign-staff", args=[resource_id]),
+        data={"staff_id": None},
+        content_type="application/json",
+    )
+
+    assert (
+        staff_client.get(reverse("resource-availability-create", args=[resource_id])).status_code
+        == 404
+    )
+
+
+@pytest.mark.django_db
+def test_owner_cannot_assign_a_staff_account_already_assigned_elsewhere(client):
+    """livetracker3.md §8.1's third post-close audit: a real gap found and closed —
+    `SECURITY.md` already documents this system as one-Resource-per-staff by design,
+    but nothing server-side enforced it before this fix."""
+    _signup_and_login(client)
+    resource_a = _create_resource(client, name="Stylist A").json()["id"]
+    resource_b = _create_resource(client, name="Stylist B").json()["id"]
+    staff_id = _create_staff(client).json()["id"]
+
+    client.post(
+        reverse("resource-assign-staff", args=[resource_a]),
+        data={"staff_id": staff_id},
+        content_type="application/json",
+    )
+    resp = client.post(
+        reverse("resource-assign-staff", args=[resource_b]),
+        data={"staff_id": staff_id},
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["field"] == "staff_id"
+    resource_b_obj = Resource.objects.get(id=resource_b)
+    assert "assigned_staff_id" not in resource_b_obj.domain_data
+
+
+@pytest.mark.django_db
+def test_owner_can_reassign_the_same_resource_to_the_same_staff(client):
+    """Regression check for the fix above: the new "already assigned elsewhere" guard
+    excludes the resource being reassigned itself, so a redundant re-assign (the exact
+    no-op the staff-management UI's own self-reassignment picker option relies on)
+    must still succeed, not be rejected as "already assigned elsewhere"."""
+    _signup_and_login(client)
+    resource_id = _create_resource(client).json()["id"]
+    staff_id = _create_staff(client).json()["id"]
+
+    client.post(
+        reverse("resource-assign-staff", args=[resource_id]),
+        data={"staff_id": staff_id},
+        content_type="application/json",
+    )
+    resp = client.post(
+        reverse("resource-assign-staff", args=[resource_id]),
+        data={"staff_id": staff_id},
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+
+
 # --- §4.3 Test Gate: staff logs in independently and blocks off their own availability -----------
 
 
@@ -294,6 +690,42 @@ def test_staff_cannot_block_a_resource_not_assigned_to_them(client):
     assert resp.status_code == 404
     slot = Slot.objects.get(id=other_resource_slot)
     assert slot.status == Slot.Status.AVAILABLE
+
+
+@pytest.mark.django_db
+def test_staff_cannot_view_the_availability_dashboard_of_a_resource_not_assigned_to_them(client):
+    """livetracker3.md §8.1 Test Gate's own negative case: a staff account that reaches
+    a *different* resource's `/resources/[resourceId]/availability` page (the same GET
+    `resource_availability_create_view` the dashboard itself calls) must be refused,
+    not just blocked from mutating it — same IDOR boundary as the block-view test
+    above, but for the read path the staff-management UI's own scoped-dashboard
+    Test Gate wording depends on."""
+    owner_client = client
+    _signup_and_login(owner_client)
+    resource_a = _create_resource(owner_client, name="Stylist A").json()["id"]
+    resource_b = _create_resource(owner_client, name="Stylist B").json()["id"]
+    _create_availability(owner_client, resource_a)
+    _create_availability(owner_client, resource_b)
+
+    staff_id = _create_staff(owner_client).json()["id"]
+    owner_client.post(
+        reverse("resource-assign-staff", args=[resource_a]),
+        data={"staff_id": staff_id},
+        content_type="application/json",
+    )
+
+    staff_client = Client()
+    staff_client.post(
+        reverse("business-login"),
+        data={"contact": "stylist1@example.com", "password": TEST_PASSWORD},
+        content_type="application/json",
+    )
+
+    own_resp = staff_client.get(reverse("resource-availability-create", args=[resource_a]))
+    assert own_resp.status_code == 200
+
+    other_resp = staff_client.get(reverse("resource-availability-create", args=[resource_b]))
+    assert other_resp.status_code == 404
 
 
 @pytest.mark.django_db

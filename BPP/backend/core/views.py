@@ -85,6 +85,17 @@ def _business_account_json(account) -> dict:
             )
         )
         data["assigned_resource_ids"] = [str(rid) for rid in data["assigned_resource_ids"]]
+    # livetracker3.md §7.1: an owner's own dashboard needs to know which Resource(s) it
+    # owns, the same "cheaper here than a second round trip" reasoning as the staff-side
+    # field above — an owner previously got nothing back from /api/v1/auth/me listing
+    # its own resources at all, a real gap found while designing this section.
+    elif account.role == account.Role.OWNER:
+        data["owned_resource_ids"] = [
+            str(rid)
+            for rid in Resource.objects.filter(owner_ref=str(account.id)).values_list(
+                "id", flat=True
+            )
+        ]
     return data
 
 

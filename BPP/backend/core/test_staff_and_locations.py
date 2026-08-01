@@ -443,3 +443,53 @@ def test_resource_create_rejects_a_foreign_location_id(client):
         content_type="application/json",
     )
     assert resp.status_code == 400
+
+
+# --- livetracker3.md §7.1: owner dashboard needs its own resource list -------------------
+
+
+@pytest.mark.django_db
+def test_business_me_lists_an_owners_own_resources(client):
+    """Mirrors the staff-side `assigned_resource_ids` field this file already tests
+    above (`test_staff_logs_in_independently_and_blocks_own_availability`) — an owner
+    previously got nothing back from /api/v1/auth/me listing its own resources at all,
+    the real backend gap §7.1's dashboard page depends on."""
+    _signup_and_login(client)
+    resource_id = _create_resource(client, name="Stylist A").json()["id"]
+    second_resource_id = _create_resource(client, name="Stylist B").json()["id"]
+
+    resp = client.get(reverse("business-me"))
+
+    assert resp.status_code == 200
+    assert resp.json()["role"] == "OWNER"
+    assert set(resp.json()["owned_resource_ids"]) == {resource_id, second_resource_id}
+
+
+@pytest.mark.django_db
+def test_business_me_returns_an_empty_resource_list_for_a_brand_new_owner(client):
+    """The real empty state §7.1's own checklist calls out explicitly: a brand-new
+    owner has zero resources, and this must read as an empty list, not an error or a
+    missing key."""
+    _signup_and_login(client)
+
+    resp = client.get(reverse("business-me"))
+
+    assert resp.status_code == 200
+    assert resp.json()["owned_resource_ids"] == []
+
+
+@pytest.mark.django_db
+def test_business_me_never_lists_a_different_owners_resources(client):
+    """The real IDOR-shaped risk this field could introduce if scoped wrong — a
+    second business's resources must never leak into another owner's own list."""
+    _signup_and_login(client, business_name="Salon A", contact="ownerA@example.com")
+    _create_resource(client, name="Stylist A")
+
+    other_client = Client()
+    _signup_and_login(other_client, business_name="Salon B", contact="ownerB@example.com")
+    other_resource_id = _create_resource(other_client, name="Stylist B").json()["id"]
+
+    resp = other_client.get(reverse("business-me"))
+
+    assert resp.status_code == 200
+    assert resp.json()["owned_resource_ids"] == [other_resource_id]

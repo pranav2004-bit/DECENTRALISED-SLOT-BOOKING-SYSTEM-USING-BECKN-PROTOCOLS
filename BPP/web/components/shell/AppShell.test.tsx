@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
+  usePathname: () => '/',
+}));
+
 import { AppShell } from './AppShell';
 import * as realtimeModule from '@/lib/realtime/useRealtimeConnection';
+import * as authApi from '@/lib/auth-api';
 
 vi.spyOn(realtimeModule, 'useRealtimeConnection').mockReturnValue({
   status: 'open',
@@ -9,6 +16,7 @@ vi.spyOn(realtimeModule, 'useRealtimeConnection').mockReturnValue({
   reconnect: vi.fn(),
   send: vi.fn(),
 });
+vi.spyOn(authApi, 'me').mockResolvedValue(null);
 
 describe('AppShell', () => {
   it('renders the app name, a main landmark, and the given children', () => {

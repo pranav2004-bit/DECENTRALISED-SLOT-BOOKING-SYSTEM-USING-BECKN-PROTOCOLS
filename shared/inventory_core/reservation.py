@@ -68,9 +68,22 @@ class ReservationHold:
 
 def find_group_bookings(booking: Booking) -> list[Booking]:
     """Returns every `Booking` sharing `booking`'s own `booking_group_id`
-    (`domain_data`), including `booking` itself, ordered by id for deterministic
-    handling by callers — or just `[booking]` if it has no group id (the ordinary
-    single-resource case every domain before §4.2 used exclusively).
+    (`domain_data`), including `booking` itself, ordered by `group_sequence` (the
+    original customer-facing order established at hold time — see
+    `hold_multi_resource_booking`'s own docstring) — or just `[booking]` if it has
+    no group id (the ordinary single-resource case every domain before §4.2 used
+    exclusively).
+
+    **livetracker3.md §6.1 fix (2026-08-01):** previously ordered by `.id`, a
+    random UUID with no relationship to which resource the customer actually
+    picked first — deterministic *within* this function (repeated calls agree
+    with each other) but not consistent with the order `hold_multi_resource_
+    booking` itself returned at select time, so a customer could see "Bay +
+    Mechanic" at select and "Mechanic + Bay" at confirm for the exact same
+    booking. `group_sequence` is stamped once, at hold time, in the customer's
+    own original order, and is what every later stage (init/confirm/cancel)
+    reads back here — the single source of truth for group member order, not
+    re-derived differently by each caller.
 
     §4.2's multi-resource booking support (e.g. Automotive's bay+mechanic pair,
     held together by `hold_multi_resource_booking` below): lets a caller
@@ -82,7 +95,8 @@ def find_group_bookings(booking: Booking) -> list[Booking]:
     group_id = (booking.domain_data or {}).get("booking_group_id")
     if not group_id:
         return [booking]
-    return list(Booking.objects.filter(domain_data__booking_group_id=group_id).order_by("id"))
+    bookings = Booking.objects.filter(domain_data__booking_group_id=group_id)
+    return sorted(bookings, key=lambda b: (b.domain_data or {}).get("group_sequence", 0))
 
 
 def hold_multi_resource_booking(
@@ -115,10 +129,19 @@ def hold_multi_resource_booking(
     **same order as `slot_ids`** (not the internal locking order) — or `None` if
     any slot lacked capacity. `event_bus` is optional (`None` by default) — pass a
     real `EventBus` to also publish one `SlotEvent.RESERVED` per held slot.
+
+    Each row's `domain_data` also carries `group_sequence` — its position in the
+    caller's own `slot_ids` order (0 for the first/customer-clicked resource, 1
+    for the paired one) — the single source of truth `find_group_bookings` reads
+    back later, so every later stage (init/confirm/cancel) agrees with what the
+    customer saw at select time instead of each re-deriving its own order
+    (livetracker3.md §6.1 fix, 2026-08-01: this used to be silently re-sorted by
+    `.id`, a random UUID unrelated to selection order).
     """
     slot_ids = list(slot_ids)
     sorted_ids = sorted(slot_ids, key=str)
     group_id = str(uuid.uuid4())
+    sequence_by_sid = {str(sid): idx for idx, sid in enumerate(slot_ids)}
 
     with transaction.atomic():
         locked = {}
@@ -141,7 +164,10 @@ def hold_multi_resource_booking(
                 slot=slot,
                 holder_ref=holder_ref,
                 quantity=1,
-                domain_data={"booking_group_id": group_id},
+                domain_data={
+                    "booking_group_id": group_id,
+                    "group_sequence": sequence_by_sid[str(sid)],
+                },
             )
 
     bookings = [bookings_by_slot[str(sid)] for sid in slot_ids]

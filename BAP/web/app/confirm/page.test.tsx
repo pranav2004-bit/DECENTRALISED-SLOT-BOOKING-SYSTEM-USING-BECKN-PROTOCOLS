@@ -104,6 +104,31 @@ describe('ConfirmPage', () => {
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/bookings/tx-1?provider_name=Glow%20Salon'));
   });
 
+  it('livetracker3.md §6.1: shows both resources for a real Automotive multi-resource (bay+mechanic) order', async () => {
+    const multiResourceOrder = {
+      ...QUOTE_ORDER,
+      items: [{ id: 'bay-1' }, { id: 'mechanic-1' }],
+      quote: {
+        price: { currency: 'INR', value: '1200.00' },
+        breakup: [
+          { item: { id: 'bay-1' }, title: 'Bay 1', price: { currency: 'INR', value: '800.00' } },
+          { item: { id: 'mechanic-1' }, title: 'Mechanic John', price: { currency: 'INR', value: '400.00' } },
+        ],
+        ttl: 'PT300S',
+      },
+    };
+    vi.spyOn(bookingApi, 'triggerInit').mockResolvedValue(undefined);
+    vi.spyOn(bookingApi, 'getInitResult').mockResolvedValue({
+      transaction_id: 'tx-1',
+      init_error: null,
+      init_order: multiResourceOrder,
+    });
+    render(<ConfirmPage />);
+
+    await waitFor(() => expect(screen.getByText('Bay 1 + Mechanic John')).toBeInTheDocument());
+    expect(screen.getByText('Total').closest('div')).toHaveTextContent('₹1,200.00');
+  });
+
   it('shows BookingFailedError with a retry when confirm fails for a non-slot reason', async () => {
     const user = userEvent.setup({ delay: null });
     vi.spyOn(bookingApi, 'triggerInit').mockResolvedValue(undefined);

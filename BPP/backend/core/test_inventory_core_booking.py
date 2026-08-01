@@ -812,6 +812,46 @@ def test_find_group_bookings_returns_every_sibling_including_itself(
 
 
 @pytest.mark.django_db
+def test_find_group_bookings_preserves_the_customers_own_selection_order(
+    resource, second_resource, redis_client
+):
+    """livetracker3.md §6.1 fix (2026-08-01): found live during that phase's own
+    E2E verification — a real customer saw "Bay + Mechanic" at select time and
+    "Mechanic + Bay" at confirm time for the exact same booking, because
+    `find_group_bookings` used to order by `.id` (a random UUID unrelated to
+    which resource the customer actually picked first), while
+    `hold_multi_resource_booking` itself already correctly returned bookings in
+    the caller's own order. Requesting in both possible id-sort orders (as
+    `test_hold_multi_resource_booking_returns_bookings_in_the_order_slot_ids_were_given`
+    already does above, for the same "must not leak the internal sort order"
+    reason) proves this isn't order working by UUID-sort coincidence."""
+    mechanic_slot = _make_slot(resource, capacity=1)
+    bay_slot = _make_slot(second_resource, capacity=1)
+
+    for slot_ids in (
+        [mechanic_slot.id, bay_slot.id],
+        [bay_slot.id, mechanic_slot.id],
+    ):
+        Booking.objects.all().delete()
+        mechanic_slot.capacity_remaining = 1
+        mechanic_slot.status = Slot.Status.AVAILABLE
+        mechanic_slot.save()
+        bay_slot.capacity_remaining = 1
+        bay_slot.status = Slot.Status.AVAILABLE
+        bay_slot.save()
+
+        bookings = hold_multi_resource_booking(
+            slot_ids, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=60
+        )
+
+        siblings = find_group_bookings(bookings[0])
+        assert [b.slot_id for b in siblings] == slot_ids
+        # ...and every other member of the group agrees on the same order, not
+        # just the one `find_group_bookings` happened to be called on.
+        assert [b.slot_id for b in find_group_bookings(bookings[1])] == slot_ids
+
+
+@pytest.mark.django_db
 def test_find_group_bookings_returns_just_itself_for_an_ordinary_single_resource_booking(
     resource, redis_client
 ):

@@ -133,4 +133,31 @@ describe('SearchPage', () => {
     expect(await screen.findByText("Couldn't load results")).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
+
+  it('livetracker3.md §6.1: defaults the category to Beauty & Wellness and sends it with the search', async () => {
+    const user = userEvent.setup({ delay: null });
+    const trigger = vi.spyOn(bookingApi, 'triggerSearch').mockResolvedValue('tx-1');
+    vi.spyOn(bookingApi, 'getSearchResults').mockResolvedValue(catalogResult());
+    render(<SearchPage />);
+
+    expect(screen.getByLabelText('Category')).toHaveValue('ONDC:RET13');
+
+    await user.type(screen.getByLabelText('What are you looking for?'), 'haircut');
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+
+    expect(trigger).toHaveBeenCalledWith('haircut', 'ONDC:RET13');
+  });
+
+  it('livetracker3.md §6.1: sends the real Healthcare/Automotive domain code once selected, not the Beauty default', async () => {
+    const user = userEvent.setup({ delay: null });
+    const trigger = vi.spyOn(bookingApi, 'triggerSearch').mockResolvedValue('tx-1');
+    vi.spyOn(bookingApi, 'getSearchResults').mockResolvedValue(catalogResult());
+    render(<SearchPage />);
+
+    await user.selectOptions(screen.getByLabelText('Category'), 'BECKN:AUTO01');
+    await user.type(screen.getByLabelText('What are you looking for?'), 'oil change');
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+
+    expect(trigger).toHaveBeenCalledWith('oil change', 'BECKN:AUTO01');
+  });
 });

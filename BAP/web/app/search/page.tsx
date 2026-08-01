@@ -6,7 +6,7 @@ import { FormField } from '@/components/ui/FormField';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
-import { BEAUTY_DOMAIN } from '@/lib/constants';
+import { SEARCH_DOMAINS } from '@/lib/constants';
 import { formatPrice } from '@/lib/format';
 import { usePoll } from '@/lib/usePoll';
 import { getSearchResults, triggerSearch } from '@/lib/booking-api';
@@ -33,6 +33,7 @@ function flattenResults(results: SearchResultsResponse | null): ListedItem[] {
 
 export default function SearchPage() {
   const [query, setQuery] = useState('');
+  const [domain, setDomain] = useState(SEARCH_DOMAINS[0].code);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [transactionId, setTransactionId] = useState<string | null>(null);
@@ -54,7 +55,7 @@ export default function SearchPage() {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      const txId = await triggerSearch(trimmed, BEAUTY_DOMAIN);
+      const txId = await triggerSearch(trimmed, domain);
       setSearchedQuery(trimmed);
       setTransactionId(txId);
       setRetryNonce(0);
@@ -79,6 +80,23 @@ export default function SearchPage() {
 
       {!transactionId && (
         <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4 sm:max-w-sm">
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="search-domain" className="text-sm font-medium text-neutral-900">
+              Category
+            </label>
+            <select
+              id="search-domain"
+              value={domain}
+              onChange={(e) => setDomain(e.target.value)}
+              className="rounded-md border border-neutral-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900"
+            >
+              {SEARCH_DOMAINS.map((option) => (
+                <option key={option.code} value={option.code}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
           <FormField
             label="What are you looking for?"
             placeholder="e.g. haircut, facial, manicure"

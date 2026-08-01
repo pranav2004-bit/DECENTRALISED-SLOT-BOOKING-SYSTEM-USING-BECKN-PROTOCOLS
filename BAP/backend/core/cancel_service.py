@@ -63,6 +63,22 @@ def trigger_cancel(
             "No confirmed booking to cancel for this transaction", status_code=400
         )
 
+    # livetracker3.md §10.1: idempotent re-cancellation guard — a real gap found
+    # while auditing §9.1's own status-derivation logic. Before this check, every
+    # call here unconditionally reset cancelled_order to None, even one retried
+    # against a booking already successfully cancelled by a prior call. If that
+    # retried call's own dispatch then failed, the evidence of the first, genuine
+    # cancellation was silently wiped with nothing to replace it. A cancel that
+    # already succeeded is idempotent by nature (there's no "cancel it more") —
+    # short-circuit here, before touching cancelled_order/cancelled_error or
+    # dispatching anything, the same idempotency principle confirm's own
+    # Idempotency-Key mechanism already establishes elsewhere (livetracker2.md
+    # §3.6). A prior attempt that only recorded an *error* (cancelled_order still
+    # None) is not a genuine success and must still proceed through the normal
+    # path below, not be treated as already-cancelled.
+    if session.cancelled_order is not None:
+        return
+
     session.cancelled_order = None
     session.cancelled_error = None
     session.save(update_fields=["cancelled_order", "cancelled_error", "updated_at"])

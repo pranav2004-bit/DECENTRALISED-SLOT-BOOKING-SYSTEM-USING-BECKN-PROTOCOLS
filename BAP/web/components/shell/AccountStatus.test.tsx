@@ -47,6 +47,10 @@ describe('AccountStatus', () => {
     render(<AccountStatus />);
 
     expect(await screen.findByText('Signed in as Ada')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'My bookings' })).toHaveAttribute(
+      'href',
+      '/bookings'
+    );
     await userEvent.click(screen.getByRole('button', { name: 'Log out' }));
 
     expect(logoutSpy).toHaveBeenCalledOnce();

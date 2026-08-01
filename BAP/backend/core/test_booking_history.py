@@ -90,3 +90,26 @@ def test_bookings_list_is_cursor_paginated_newest_first(client):
     second_body = second.json()
     assert [b["transaction_id"] for b in second_body["bookings"]] == ["txn-0"]
     assert second_body["next_cursor"] is None
+
+
+@pytest.mark.django_db
+def test_bookings_list_is_rate_limited(client):
+    """livetracker3.md §9.1's third self-audit: this endpoint had zero real UI
+    callers before this phase, so it was never rate-limited like every other
+    authenticated BAP endpoint. §9.1 makes it genuinely reachable by real browser
+    traffic — 21 rapid real calls in one minute must 429 on the 21st, proving the
+    new @rate_limit(limit_per_minute=20) decorator is actually enforced."""
+    from django.core.cache import cache
+
+    cache.clear()
+    me = _customer()
+    client.force_login(me)
+
+    for _ in range(20):
+        resp = client.get(reverse("bookings-list"))
+        assert resp.status_code == 200
+
+    resp = client.get(reverse("bookings-list"))
+    assert resp.status_code == 429
+    assert resp.json()["error"]["code"] == "RATE_LIMITED"
+    cache.clear()

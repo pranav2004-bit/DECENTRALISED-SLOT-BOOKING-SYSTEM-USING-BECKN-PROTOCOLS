@@ -334,7 +334,7 @@ def test_staff_password_reset_validates_the_new_password(client):
 
     resp = client.post(
         reverse("staff-password-reset", args=[staff_id]),
-        data={"password": "short"},
+        data={"password": "short"},  # pragma: allowlist secret
         content_type="application/json",
     )
     assert resp.status_code == 400
@@ -352,7 +352,7 @@ def test_owner_cannot_reset_someone_elses_staff_password(client):
 
     resp = client.post(
         reverse("staff-password-reset", args=[foreign_staff_id]),
-        data={"password": "a-different-strong-passw0rd!"},
+        data={"password": "a-different-strong-passw0rd!"},  # pragma: allowlist secret
         content_type="application/json",
     )
     assert resp.status_code == 404
@@ -379,7 +379,7 @@ def test_staff_account_cannot_reset_a_password(client):
     )
     resp = staff_client.post(
         reverse("staff-password-reset", args=[staff_id]),
-        data={"password": "a-different-strong-passw0rd!"},
+        data={"password": "a-different-strong-passw0rd!"},  # pragma: allowlist secret
         content_type="application/json",
     )
     assert resp.status_code == 403

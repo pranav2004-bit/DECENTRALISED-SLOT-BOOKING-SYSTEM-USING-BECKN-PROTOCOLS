@@ -49,6 +49,7 @@ const RESOURCE: availabilityApi.ResourceInfo = {
   name: 'Stylist A',
   average_rating: null,
   rating_count: 0,
+  assigned_staff_id: null,
 };
 
 const RATED_RESOURCE: availabilityApi.ResourceInfo = {
@@ -56,6 +57,7 @@ const RATED_RESOURCE: availabilityApi.ResourceInfo = {
   name: 'Stylist A',
   average_rating: '4.33',
   rating_count: 3,
+  assigned_staff_id: null,
 };
 
 describe('ResourceAvailabilityPage', () => {
@@ -168,5 +170,18 @@ describe('ResourceAvailabilityPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Block' }));
 
     await waitFor(() => expect(availabilityApi.blockSlots).toHaveBeenCalledWith('resource-1', ['slot-1']));
+  });
+
+  it('livetracker3.md §8.1 audit fix: shows "Access ended", not a perpetual "Connecting…", once the socket reports forbidden', async () => {
+    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
+    vi.spyOn(availabilityApi, 'getSlots').mockResolvedValue({ resource: RESOURCE, slots: SLOTS });
+    mockUseRealtimeConnection.mockImplementation((_path: string, onMessage?: (m: unknown) => void) => {
+      capturedOnMessage = onMessage;
+      return { status: 'forbidden', lastMessage: null, reconnect: vi.fn(), send: vi.fn(() => false) };
+    });
+    render(<ResourceAvailabilityPage />);
+
+    await waitFor(() => expect(screen.getByText('Access ended')).toBeInTheDocument());
+    expect(screen.queryByText('Connecting…')).not.toBeInTheDocument();
   });
 });

@@ -270,6 +270,182 @@ async def test_block_slot_over_the_socket_blocks_and_acks_and_broadcasts(
 
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.asyncio
+async def test_block_slot_is_refused_once_the_connected_staff_account_is_unassigned(
+    owner_session, resource, slot
+):
+    """livetracker3.md §8.1's fourth post-close audit: a real gap found and closed —
+    `connect()` only ever checked access once, at connect time; a staff account
+    unassigned mid-connection kept the ability to block slots over the still-open
+    socket, since `receive()` never re-checked. Made concretely exploitable (not
+    just theoretical) by this same phase's own new unassign capability."""
+    from channels.db import database_sync_to_async
+
+    owner = await database_sync_to_async(BusinessAccount.objects.get)(contact="owner@example.com")
+    staff = await database_sync_to_async(BusinessAccount.objects.create_user)(
+        contact="staff@example.com",
+        business_name="Stylist One",
+        password=TEST_PASSWORD,
+        role=BusinessAccount.Role.STAFF,
+        managed_by=owner,
+    )
+
+    def _assign():
+        resource.domain_data = {**resource.domain_data, "assigned_staff_id": str(staff.id)}
+        resource.save(update_fields=["domain_data", "updated_at"])
+
+    await database_sync_to_async(_assign)()
+
+    staff_client = Client()
+    await _login(staff_client, "staff@example.com")
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/resources/{resource.id}/availability",
+        headers=_session_cookie_header(staff_client),
+    )
+    connected, _ = await communicator.connect()
+    assert connected is True
+
+    def _unassign():
+        resource.domain_data = {
+            k: v for k, v in resource.domain_data.items() if k != "assigned_staff_id"
+        }
+        resource.save(update_fields=["domain_data", "updated_at"])
+
+    await database_sync_to_async(_unassign)()
+
+    await communicator.send_json_to({"type": "block_slot", "slot_id": str(slot.id)})
+
+    # Same shape `connect()` itself checks internally on rejection — the consumer
+    # closes the socket outright rather than sending a `block_result` ack.
+    response = await communicator.receive_output()
+    assert response["type"] == "websocket.close"
+    assert response.get("code", 1000) == 4403
+
+    refreshed = await database_sync_to_async(Slot.objects.get)(pk=slot.id)
+    assert refreshed.status == Slot.Status.AVAILABLE
+
+    await communicator.disconnect()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_slot_update_broadcast_is_withheld_once_the_connected_staff_account_is_unassigned(
+    owner_session, resource, slot
+):
+    """livetracker3.md §8.1's fifth post-close audit: the read-side twin of the
+    `receive()` fix above. A connection that outlives its own authorization must not
+    keep *watching* the resource either, not just lose the ability to mutate it —
+    `slot_update` forwarded every broadcast to a connected client unconditionally,
+    with no re-check, until this fix."""
+    from channels.db import database_sync_to_async
+
+    owner = await database_sync_to_async(BusinessAccount.objects.get)(contact="owner@example.com")
+    staff = await database_sync_to_async(BusinessAccount.objects.create_user)(
+        contact="staff@example.com",
+        business_name="Stylist One",
+        password=TEST_PASSWORD,
+        role=BusinessAccount.Role.STAFF,
+        managed_by=owner,
+    )
+
+    def _assign():
+        resource.domain_data = {**resource.domain_data, "assigned_staff_id": str(staff.id)}
+        resource.save(update_fields=["domain_data", "updated_at"])
+
+    await database_sync_to_async(_assign)()
+
+    staff_client = Client()
+    await _login(staff_client, "staff@example.com")
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/resources/{resource.id}/availability",
+        headers=_session_cookie_header(staff_client),
+    )
+    connected, _ = await communicator.connect()
+    assert connected is True
+
+    # A broadcast while still genuinely assigned reaches the client as normal —
+    # confirms the fix doesn't over-reject a still-valid connection.
+    await database_sync_to_async(broadcast_slot_update)(resource.id, slot)
+    first = await communicator.receive_json_from()
+    assert first["type"] == "slot.update"
+
+    def _unassign():
+        resource.domain_data = {
+            k: v for k, v in resource.domain_data.items() if k != "assigned_staff_id"
+        }
+        resource.save(update_fields=["domain_data", "updated_at"])
+
+    await database_sync_to_async(_unassign)()
+
+    await database_sync_to_async(broadcast_slot_update)(resource.id, slot)
+
+    response = await communicator.receive_output()
+    assert response["type"] == "websocket.close"
+    assert response.get("code", 1000) == 4403
+
+    await communicator.disconnect()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_block_slot_is_refused_once_the_connected_staff_accounts_password_changes(
+    owner_session, resource, slot
+):
+    """livetracker3.md §8.1's tenth post-close audit: a real gap found and closed —
+    re-checking `_resource_accessible_to()` alone still trusted the *credential*
+    snapshot Channels resolved once at `connect()` time. Resetting a staff account's
+    password (the ninth audit's own new feature) did nothing to a socket already open
+    under the old credentials — this proves it now does, via `channels.auth.get_user`
+    re-verifying the session's own stored auth hash on every message, closing with
+    `4401` (the session itself is stale, not merely unauthorized for this resource)."""
+    from channels.db import database_sync_to_async
+
+    owner = await database_sync_to_async(BusinessAccount.objects.get)(contact="owner@example.com")
+    staff = await database_sync_to_async(BusinessAccount.objects.create_user)(
+        contact="staff@example.com",
+        business_name="Stylist One",
+        password=TEST_PASSWORD,
+        role=BusinessAccount.Role.STAFF,
+        managed_by=owner,
+    )
+
+    def _assign():
+        resource.domain_data = {**resource.domain_data, "assigned_staff_id": str(staff.id)}
+        resource.save(update_fields=["domain_data", "updated_at"])
+
+    await database_sync_to_async(_assign)()
+
+    staff_client = Client()
+    await _login(staff_client, "staff@example.com")
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/resources/{resource.id}/availability",
+        headers=_session_cookie_header(staff_client),
+    )
+    connected, _ = await communicator.connect()
+    assert connected is True
+
+    def _reset_password():
+        staff.set_password("a-different-strong-passw0rd!")
+        staff.save(update_fields=["password", "updated_at"])
+
+    await database_sync_to_async(_reset_password)()
+
+    await communicator.send_json_to({"type": "block_slot", "slot_id": str(slot.id)})
+
+    response = await communicator.receive_output()
+    assert response["type"] == "websocket.close"
+    assert response.get("code", 1000) == 4401
+
+    refreshed = await database_sync_to_async(Slot.objects.get)(pk=slot.id)
+    assert refreshed.status == Slot.Status.AVAILABLE
+
+    await communicator.disconnect()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
 async def test_two_connected_tabs_both_see_the_same_slot_go_from_available_to_booked(
     owner_session, resource, slot
 ):

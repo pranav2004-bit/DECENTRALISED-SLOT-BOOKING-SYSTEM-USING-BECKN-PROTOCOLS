@@ -7,6 +7,7 @@ const STATUS_LABEL = {
   open: 'Live',
   closed: 'Disconnected',
   error: 'Connection error',
+  forbidden: 'Access denied',
 } as const;
 
 const STATUS_DOT_CLASS = {
@@ -14,11 +15,12 @@ const STATUS_DOT_CLASS = {
   open: 'bg-green-500',
   closed: 'bg-neutral-400',
   error: 'bg-red-500',
+  forbidden: 'bg-red-500',
 } as const;
 
 export function RealtimeStatus() {
   const { status, reconnect } = useRealtimeConnection();
-  const isDown = status === 'closed' || status === 'error';
+  const isDown = status === 'closed' || status === 'error' || status === 'forbidden';
 
   return (
     <div className="flex items-center gap-2 text-xs text-neutral-600">

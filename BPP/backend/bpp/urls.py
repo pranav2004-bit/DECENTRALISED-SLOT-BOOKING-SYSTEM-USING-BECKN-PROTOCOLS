@@ -43,6 +43,16 @@ urlpatterns = [
     path("api/v1/catalog/resources", core_views.resources_list_view, name="resources-list"),
     path("api/v1/staff", core_views.staff_view, name="staff"),
     path(
+        "api/v1/staff/<uuid:staff_id>/status",
+        core_views.staff_status_view,
+        name="staff-status",
+    ),
+    path(
+        "api/v1/staff/<uuid:staff_id>/password",
+        core_views.staff_password_reset_view,
+        name="staff-password-reset",
+    ),
+    path(
         "api/v1/resources/<uuid:resource_id>/assign-staff",
         core_views.resource_assign_staff_view,
         name="resource-assign-staff",

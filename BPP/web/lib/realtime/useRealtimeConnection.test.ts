@@ -86,6 +86,38 @@ describe('useRealtimeConnection', () => {
     await waitFor(() => expect(result.current.status).toBe('closed'));
   });
 
+  it('livetracker3.md §8.1 audit fix: reports forbidden (not closed) on a real 4403 rejection, and does not blindly retry', async () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useRealtimeConnection('/ws/'));
+
+      act(() => {
+        MockWebSocket.instances[0].emit('close', { code: 4403 });
+      });
+      expect(result.current.status).toBe('forbidden');
+
+      // The real gap: previously this same close event scheduled a blind retry
+      // regardless of code, so a permanently-revoked connection kept hammering the
+      // backend every 3s forever. No second socket should ever get opened here.
+      act(() => {
+        vi.advanceTimersByTime(10000);
+      });
+      expect(MockWebSocket.instances).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('livetracker3.md §8.1 audit fix: reports forbidden on a real 4401 rejection too', async () => {
+    const { result } = renderHook(() => useRealtimeConnection('/ws/'));
+
+    act(() => {
+      MockWebSocket.instances[0].emit('close', { code: 4401 });
+    });
+
+    await waitFor(() => expect(result.current.status).toBe('forbidden'));
+  });
+
   it('reports error without a configured base URL', () => {
     delete process.env.NEXT_PUBLIC_WS_BASE_URL;
     const { result } = renderHook(() => useRealtimeConnection('/ws/'));

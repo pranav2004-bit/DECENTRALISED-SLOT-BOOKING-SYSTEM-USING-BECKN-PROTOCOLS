@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  * `lastMessage`.
  */
 
-export type ConnectionStatus = 'connecting' | 'open' | 'closed' | 'error';
+export type ConnectionStatus = 'connecting' | 'open' | 'closed' | 'error' | 'forbidden';
 
 const RECONNECT_DELAY_MS = 3000;
 
@@ -53,8 +53,21 @@ export function useRealtimeConnection(
       setLastMessage(parsed);
       onMessageRef.current?.(parsed);
     });
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', (event) => {
       if (cancelled) return;
+      // livetracker3.md §8.1's own sixth post-close audit: a real gap found and
+      // closed — this handler never looked at the close code, so `4401`/`4403`
+      // (core/consumers.py's own real, permanent access-revoked codes, e.g. after a
+      // staff account is unassigned mid-connection) were treated exactly like a
+      // transient network drop, endlessly retrying every 3s against a connection
+      // that will never be let back in until access is actually restored. A distinct
+      // `forbidden` status stops the blind retry loop; `reconnect()` still works as a
+      // manual retry if access is later restored (an owner re-assigning them, say).
+      const code = (event as { code?: number }).code;
+      if (code === 4401 || code === 4403) {
+        setStatus('forbidden');
+        return;
+      }
       setStatus('closed');
       reconnectTimer = setTimeout(() => {
         if (!cancelled) {

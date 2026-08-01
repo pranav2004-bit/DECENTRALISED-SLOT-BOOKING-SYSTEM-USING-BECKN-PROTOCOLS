@@ -8,8 +8,8 @@ import { ErrorState } from '@/components/ui/ErrorState';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { FormField } from '@/components/ui/FormField';
 import { me, type BusinessAccount } from '@/lib/auth-api';
-import { getSlots, type ResourceInfo } from '@/lib/availability-api';
-import { createResource, createAvailability } from '@/lib/resources-api';
+import { type ResourceInfo } from '@/lib/availability-api';
+import { createResource, createAvailability, fetchOwnedResources } from '@/lib/resources-api';
 import { ApiError } from '@/lib/api-client';
 import { RESOURCE_TYPES_BY_DOMAIN } from '@/lib/constants';
 
@@ -208,12 +208,6 @@ function CreateAvailabilityForm({
   );
 }
 
-async function fetchOwnedResources(ids: string[]): Promise<ResourceInfo[]> {
-  if (ids.length === 0) return [];
-  const results = await Promise.all(ids.map((id) => getSlots(id)));
-  return results.map((r) => r.resource);
-}
-
 function OwnerDashboard({ account }: { account: BusinessAccount }) {
   const [resources, setResources] = useState<ResourceInfo[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -276,9 +270,14 @@ function OwnerDashboard({ account }: { account: BusinessAccount }) {
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8">
-      <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">
-        {account.business_name}
-      </h1>
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">
+          {account.business_name}
+        </h1>
+        <Link href="/staff" className="text-sm text-neutral-600 underline">
+          Manage staff
+        </Link>
+      </div>
 
       {resources.length === 0 ? (
         <EmptyState
@@ -319,7 +318,13 @@ function OwnerDashboard({ account }: { account: BusinessAccount }) {
           // a real reload naturally re-fetches the authoritative list from scratch.
           setResources((prev) => [
             ...(prev ?? []),
-            { id: resource.id, name: resource.name, average_rating: null, rating_count: 0 },
+            {
+              id: resource.id,
+              name: resource.name,
+              average_rating: null,
+              rating_count: 0,
+              assigned_staff_id: null,
+            },
           ]);
         }}
       />

@@ -153,6 +153,26 @@ WSGI_APPLICATION = "bpp.wsgi.application"
 
 DATABASES = {"default": env.db_url_config(DATABASE_URL)}
 DATABASES["default"]["CONN_MAX_AGE"] = env.int("DB_CONN_MAX_AGE", default=60)
+# livetracker3.md §8.1's own second post-close audit: a real connection leak was found
+# live — `pg_stat_activity` showed several connections stuck `idle` (wait_event
+# `ClientRead`, i.e. the query already finished; Postgres was simply waiting for Django
+# to send its next command or close the connection) for 6+ minutes each, traced to
+# requests whose ASGI task got cancelled (client aborted mid-flight) after the DB work
+# completed but before Django's own connection-cleanup ever ran on that thread. Nothing
+# here previously bounded how long an abandoned connection could sit idle — `.env.
+# example`'s own `DB_POOL_MIN_SIZE`/`DB_POOL_MAX_SIZE` looked like they should (10 max),
+# but were dead config, never read by any Python code, so they enforced nothing (a real,
+# separate finding — removed below rather than left misleading). `idle_session_timeout`
+# (session-level, catches plain `idle`, not just `idle in transaction` — the exact state
+# observed) makes Postgres itself reclaim an abandoned connection within 2 minutes
+# instead of relying on the leaking side to ever clean up; `statement_timeout` is
+# defense-in-depth for the different (not observed here, but plausible) case of a query
+# that's genuinely still running, not just idle. Both comfortably above every real
+# query this app issues (confirmed via the full test suite's own timing) and well
+# above `CONN_MAX_AGE` above, so normal connection reuse is unaffected.
+DATABASES["default"]["OPTIONS"] = {
+    "options": "-c statement_timeout=15000 -c idle_session_timeout=120000"
+}
 
 # Real gap found and closed at Phase 3 Exit (livetracker2.md, 2026-07-24, live "kill
 # Redis" re-test, third pass): the fail-open exception handling added to

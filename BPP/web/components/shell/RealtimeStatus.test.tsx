@@ -38,4 +38,11 @@ describe('RealtimeStatus', () => {
     render(<RealtimeStatus />);
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   });
+
+  it('livetracker3.md §8.1 audit fix: shows a distinct "Access denied" label (with a retry button) on forbidden status', () => {
+    mockConnection({ status: 'forbidden' });
+    render(<RealtimeStatus />);
+    expect(screen.getByText('Access denied')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
 });

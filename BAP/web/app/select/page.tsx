@@ -10,7 +10,7 @@ import { SlotUnavailableError } from '@/components/ui/BookingErrorStates';
 import { usePoll } from '@/lib/usePoll';
 import { getSelectResult, triggerSelect } from '@/lib/booking-api';
 import { ApiError } from '@/lib/api-client';
-import { formatDateTime } from '@/lib/format';
+import { formatDateTime, formatOrderItemName } from '@/lib/format';
 
 function minDateTimeLocal(): string {
   const now = new Date(Date.now() + 5 * 60 * 1000);
@@ -144,6 +144,12 @@ function SelectPageInner() {
 
       {attemptKey && data?.selected_order && !loading && (
         <div className="mt-6 flex flex-col gap-4 rounded-lg border border-neutral-200 p-4">
+          {(data.selected_order.quote?.breakup?.length ?? 0) > 1 && (
+            <p className="text-sm text-neutral-900">
+              <span className="font-medium">Includes:</span>{' '}
+              {formatOrderItemName(data.selected_order.quote, itemName)}
+            </p>
+          )}
           <p className="text-sm text-neutral-900">
             <span className="font-medium">Reserved:</span>{' '}
             {formatDateTime(data.selected_order.fulfillments?.[0]?.stops?.[0]?.time.timestamp)}

@@ -20,7 +20,7 @@ import {
   triggerTrack,
 } from '@/lib/booking-api';
 import { ApiError } from '@/lib/api-client';
-import { formatDateTime, formatPrice } from '@/lib/format';
+import { formatDateTime, formatOrderItemName, formatPrice } from '@/lib/format';
 import type { Order, Support } from '@/lib/beckn-types';
 
 const STATUS_LABEL: Record<string, string> = {
@@ -241,7 +241,7 @@ export default function BookingStatusPage() {
   }
 
   const time = order.fulfillments?.[0]?.stops?.[0]?.time.timestamp;
-  const itemName = order.quote?.breakup?.[0]?.title ?? 'Service';
+  const itemName = formatOrderItemName(order.quote, 'Service');
   const currentStatus = liveStatus ?? order.status ?? 'ACTIVE';
   const canCancel = currentStatus === 'ACTIVE' && !cancelled;
 

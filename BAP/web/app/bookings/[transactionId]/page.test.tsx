@@ -60,6 +60,29 @@ describe('BookingStatusPage', () => {
     expect(screen.getByRole('button', { name: 'Cancel booking' })).toBeInTheDocument();
   });
 
+  it('livetracker3.md §6.1: shows both resources for a real Automotive multi-resource (bay+mechanic) booking', async () => {
+    const multiResourceOrder = {
+      ...CONFIRMED_ORDER,
+      items: [{ id: 'bay-1' }, { id: 'mechanic-1' }],
+      quote: {
+        price: { currency: 'INR', value: '1200.00' },
+        breakup: [
+          { item: { id: 'bay-1' }, title: 'Bay 1', price: { currency: 'INR', value: '800.00' } },
+          { item: { id: 'mechanic-1' }, title: 'Mechanic John', price: { currency: 'INR', value: '400.00' } },
+        ],
+      },
+    };
+    vi.spyOn(bookingApi, 'getConfirmResult').mockResolvedValue({
+      transaction_id: 'tx-1',
+      confirmed_error: null,
+      confirmed_order: multiResourceOrder,
+    });
+    render(<BookingStatusPage />);
+
+    await waitFor(() => expect(screen.getByText('Bay 1 + Mechanic John')).toBeInTheDocument());
+    expect(screen.getByText('₹1,200.00')).toBeInTheDocument();
+  });
+
   it('shows an empty state when there is no confirmed booking for this reference', async () => {
     vi.spyOn(bookingApi, 'getConfirmResult').mockResolvedValue({
       transaction_id: 'tx-1',

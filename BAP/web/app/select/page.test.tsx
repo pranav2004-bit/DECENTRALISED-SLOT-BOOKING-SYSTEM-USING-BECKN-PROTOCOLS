@@ -84,6 +84,38 @@ describe('SelectPage', () => {
     expect(screen.getByLabelText('Date and time')).toBeInTheDocument();
   });
 
+  it('livetracker3.md §6.1: shows both resources for a real Automotive multi-resource (bay+mechanic) reservation', async () => {
+    const user = userEvent.setup({ delay: null });
+    vi.spyOn(bookingApi, 'triggerSelect').mockResolvedValue(undefined);
+    vi.spyOn(bookingApi, 'getSelectResult').mockResolvedValue({
+      transaction_id: 'tx-1',
+      selected_error: null,
+      selected_order: {
+        provider: { id: 'provider-1' },
+        items: [{ id: 'bay-1' }, { id: 'mechanic-1' }],
+        fulfillments: [
+          { id: 'booking-1', stops: [{ type: 'start', time: { timestamp: '2026-08-01T10:00:00+00:00' } }] },
+          { id: 'booking-2', stops: [{ type: 'start', time: { timestamp: '2026-08-01T10:00:00+00:00' } }] },
+        ],
+        quote: {
+          price: { currency: 'INR', value: '1200.00' },
+          breakup: [
+            { item: { id: 'bay-1' }, title: 'Bay 1', price: { currency: 'INR', value: '800.00' } },
+            { item: { id: 'mechanic-1' }, title: 'Mechanic John', price: { currency: 'INR', value: '400.00' } },
+          ],
+        },
+      },
+    });
+    render(<SelectPage />);
+
+    const input = screen.getByLabelText('Date and time');
+    fireEvent.change(input, { target: { value: '2026-08-01T10:00' } });
+    await user.click(screen.getByRole('button', { name: 'Reserve this slot' }));
+
+    await waitFor(() => expect(screen.getByText(/Includes:/)).toBeInTheDocument());
+    expect(screen.getByText('Bay 1 + Mechanic John')).toBeInTheDocument();
+  });
+
   it('shows a submit error when the trigger itself fails', async () => {
     const user = userEvent.setup({ delay: null });
     const { ApiError } = await import('@/lib/api-client');

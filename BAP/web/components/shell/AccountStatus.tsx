@@ -36,6 +36,9 @@ export function AccountStatus() {
   return (
     <div className="flex items-center gap-2 text-xs text-neutral-600">
       <span>Signed in as {customer.name}</span>
+      <Link href="/bookings" className="underline">
+        My bookings
+      </Link>
       <button
         type="button"
         onClick={async () => {

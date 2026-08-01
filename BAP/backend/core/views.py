@@ -174,12 +174,18 @@ def me_view(request):
 
 
 @require_http_methods(["GET"])
+@rate_limit(limit_per_minute=20, scope="bookings")
 def bookings_list_view(request):
     """The logged-in customer's own booking history (§3.6, livetracker2.md) — a
     genuinely new endpoint, not an existing one this phase merely paginates (see
     booking_history_service's module docstring). IDOR-safe by construction: always
     scoped to request.user, never a customer id read from the request. Cursor-
-    paginated the same way as search_results_view."""
+    paginated the same way as search_results_view.
+
+    livetracker3.md §9.1's third self-audit: had no @rate_limit at all while it had
+    zero real UI callers; §9.1 is what makes it genuinely reachable by real browser
+    traffic for the first time, matching search_trigger_view's own 20/min tier as
+    the closest precedent for a read-heavy, repeatable customer action."""
     if not request.user.is_authenticated:
         return error_response("UNAUTHORIZED", "not logged in", 401)
     limit = pagination.parse_limit(request.GET.get("limit"))

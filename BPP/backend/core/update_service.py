@@ -39,7 +39,6 @@ from . import registry_client, trust
 from .crypto import sign_outbound_request
 from .events import get_event_bus
 from .participant_keys import get_signing_keys
-from .realtime import broadcast_slot_update
 
 logger = logging.getLogger("bpp")
 
@@ -208,15 +207,13 @@ def dispatch_on_update(*, payload: dict, correlation_id: str | None = None) -> N
                     }
                 else:
                     resources = [b.slot.resource for b in rescheduled_bookings]
-                    # Phase 4.4 (livetracker2.md §4.4): each resource in the group has
-                    # two real transitions to broadcast — its old slot freed back to
-                    # AVAILABLE, and its new slot now held.
-                    for old_group_booking, rescheduled in zip(
-                        group, rescheduled_bookings, strict=True
-                    ):
-                        old_slot = Slot.objects.get(pk=old_group_booking.slot_id)
-                        broadcast_slot_update(old_slot.resource_id, old_slot)
-                        broadcast_slot_update(rescheduled.slot.resource_id, rescheduled.slot)
+                    # livetracker4.md §2.1 cutover (2026-08-02): each resource's two
+                    # dashboard broadcasts (old slot freed, new slot held) used to fire
+                    # inline here. Both are now driven by the real event worker
+                    # consuming the `SlotEvent.RELEASED`/`SlotEvent.RESCHEDULED`
+                    # `reschedule_booking_group()` already publishes per booking
+                    # (event_bus is threaded through above) — a clean 1:1 swap, no
+                    # metric-semantics change (this loop was already per-booking).
                     resolved_order = {
                         "id": str(rescheduled_bookings[0].id),
                         "status": rescheduled_bookings[0].status,

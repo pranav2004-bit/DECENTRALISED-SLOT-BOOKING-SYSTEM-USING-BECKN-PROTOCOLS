@@ -169,6 +169,36 @@ services:
     ports:
       - "8002:8000"
 
+  # livetracker4.md §2.1 cutover (2026-08-02): BPP's audit-log/metrics/WebSocket-
+  # broadcast consumers no longer run inline inside bpp-backend's own request path —
+  # `run_event_worker` (a real, separate long-lived process, not a request-handling
+  # server) is now the only thing that drives them, so it must run continuously
+  # alongside bpp-backend, not just be invoked ad hoc. Same image/env/DB as
+  # bpp-backend (shares the same Django app and settings), different command.
+  bpp-worker:
+    build:
+      context: .
+      dockerfile: BPP/backend/Dockerfile
+    env_file: ./BPP/backend/.env
+    command: ["python", "manage.py", "run_event_worker"]
+    # This process never serves HTTP — bpp-backend's inherited Dockerfile HEALTHCHECK
+    # (a GET against :8000/health) would otherwise report it permanently unhealthy.
+    healthcheck:
+      disable: true
+    # No other service in this file sets a restart policy — that's a pre-existing,
+    # separate gap out of this section's own scope. This one matters more here
+    # specifically: audit logging, business metrics, and WebSocket broadcasts now
+    # depend entirely on this one process staying alive (livetracker4.md §2.1's
+    # own gap audit), with nothing else covering for it if it dies. `unless-
+    # stopped` restarts on crash/host-reboot but not after a deliberate `docker
+    # compose stop`.
+    restart: unless-stopped
+    depends_on:
+      bpp-db:
+        condition: service_healthy
+      bpp-cache:
+        condition: service_healthy
+
   bpp-web:
     build:
       context: ./BPP/web

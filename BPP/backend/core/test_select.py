@@ -7,18 +7,28 @@ the re-selection-releases-prior-hold requirement.
 
 import datetime as dt
 import json
+import os
+import subprocess
+import sys
+import time as time_module
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
 import responses
+from django.conf import settings as django_settings
 from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
+from django_observability.metrics import get_counter
+from event_bus import EventBus
+from inventory_core.events import BookingEvent, SlotEvent
 from inventory_core.models import Booking, Resource, Slot
 
+import core.events as events_module
 from core import select_service
 from core.crypto import generate_signing_key_pair, sign_outbound_request
 
@@ -454,3 +464,218 @@ def test_reselecting_a_different_slot_releases_the_first_hold(bpp_identity_setti
     assert slot_a.capacity_remaining == 1
     assert slot_b.capacity_remaining == 0
     assert Booking.objects.filter(slot=slot_b, status=Booking.Status.HELD).count() == 1
+
+
+# --- livetracker4.md §2.1 cutover (2026-08-02): select_service.py's own
+# hold-creation path never wired event_bus at all before this cutover — a real
+# gap found while removing the inline record_hold_created()/broadcast_slot_update()
+# calls (see select_service.py's own comments). The tests below prove the fix:
+# a real /select now genuinely publishes the events the removed inline calls
+# used to substitute for. ---------------------------------------------------
+
+
+@pytest.fixture
+def isolated_bus():
+    """A local EventBus on its own uniquely-named queue, patched in as
+    core.select_service's own get_event_bus() for the duration of a test —
+    avoids the shared, uncontrolled default queue every other test that
+    exercises confirm/cancel/update's real event_bus= wiring also publishes
+    into, matching the isolation discipline test_events_worker.py's own
+    _isolated_bus_and_env() established for subprocess-based tests."""
+    suffix = uuid.uuid4().hex[:12]
+    bus = EventBus(
+        redis_url=django_settings.EVENT_BUS_URL,
+        queue_name=f"test-select-queue-{suffix}",
+        dlq_name=f"test-select-dlq-{suffix}",
+    )
+    with patch("core.select_service.get_event_bus", return_value=bus):
+        yield bus
+    bus._redis.delete(bus.queue_name, bus.dlq_name, bus.processing_queue_name)
+
+
+@pytest.mark.django_db
+def test_dispatch_on_select_publishes_a_real_slot_reserved_event(
+    bpp_identity_settings, isolated_bus
+):
+    resource, slot = _make_resource_with_slot(price_value="500.00")
+    payload = _build_select_payload(
+        item_id=str(resource.id), requested_timestamp=slot.start_time.isoformat()
+    )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add(
+            responses.POST,
+            "https://bap.example.com/on_select",
+            json={"message": {"ack": {"status": "ACK"}}},
+        )
+        select_service.dispatch_on_select(payload=payload)
+
+    booking = Booking.objects.get(slot=slot)
+    event = isolated_bus.consume_one(timeout_seconds=2)
+    assert event is not None, "dispatch_on_select must publish a real SlotEvent.RESERVED"
+    assert event["event_type"] == SlotEvent.RESERVED
+    assert event["payload"]["slot_id"] == str(slot.id)
+    assert event["payload"]["booking_id"] == str(booking.id)
+    assert event["payload"]["holder_ref"] == "txn-1"
+
+
+@pytest.mark.django_db
+def test_reselecting_publishes_released_and_superseded_cancelled_events(
+    bpp_identity_settings, isolated_bus
+):
+    """Real, previously-nonexistent capability closed by this cutover: before
+    event_bus was wired into release_prior_hold_for_transaction, a re-selection's
+    own release was never observable on the bus at all — not audit-logged, not
+    broadcast via the worker path. Now it publishes both SlotEvent.RELEASED and
+    BookingEvent.CANCELLED(reason=superseded_by_reselect), matching every other
+    real release path."""
+    resource, slot_a = _make_resource_with_slot(
+        capacity=1, start_time=timezone.now().replace(microsecond=0)
+    )
+    slot_b = Slot.objects.create(
+        resource=resource,
+        start_time=slot_a.start_time + dt.timedelta(hours=1),
+        end_time=slot_a.start_time + dt.timedelta(hours=1, minutes=30),
+        capacity_total=1,
+        capacity_remaining=1,
+    )
+
+    def run_select(slot):
+        payload = _build_select_payload(
+            item_id=str(resource.id), requested_timestamp=slot.start_time.isoformat()
+        )
+        with responses.RequestsMock() as rsps:
+            rsps.add(
+                responses.POST,
+                "https://bap.example.com/on_select",
+                json={"message": {"ack": {"status": "ACK"}}},
+            )
+            select_service.dispatch_on_select(payload=payload)
+
+    run_select(slot_a)
+    first_booking = Booking.objects.get(slot=slot_a)
+    # Drain slot_a's own SlotEvent.RESERVED before re-selecting, so the queue
+    # only holds the release's events by the time we assert on them below.
+    reserved = isolated_bus.consume_one(timeout_seconds=2)
+    assert reserved["event_type"] == SlotEvent.RESERVED
+
+    run_select(slot_b)
+
+    events_by_type = {}
+    for _ in range(3):
+        event = isolated_bus.consume_one(timeout_seconds=2)
+        if event is not None:
+            events_by_type[event["event_type"]] = event
+
+    assert SlotEvent.RELEASED in events_by_type
+    assert events_by_type[SlotEvent.RELEASED]["payload"]["slot_id"] == str(slot_a.id)
+
+    assert BookingEvent.CANCELLED in events_by_type
+    cancelled_payload = events_by_type[BookingEvent.CANCELLED]["payload"]
+    assert cancelled_payload["booking_id"] == str(first_booking.id)
+    assert cancelled_payload["reason"] == "superseded_by_reselect"
+
+    assert SlotEvent.RESERVED in events_by_type
+
+
+def _bpp_backend_dir() -> str:
+    return os.getcwd()
+
+
+def _worker_output(worker: subprocess.Popen) -> str:
+    if worker.poll() is None:
+        return "(still running)"
+    return worker.stdout.read()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_real_select_hold_is_consumed_by_a_genuinely_separate_worker_process(
+    bpp_identity_settings, settings
+):
+    """The full §2.1 Test Gate, applied to /select specifically: proves the
+    newly-wired event_bus= publish (added as part of this cutover) is actually
+    consumed by a genuinely separate OS process, incrementing the real
+    hold_created counter — not just that the event gets published (the tests
+    above), and not the process-wide core.events.get_event_bus() singleton's
+    default queue (shared, uncontrolled by this test), but the same isolated
+    queue/DLQ this subprocess is told about via env vars, matching
+    test_events_worker.py's own _isolated_bus_and_env() technique. Resets the
+    module-level singleton so the in-process publish and the subprocess consume
+    from the identical isolated pair.
+
+    Also carries the two env-propagation fixes `_isolated_bus_and_env()` needed
+    (see that function's own docstring for the full story, found live while first
+    writing this test): `DATABASE_URL` rebuilt from the actual live `test_bpp`
+    connection (not the inherited dev-DB env var), and `TESTING=true` so the
+    subprocess's own `bpp/settings.py` redirects its Redis-backed metrics
+    counters to the test-only DB 15 this test's own `get_counter()` reads from —
+    without it, the subprocess silently increments the real dev counter instead,
+    and this test's `before`/`after` comparison never observes it."""
+    from django.db import connection
+
+    suffix = uuid.uuid4().hex[:12]
+    queue_name = f"test-select-worker-queue-{suffix}"
+    dlq_name = f"test-select-worker-dlq-{suffix}"
+    db = connection.settings_dict
+    real_database_url = (
+        f"postgres://{db['USER']}:{db['PASSWORD']}@{db['HOST']}:{db['PORT']}/{db['NAME']}"
+    )
+    isolated_env = {
+        **os.environ,
+        "EVENT_BUS_QUEUE_NAME": queue_name,
+        "EVENT_BUS_DLQ_NAME": dlq_name,
+        "DATABASE_URL": real_database_url,
+        "TESTING": "true",
+    }
+    settings.EVENT_BUS_QUEUE_NAME = queue_name
+    settings.EVENT_BUS_DLQ_NAME = dlq_name
+    events_module._bus = None  # force get_event_bus() to rebuild against the isolated queue
+    try:
+        resource, slot = _make_resource_with_slot(price_value="500.00")
+        payload = _build_select_payload(
+            item_id=str(resource.id), requested_timestamp=slot.start_time.isoformat()
+        )
+
+        before = get_counter("bpp:metrics:hold_created")
+
+        with responses.RequestsMock() as rsps:
+            rsps.add(
+                responses.POST,
+                "https://bap.example.com/on_select",
+                json={"message": {"ack": {"status": "ACK"}}},
+            )
+            select_service.dispatch_on_select(payload=payload)
+
+        worker = subprocess.Popen(
+            [sys.executable, "manage.py", "run_event_worker"],
+            cwd=_bpp_backend_dir(),
+            env=isolated_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            assert worker.pid != os.getpid()
+
+            deadline = time_module.time() + 15
+            after = before
+            while time_module.time() < deadline:
+                after = get_counter("bpp:metrics:hold_created")
+                if after > before:
+                    break
+                time_module.sleep(0.2)
+
+            assert after == before + 1, (
+                "expected hold_created to increment by exactly 1 via the real, "
+                f"separate worker process — before={before} after={after} — "
+                f"worker output so far:\n{_worker_output(worker)}"
+            )
+        finally:
+            worker.terminate()
+            try:
+                worker.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                worker.kill()
+                worker.wait(timeout=10)
+    finally:
+        events_module._bus = None  # don't leak the isolated bus into later tests

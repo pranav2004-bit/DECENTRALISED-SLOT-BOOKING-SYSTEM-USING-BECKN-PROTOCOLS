@@ -211,6 +211,53 @@
         }
       ],
       "description": "Real, monotonically-decreasing funnel of successful stage progressions (not raw attempts) across a full booking journey, per BAP's own real counters (§3.10). Each bar is a genuine outcome recorded by that stage's own on_X callback handler, not the trigger call alone."
+    },
+    {
+      "id": 10,
+      "title": "BPP Event Worker — Alive",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 36 },
+      "targets": [
+        { "expr": "bpp_event_bus_worker_alive", "legendFormat": "worker alive", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "alive", "color": "green" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "livetracker4.md §2.1 (added 2026-08-02): 1 if run_event_worker's own heartbeat is fresh, 0 if expired/never set. If this shows DOWN, audit logging, business metrics, and WebSocket broadcasts have all stopped — see RUNBOOK.md's Known Operational Facts entry for this same date."
+    },
+    {
+      "id": 11,
+      "title": "BPP Event Bus — DLQ Length",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 36 },
+      "targets": [
+        { "expr": "bpp_event_bus_dlq_length", "legendFormat": "DLQ length", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "description": "livetracker4.md §2.1/§2.3 (added 2026-08-02): any sustained non-zero value means a real, unresolved processing failure is accumulating. `docker compose exec bpp-backend python manage.py requeue_dlq --peek` to inspect — see RUNBOOK.md's alerting table."
     }
   ]
 }

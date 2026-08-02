@@ -16,6 +16,7 @@ import redis
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.utils import timezone
+from inventory_core.consumers import audit_log_consumer
 from inventory_core.models import Booking, BookingAuditLogEntry, Resource, Slot
 from inventory_core.reservation import (
     ReservationHold,
@@ -424,6 +425,34 @@ def test_reschedule_active_booking_rejects_the_same_slot(resource, redis_client)
 
 
 # --- BookingAuditLogEntry + correlation_id (livetracker2.md §3.10) -----------------------------
+#
+# livetracker4.md §2.1 cutover (2026-08-02): `reservation.py`'s own inline
+# `log_booking_audit_event()` calls were removed — the real event worker's
+# `audit_log_consumer` (`inventory_core/consumers.py`), consuming the published
+# event, is now the sole writer of `BookingAuditLogEntry`. These tests still
+# exercise the exact same real correctness (correlation_id propagation, detail
+# content, the no-event-bus-means-no-audit-entry contract) — `_CapturingBus`
+# captures what the reservation-layer function actually published, and
+# `audit_log_consumer` is invoked directly against it, the same unit-level
+# substitute for "a worker consumed this" every other consumer test in this
+# suite already uses (see test_events_worker.py's own individual-consumer
+# tests) — a full subprocess round-trip is covered separately, live, in
+# test_events_worker.py itself.
+
+
+class _CapturingBus:
+    def __init__(self):
+        self.published = []
+
+    def publish(self, event_type, payload):
+        self.published.append((event_type, payload))
+        return "fake-event-id"
+
+
+def _consume_via_audit_log_consumer(bus: _CapturingBus, event_type: str) -> None:
+    matches = [payload for et, payload in bus.published if et == event_type]
+    assert matches, f"expected a {event_type!r} event to have been published, got {bus.published}"
+    audit_log_consumer({"event_type": event_type, "payload": matches[-1]})
 
 
 @pytest.mark.django_db
@@ -431,10 +460,11 @@ def test_confirm_hold_records_a_real_audit_log_entry_with_correlation_id(resourc
     slot = _make_slot(resource, capacity=1)
     booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30)
 
-    fake_bus = type("FakeBus", (), {"publish": lambda self, *a, **kw: None})()
+    bus = _CapturingBus()
     confirm_hold(
-        booking.id, redis_client=redis_client, event_bus=fake_bus, correlation_id="corr-abc-123"
+        booking.id, redis_client=redis_client, event_bus=bus, correlation_id="corr-abc-123"
     )
+    _consume_via_audit_log_consumer(bus, "BookingConfirmed")
 
     entry = BookingAuditLogEntry.objects.get(booking_id_text=str(booking.id))
     assert entry.event_type == "BookingConfirmed"
@@ -461,8 +491,9 @@ def test_cancel_booking_records_a_real_audit_log_entry(resource, redis_client):
     booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=30)
     confirm_hold(booking.id, redis_client=redis_client)
 
-    fake_bus = type("FakeBus", (), {"publish": lambda self, *a, **kw: None})()
-    cancel_booking(booking.id, event_bus=fake_bus, correlation_id="corr-cancel-1")
+    bus = _CapturingBus()
+    cancel_booking(booking.id, event_bus=bus, correlation_id="corr-cancel-1")
+    _consume_via_audit_log_consumer(bus, "BookingCancelled")
 
     entry = BookingAuditLogEntry.objects.get(
         booking_id_text=str(booking.id), event_type="BookingCancelled"
@@ -486,10 +517,11 @@ def test_reschedule_active_booking_records_a_real_audit_log_entry(resource, redi
     )
     confirm_hold(booking.id, redis_client=redis_client)
 
-    fake_bus = type("FakeBus", (), {"publish": lambda self, *a, **kw: None})()
+    bus = _CapturingBus()
     reschedule_active_booking(
-        booking.id, new_slot.id, event_bus=fake_bus, correlation_id="corr-update-1"
+        booking.id, new_slot.id, event_bus=bus, correlation_id="corr-update-1"
     )
+    _consume_via_audit_log_consumer(bus, "BookingRescheduled")
 
     entry = BookingAuditLogEntry.objects.get(
         booking_id_text=str(booking.id), event_type="BookingRescheduled"
@@ -509,8 +541,9 @@ def test_release_expired_hold_records_an_audit_entry_with_no_correlation_id(
     booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=1)
     time_module.sleep(1.5)
 
-    fake_bus = type("FakeBus", (), {"publish": lambda self, *a, **kw: None})()
-    released = release_expired_hold(booking.id, redis_client=redis_client, event_bus=fake_bus)
+    bus = _CapturingBus()
+    released = release_expired_hold(booking.id, redis_client=redis_client, event_bus=bus)
+    _consume_via_audit_log_consumer(bus, "BookingCancelled")
 
     assert released is True
     entry = BookingAuditLogEntry.objects.get(booking_id_text=str(booking.id))
@@ -565,15 +598,15 @@ def test_sweep_expired_holds_publishes_real_events_when_given_an_event_bus(resou
     booking = hold_slot(slot.id, holder_ref="cust-1", redis_client=redis_client, ttl_seconds=1)
     time_module.sleep(1.5)
 
-    published = []
-    fake_bus = type("FakeBus", (), {"publish": lambda self, *a, **kw: published.append(a)})()
+    bus = _CapturingBus()
 
     from inventory_core.reconciliation import sweep_expired_holds
 
-    released_count = sweep_expired_holds(redis_client=redis_client, event_bus=fake_bus)
+    released_count = sweep_expired_holds(redis_client=redis_client, event_bus=bus)
 
     assert released_count == 1
-    assert len(published) == 2  # SlotReleased + BookingCancelled
+    assert len(bus.published) == 2  # SlotReleased + BookingCancelled
+    _consume_via_audit_log_consumer(bus, "BookingCancelled")
     entry = BookingAuditLogEntry.objects.get(booking_id_text=str(booking.id))
     assert entry.detail["reason"] == "hold_expired"
 
@@ -657,8 +690,9 @@ def test_complete_active_booking_records_a_real_audit_log_entry(resource):
         slot=slot, holder_ref="cust-1", status=Booking.Status.ACTIVE
     )
 
-    fake_bus = type("FakeBus", (), {"publish": lambda self, *a, **kw: None})()
-    complete_active_booking(booking.id, event_bus=fake_bus)
+    bus = _CapturingBus()
+    complete_active_booking(booking.id, event_bus=bus)
+    _consume_via_audit_log_consumer(bus, "BookingCompleted")
 
     entry = BookingAuditLogEntry.objects.get(
         booking_id_text=str(booking.id), event_type="BookingCompleted"

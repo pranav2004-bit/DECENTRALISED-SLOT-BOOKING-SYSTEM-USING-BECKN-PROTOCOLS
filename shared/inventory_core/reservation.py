@@ -33,7 +33,6 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from .audit import log_booking_audit_event
 from .events import BookingEvent, SlotEvent, publish_event
 from .models import Booking, Slot
 
@@ -290,14 +289,18 @@ def release_expired_hold(booking_id, *, redis_client, event_bus=None, correlatio
 
     if event_bus is not None:
         publish_event(event_bus, SlotEvent.RELEASED, slot_id=str(booking.slot_id))
-        publish_event(event_bus, BookingEvent.CANCELLED, booking_id=str(booking_id))
-        log_booking_audit_event(
-            booking=booking,
+        publish_event(
+            event_bus,
+            BookingEvent.CANCELLED,
             booking_id=str(booking_id),
-            event_type=BookingEvent.CANCELLED,
-            detail={"reason": "hold_expired", "slot_id": str(booking.slot_id)},
+            reason="hold_expired",
+            slot_id=str(booking.slot_id),
             correlation_id=correlation_id,
         )
+        # livetracker4.md §2.1 cutover (2026-08-02): the audit-log write for this
+        # cancellation used to fire inline here. It's now driven by the real event
+        # worker's `audit_log_consumer` consuming the `BookingEvent.CANCELLED` just
+        # published above — see `core/events_worker.py`'s `DISPATCH`.
 
     return True
 
@@ -333,14 +336,16 @@ def release_hold_now(booking_id, *, redis_client, event_bus=None, correlation_id
 
     if event_bus is not None:
         publish_event(event_bus, SlotEvent.RELEASED, slot_id=str(booking.slot_id))
-        publish_event(event_bus, BookingEvent.CANCELLED, booking_id=str(booking_id))
-        log_booking_audit_event(
-            booking=booking,
+        publish_event(
+            event_bus,
+            BookingEvent.CANCELLED,
             booking_id=str(booking_id),
-            event_type=BookingEvent.CANCELLED,
-            detail={"reason": "superseded_by_reselect", "slot_id": str(booking.slot_id)},
+            reason="superseded_by_reselect",
+            slot_id=str(booking.slot_id),
             correlation_id=correlation_id,
         )
+        # livetracker4.md §2.1 cutover: audit-log write now driven by the real event
+        # worker's `audit_log_consumer` consuming the `BookingEvent.CANCELLED` above.
 
     return True
 
@@ -399,14 +404,26 @@ def confirm_hold(booking_id, *, redis_client, event_bus=None, correlation_id=Non
 
     if event_bus is not None:
         publish_event(event_bus, SlotEvent.CONFIRMED, slot_id=str(booking.slot_id))
-        publish_event(event_bus, BookingEvent.CONFIRMED, booking_id=str(booking_id))
-        log_booking_audit_event(
-            booking=booking,
+        # livetracker4.md §2.1: correlation_id + the same detail fields the real
+        # event worker's `audit_log_consumer` needs (see `inventory_core/consumers.py`)
+        # are included in the published payload itself — real gap found by design
+        # audit before implementing that consumer (§2.1's own Test Gate): neither
+        # field is derivable from a DB refetch by booking_id alone (correlation_id
+        # isn't persisted anywhere; a cancel's own "reason" can't be recovered once
+        # the booking is already CANCELLED), so a queue-only consumer running
+        # detached from this call's own Python stack frame needs them carried on
+        # the event itself, not re-derived. The producer *mechanism* (publish_event
+        # itself, the bus) is unchanged — only the richness of what call sites
+        # pass through it.
+        publish_event(
+            event_bus,
+            BookingEvent.CONFIRMED,
             booking_id=str(booking_id),
-            event_type=BookingEvent.CONFIRMED,
-            detail={"slot_id": str(booking.slot_id)},
+            slot_id=str(booking.slot_id),
             correlation_id=correlation_id,
         )
+        # livetracker4.md §2.1 cutover: audit-log write now driven by the real event
+        # worker's `audit_log_consumer` consuming the `BookingEvent.CONFIRMED` above.
 
     return booking
 
@@ -439,14 +456,16 @@ def cancel_booking(booking_id, *, event_bus=None, correlation_id=None) -> Bookin
 
     if event_bus is not None:
         publish_event(event_bus, SlotEvent.RELEASED, slot_id=str(booking.slot_id))
-        publish_event(event_bus, BookingEvent.CANCELLED, booking_id=str(booking_id))
-        log_booking_audit_event(
-            booking=booking,
+        publish_event(
+            event_bus,
+            BookingEvent.CANCELLED,
             booking_id=str(booking_id),
-            event_type=BookingEvent.CANCELLED,
-            detail={"reason": "customer_cancel", "slot_id": str(booking.slot_id)},
+            reason="customer_cancel",
+            slot_id=str(booking.slot_id),
             correlation_id=correlation_id,
         )
+        # livetracker4.md §2.1 cutover: audit-log write now driven by the real event
+        # worker's `audit_log_consumer` consuming the `BookingEvent.CANCELLED` above.
 
     return booking
 
@@ -488,14 +507,16 @@ def complete_active_booking(booking_id, *, event_bus=None, correlation_id=None) 
 
     if event_bus is not None:
         publish_event(event_bus, SlotEvent.COMPLETED, slot_id=str(booking.slot_id))
-        publish_event(event_bus, BookingEvent.COMPLETED, booking_id=str(booking_id))
-        log_booking_audit_event(
-            booking=booking,
+        publish_event(
+            event_bus,
+            BookingEvent.COMPLETED,
             booking_id=str(booking_id),
-            event_type=BookingEvent.COMPLETED,
-            detail={"reason": "fulfillment_window_ended", "slot_id": str(booking.slot_id)},
+            reason="fulfillment_window_ended",
+            slot_id=str(booking.slot_id),
             correlation_id=correlation_id,
         )
+        # livetracker4.md §2.1 cutover: audit-log write now driven by the real event
+        # worker's `audit_log_consumer` consuming the `BookingEvent.COMPLETED` above.
 
     return True
 
@@ -551,14 +572,16 @@ def reschedule_active_booking(
     if event_bus is not None:
         publish_event(event_bus, SlotEvent.RELEASED, slot_id=str(old_slot_id))
         publish_event(event_bus, SlotEvent.RESCHEDULED, slot_id=str(new_slot_id))
-        publish_event(event_bus, BookingEvent.RESCHEDULED, booking_id=str(booking_id))
-        log_booking_audit_event(
-            booking=booking,
+        publish_event(
+            event_bus,
+            BookingEvent.RESCHEDULED,
             booking_id=str(booking_id),
-            event_type=BookingEvent.RESCHEDULED,
-            detail={"old_slot_id": str(old_slot_id), "new_slot_id": str(new_slot_id)},
+            old_slot_id=str(old_slot_id),
+            new_slot_id=str(new_slot_id),
             correlation_id=correlation_id,
         )
+        # livetracker4.md §2.1 cutover: audit-log write now driven by the real event
+        # worker's `audit_log_consumer` consuming the `BookingEvent.RESCHEDULED` above.
 
     booking.refresh_from_db()
     return booking
@@ -640,13 +663,15 @@ def reschedule_booking_group(booking_new_slot_pairs, *, event_bus=None, correlat
             old_slot_id = old_slot_id_by_booking[booking_id]
             publish_event(event_bus, SlotEvent.RELEASED, slot_id=old_slot_id)
             publish_event(event_bus, SlotEvent.RESCHEDULED, slot_id=new_slot_id)
-            publish_event(event_bus, BookingEvent.RESCHEDULED, booking_id=booking_id)
-            log_booking_audit_event(
-                booking=booking,
+            publish_event(
+                event_bus,
+                BookingEvent.RESCHEDULED,
                 booking_id=booking_id,
-                event_type=BookingEvent.RESCHEDULED,
-                detail={"old_slot_id": old_slot_id, "new_slot_id": new_slot_id},
+                old_slot_id=old_slot_id,
+                new_slot_id=new_slot_id,
                 correlation_id=correlation_id,
             )
+            # livetracker4.md §2.1 cutover: audit-log write now driven by the real
+            # event worker's `audit_log_consumer` consuming BookingEvent.RESCHEDULED.
 
     return result

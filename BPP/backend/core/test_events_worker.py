@@ -48,8 +48,9 @@ def _isolated_bus_and_env():
     cutover (2026-08-02), not in code review — this one had been silently
     masking every subprocess test's own real assertion:** `os.environ` (what
     this dict starts from) still carries this *process's* own `DATABASE_URL`,
-    e.g. `postgres://bpp:bpp@bpp-db:5432/bpp` — the real, persistent dev
-    database. pytest-django, though, runs this whole test inside a *different*,
+    e.g. `postgres://bpp:bpp@bpp-db:5432/bpp`  # pragma: allowlist secret —
+    the real, persistent dev database. pytest-django, though, runs this whole
+    test inside a *different*,
     ephemeral `test_bpp` database (created at session start, dropped at session
     end) by mutating `django.db.connection.settings_dict['NAME']` in-process —
     not via an env var, so a spawned subprocess never inherits it. Before this

@@ -20,6 +20,28 @@ SECRET_KEY = env("DJANGO_SECRET_KEY")
 DATABASE_URL = env("DATABASE_URL")
 REDIS_URL = env("REDIS_URL")
 
+# Django's test runner forces DEBUG=False regardless of .env — TESTING is the correct
+# signal for "is this a local/test run" checks that must hold true even though DEBUG is
+# off, matching registry/registry/settings.py's established fix for the same issue.
+# Moved up here (was previously defined much further down, near SERVICE_NAME) so
+# EVENT_BUS_QUEUE_NAME/_DLQ_NAME below can read it — see those two settings' own
+# comment for why they now need it.
+#
+# Real gap found live (livetracker4.md §2.1 cutover, 2026-08-02): `"pytest" in
+# sys.modules` is a purely in-process check — a `manage.py run_event_worker` worker
+# spawned as a genuinely separate OS subprocess (test_events_worker.py's own Test
+# Gate requirement) never imports pytest itself, so it always resolved `TESTING` to
+# `False`, silently pointing its own `CACHES["default"]["LOCATION"]` at the *real*
+# Redis DB instead of the test-only DB 15 this flag exists to redirect to (see
+# `CACHES` below) — confirmed live: a subprocess-worker test's own metrics-counter
+# increments were landing in the real dev counters, not the isolated test ones,
+# exactly the "silently zeroed/polluted real §3.10 counters" failure mode this
+# flag's own comment already describes, just via a different code path than the one
+# originally fixed. `_isolated_bus_and_env()`/equivalent test helpers now also set a
+# `TESTING=true` env var when spawning a worker subprocess from within a test, so
+# the subprocess's own settings module picks up the same signal.
+TESTING = "pytest" in sys.modules or env.bool("TESTING", default=False)
+
 # Reservation Window / TTL-based HELD state (livetracker2.md §1.3), first actually used by
 # a real transaction flow in §3.2's select/on_select. 600s (10 minutes) is a conventional
 # e-commerce checkout window — no real-traffic baseline exists yet to tune this against
@@ -61,8 +83,34 @@ SIGNING_PRIVATE_KEY_PATH = env("BPP_SIGNING_PRIVATE_KEY_PATH")
 ENCRYPTION_PRIVATE_KEY_PATH = env("BPP_ENCRYPTION_PRIVATE_KEY_PATH")
 ON_SUBSCRIBE_CALLBACK_PATH = env("ON_SUBSCRIBE_CALLBACK_PATH", default="/on_subscribe")
 EVENT_BUS_URL = env("EVENT_BUS_URL", default=REDIS_URL)
-EVENT_BUS_QUEUE_NAME = "bpp-internal-events"
-EVENT_BUS_DLQ_NAME = env("EVENT_BUS_DLQ_NAME", default="bpp-internal-dlq")
+# livetracker4.md §2.1: env-overridable (was hardcoded) — a real gap found once
+# tests started spawning genuine, separate worker subprocesses: those run
+# concurrently with pytest's own test execution, and sharing the one real
+# `bpp-internal-events` queue name with other tests risks a still-alive worker
+# subprocess consuming an event a *different*, unrelated test just published.
+# Test-only isolation (a uniquely-named queue per subprocess-spawning test, set
+# via this env var) needs the same override pattern EVENT_BUS_DLQ_NAME already had.
+#
+# **Second, more disruptive gap found live completing the §2.1 cutover
+# (2026-08-02):** once a real, always-on `bpp-worker` process exists (deployed as
+# its own `docker-compose.yml` service, not just spawned ad hoc by a handful of
+# subprocess tests), it continuously drains the *default* queue name too — racing
+# against every ordinary test that publishes to the shared bus via the plain
+# `bus`/`get_event_bus()` fixture (most of this suite: `tests.py`,
+# `test_confirm.py`, `test_cancel.py`, `test_update.py`,
+# `test_inventory_core_booking.py`, `test_inventory_core_events.py`,
+# `test_replay_events.py`) and expects to `consume_one()` its own just-published
+# event itself. Confirmed live: 21 tests failed with `consume_one()` returning
+# `None` — the real `bpp-worker` container had already popped the event first.
+# Defaulting to a `TESTING`-suffixed name means the whole test session never
+# shares a queue with the real worker at all, by construction, not by each test
+# remembering to opt into isolation.
+EVENT_BUS_QUEUE_NAME = env(
+    "EVENT_BUS_QUEUE_NAME", default="bpp-internal-events-test" if TESTING else "bpp-internal-events"
+)
+EVENT_BUS_DLQ_NAME = env(
+    "EVENT_BUS_DLQ_NAME", default="bpp-internal-dlq-test" if TESTING else "bpp-internal-dlq"
+)
 
 HTTP_CLIENT_TIMEOUT_MS = env.int("HTTP_CLIENT_TIMEOUT_MS", default=5000)
 HTTP_CLIENT_MAX_RETRIES = env.int("HTTP_CLIENT_MAX_RETRIES", default=3)
@@ -78,11 +126,6 @@ HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD = env.int("HTTP_CLIENT_CIRCUIT_BREAKER_THR
 DOMAIN_HEALTHCARE = env("DOMAIN_HEALTHCARE", default="ONDC:SRV13")
 DOMAIN_AUTOMOTIVE = env("DOMAIN_AUTOMOTIVE", default="BECKN:AUTO01")
 DOMAIN_BEAUTY = env("DOMAIN_BEAUTY", default="ONDC:RET13")
-
-# Django's test runner forces DEBUG=False regardless of .env — TESTING is the correct
-# signal for "is this a local/test run" checks that must hold true even though DEBUG is
-# off, matching registry/registry/settings.py's established fix for the same issue.
-TESTING = "pytest" in sys.modules
 
 SERVICE_NAME = "bpp-backend"
 

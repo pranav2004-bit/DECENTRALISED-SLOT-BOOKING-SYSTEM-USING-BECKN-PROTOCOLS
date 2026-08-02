@@ -37,10 +37,9 @@ from inventory_core.reservation import hold_multi_resource_booking, hold_slot, r
 from . import registry_client, trust
 from .automotive_adapter import find_paired_resource
 from .crypto import sign_outbound_request
-from .metrics import record_hold_created
+from .events import get_event_bus
 from .models import BusinessAccount
 from .participant_keys import get_signing_keys
-from .realtime import broadcast_slot_update
 
 logger = logging.getLogger("bpp")
 
@@ -164,6 +163,7 @@ def _hold_multi_resource_selection(
         holder_ref=transaction_id,
         redis_client=_redis_client(),
         ttl_seconds=settings.RESERVATION_HOLD_TTL_SECONDS,
+        event_bus=get_event_bus(),
     )
     if bookings is None:
         return (
@@ -171,11 +171,15 @@ def _hold_multi_resource_selection(
             None,
         )
 
-    record_hold_created()
-    # Phase 4.4 (livetracker2.md §4.4): both resources just became less available (or
-    # fully HELD) — broadcast each to its own resource's live availability dashboard.
-    for resource_obj, booking in zip([resource, paired_resource], bookings, strict=True):
-        broadcast_slot_update(resource_obj.id, booking.slot)
+    # livetracker4.md §2.1 cutover (2026-08-02): hold-created metrics and the live
+    # dashboard broadcast used to fire inline, right here. Both are now driven by the
+    # real event worker consuming the `SlotEvent.RESERVED` `hold_multi_resource_booking`
+    # just published above (one per resource) — see `core/events_worker.py`'s
+    # `DISPATCH[SlotEvent.RESERVED]`. This is a deliberate metric-semantics decision,
+    # confirmed with the project owner: a multi-resource booking (e.g. Automotive's
+    # bay+mechanic pair) now counts as 2 holds created, not 1 — one per real `Booking`
+    # row, matching what the event bus naturally publishes, not the prior "one count per
+    # customer action" behavior.
     resources = [resource, paired_resource]
     total_value = resource.price_value + paired_resource.price_value
     resolved_order = {
@@ -274,6 +278,7 @@ def dispatch_on_select(*, payload: dict) -> None:
                         holder_ref=context["transaction_id"],
                         redis_client=_redis_client(),
                         ttl_seconds=settings.RESERVATION_HOLD_TTL_SECONDS,
+                        event_bus=get_event_bus(),
                     )
                     if booking is None:
                         error = {
@@ -281,8 +286,11 @@ def dispatch_on_select(*, payload: dict) -> None:
                             "message": "Slot no longer available",
                         }
                     else:
-                        record_hold_created()
-                        broadcast_slot_update(resource.id, booking.slot)
+                        # livetracker4.md §2.1 cutover: see the multi-resource branch's
+                        # own comment above — hold-created metrics and the availability
+                        # broadcast are now driven by the real event worker consuming
+                        # the `SlotEvent.RESERVED` `hold_slot` just published, not fired
+                        # inline here.
                         resolved_order = {
                             "provider": {"id": resource.owner_ref},
                             "items": [{"id": str(resource.id)}],
@@ -360,7 +368,12 @@ def release_prior_hold_for_transaction(*, transaction_id: str) -> None:
     from inventory_core.models import Booking
 
     for booking in Booking.objects.filter(holder_ref=transaction_id, status=Booking.Status.HELD):
-        slot_id = booking.slot_id
-        if release_hold_now(booking.id, redis_client=_redis_client()):
-            released_slot = Slot.objects.select_related("resource").get(pk=slot_id)
-            broadcast_slot_update(released_slot.resource_id, released_slot)
+        # livetracker4.md §2.1 cutover: the dashboard broadcast for this release used to
+        # fire inline here. It's now driven by the real event worker consuming the
+        # `SlotEvent.RELEASED` `release_hold_now` publishes below — see
+        # `core/events_worker.py`'s `DISPATCH[SlotEvent.RELEASED]`. This also closes a
+        # real, pre-existing gap: `event_bus` was never wired through this call site
+        # before, so a re-selection's own release was never audit-logged either — it now
+        # is, via the worker's `audit_log_consumer` on the `BookingEvent.CANCELLED`
+        # (`reason="superseded_by_reselect"`) `release_hold_now` also publishes.
+        release_hold_now(booking.id, redis_client=_redis_client(), event_bus=get_event_bus())

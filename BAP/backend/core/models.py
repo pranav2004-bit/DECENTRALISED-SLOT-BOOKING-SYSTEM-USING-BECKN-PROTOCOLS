@@ -158,6 +158,18 @@ class SearchSession(models.Model):
     # on_confirm arrives successfully.
     confirmed_order = models.JSONField(null=True, blank=True)
     confirmed_error = models.JSONField(null=True, blank=True)
+    # livetracker4.md §2.4: an explicit marker of "a real /confirm attempt was
+    # dispatched," set by confirm_service.trigger_confirm() every time it fires —
+    # real gap found by design audit before implementing the reconciliation sweep
+    # below: confirmed_order/confirmed_error being both still null is *also* the
+    # state of a session that simply never reached /confirm at all (the customer
+    # saw the quote and walked away). Without this field, a sweep looking for
+    # "stale, unconfirmed" sessions couldn't distinguish "a confirm was triggered
+    # and its callback got lost" from "confirm was never triggered" — and would
+    # auto-confirm (commit/bill) a booking the customer never actually asked to
+    # confirm. Only ever read by the reconciliation sweep; never surfaced to a
+    # customer directly.
+    confirm_triggered_at = models.DateTimeField(null=True, blank=True)
 
     # §3.5 Post-Booking — same mutually-exclusive success/error pattern, all
     # operating on the already-confirmed booking above. `status_order` holds

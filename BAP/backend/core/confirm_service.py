@@ -67,7 +67,14 @@ def trigger_confirm(*, transaction_id: str, customer=None) -> None:
 
     session.confirmed_order = None
     session.confirmed_error = None
-    session.save(update_fields=["confirmed_order", "confirmed_error", "updated_at"])
+    # livetracker4.md §2.4: an explicit marker that a real /confirm attempt was
+    # genuinely dispatched — see SearchSession.confirm_triggered_at's own
+    # docstring for why the reconciliation sweep needs this distinguished from
+    # confirmed_order/confirmed_error simply both still being null.
+    session.confirm_triggered_at = timezone.now()
+    session.save(
+        update_fields=["confirmed_order", "confirmed_error", "confirm_triggered_at", "updated_at"]
+    )
 
     context = build_context(
         domain=session.domain,

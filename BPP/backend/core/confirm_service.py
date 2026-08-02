@@ -38,7 +38,6 @@ from inventory_core.reservation import confirm_hold, find_group_bookings
 from . import registry_client, trust
 from .crypto import sign_outbound_request
 from .events import get_event_bus
-from .metrics import record_booking_confirmed, record_hold_expired
 from .participant_keys import get_signing_keys
 
 logger = logging.getLogger("bpp")
@@ -189,13 +188,29 @@ def dispatch_on_confirm(*, payload: dict, correlation_id: str | None = None) -> 
             # right-sized-for-current-scale judgment already applied throughout
             # this reservation layer (e.g. `release_expired_hold`'s own opportunistic
             # design).
-            record_hold_expired()
+            #
+            # livetracker4.md §2.1 cutover (2026-08-02): the hold-expired metric used to
+            # fire inline here. It's now driven by the real event worker consuming the
+            # `BookingEvent.CANCELLED` (`reason="hold_expired"`) that `confirm_hold()`'s
+            # own internal `release_expired_hold()` call already publishes (event_bus is
+            # threaded through above). This is actually *more* accurate than the removed
+            # inline call for a multi-resource group where only one member's hold expired
+            # independently of the others: the old inline code counted only the failure
+            # and silently dropped any group member that *did* confirm successfully
+            # before the exception was raised; the worker counts each booking's own real
+            # outcome individually, since each publishes its own event.
             error = {
                 "code": "SLOT_UNAVAILABLE",
                 "message": "This booking's hold is no longer active",
             }
         else:
-            record_booking_confirmed()
+            # livetracker4.md §2.1 cutover: the booking-confirmed metric used to fire
+            # inline here, once per confirm action. It's now driven by the real event
+            # worker consuming the `BookingEvent.CONFIRMED` `confirm_hold()` publishes
+            # per booking (event_bus is threaded through above) — a deliberate
+            # metric-semantics decision, confirmed with the project owner: a
+            # multi-resource confirm (e.g. Automotive's bay+mechanic pair) now counts as
+            # 2 confirmed bookings, not 1, matching what actually got confirmed.
             confirmed_booking = next(b for b in confirmed_bookings if b.id == booking.id)
             resources = [b.slot.resource for b in confirmed_bookings]
             total_value = sum(r.price_value for r in resources)

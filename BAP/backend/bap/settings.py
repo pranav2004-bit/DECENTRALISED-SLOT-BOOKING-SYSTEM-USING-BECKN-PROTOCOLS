@@ -65,6 +65,19 @@ HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD = env.int("HTTP_CLIENT_CIRCUIT_BREAKER_THR
 # off, matching registry/registry/settings.py's established fix for the same issue.
 TESTING = "pytest" in sys.modules
 
+# livetracker4.md §2.4: BAP's own reconciliation loop, mirroring BPP's already-
+# established core/reconciliation.py naming/pattern (livetracker2.md §3.11) —
+# same env var name and 60s default, no new convention introduced.
+RECONCILIATION_INTERVAL_SECONDS = env.int("RECONCILIATION_INTERVAL_SECONDS", default=60)
+# How long a session may sit with a dispatched-but-unresolved /confirm before
+# the sweep re-triggers it — deliberately much larger than the real trigger-call
+# round-trip (search/confirm own trigger latency is ~0.1-0.2s per livetracker2.md
+# §3.8's own live measurement) so this only ever fires for a genuinely stuck
+# session, not one still legitimately in flight.
+RECONCILIATION_STALE_CONFIRM_SECONDS = env.int(
+    "RECONCILIATION_STALE_CONFIRM_SECONDS", default=300
+)
+
 SERVICE_NAME = "bap-backend"
 
 INSTALLED_APPS = [

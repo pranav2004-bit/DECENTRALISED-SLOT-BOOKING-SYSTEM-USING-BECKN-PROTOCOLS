@@ -325,10 +325,19 @@ jobs:
         # HTTP calls (global-setup.ts's own docstring: "NOT through BPP's own web UI"). Scoped
         # to exactly the 5 services this test actually needs, freeing real CPU/memory on the
         # shared CI runner — a genuine resource-contention reduction, not a workaround.
-        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml build registry beckn-gateway bap-backend bap-web bpp-backend
+        #
+        # `bpp-worker` (livetracker4.md §2.1's real event worker, added 2026-08-02) is included
+        # too, unlike the `bpp-web` exclusion above: audit-log writes, business metrics, and
+        # WebSocket broadcasts only happen via that separate process now, not inline. `e2e/` has
+        # zero references to any of them today (confirmed by grep, same check as `bpp-web`'s
+        # removal) so nothing here currently depends on it — but it costs nothing extra to build
+        # (identical image/Dockerfile to `bpp-backend`, already being built) or run (no HTTP
+        # server, minimal idle CPU), so it's started for real rather than left as a silent trap
+        # for whoever adds the first E2E assertion that needs it.
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml build registry beckn-gateway bap-backend bap-web bpp-backend bpp-worker
 
       - name: Start the real stack
-        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d registry beckn-gateway bap-backend bap-web bpp-backend
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d registry beckn-gateway bap-backend bap-web bpp-backend bpp-worker
 
       - name: Wait for real health
         # No docker-compose healthcheck block exists yet for the app containers themselves

@@ -316,6 +316,99 @@ def test_cancel_trigger_view_allows_the_owning_customer(bap_identity_settings, c
 
 
 @pytest.mark.django_db
+@patch("core.cancel_service.notify_booking_cancelled_in_background")
+def test_trigger_cancel_is_idempotent_against_a_retried_double_submit(
+    mock_notify, bap_identity_settings, client
+):
+    """livetracker3.md §10.1 — a real, confirmed data-integrity bug found while
+    auditing §9.1: before this guard, every trigger_cancel() call unconditionally
+    reset cancelled_order to None, even a retried call against a booking already
+    successfully cancelled. If that retry's own dispatch then failed, the evidence
+    of the first, genuine cancellation was silently wiped.
+
+    Exercises the real, combined property this section's own Test Gate requires
+    in one place, not two looser tests that could each pass independently: a real
+    first cancel that genuinely succeeds (trigger + the real /on_cancel callback,
+    exactly as production receives it), then a real second trigger_cancel() call
+    on the same, now-already-cancelled transaction — asserting both (1) the
+    stored cancelled_order is byte-for-byte unchanged, not re-fetched or wiped,
+    and (2) notify_booking_cancelled_in_background's call count stays at 1, not 2
+    — a real customer double-submitting a cancel must not get two "cancelled"
+    emails."""
+    _session_with_confirmed_order()
+
+    def bpp_cancel_callback(request):
+        body = json.loads(request.body)
+        return (
+            200,
+            {},
+            json.dumps({"context": body["context"], "message": {"ack": {"status": "ACK"}}}),
+        )
+
+    # --- First, genuine cancel: trigger + the real on_cancel callback landing. ---
+    with responses.RequestsMock() as rsps:
+        _mock_bpp_registry_lookup(rsps)
+        rsps.add_callback(
+            responses.POST, "https://bpp.example.com/cancel", callback=bpp_cancel_callback
+        )
+        cancel_service.trigger_cancel(transaction_id="txn-1")
+    cancel_service.record_on_cancel_result(payload=_build_on_cancel_payload())
+
+    session = SearchSession.objects.get(transaction_id="txn-1")
+    first_cancelled_order = session.cancelled_order
+    assert first_cancelled_order["status"] == "CANCELLED"
+    mock_notify.assert_called_once()
+
+    # --- Second, retried call on the same now-already-cancelled transaction. ---
+    # No registered routes at all: if the guard failed to short-circuit and
+    # attempted a real dispatch, `responses` would raise ConnectionError for an
+    # unmocked request, failing this test loudly rather than silently passing.
+    with responses.RequestsMock():
+        cancel_service.trigger_cancel(transaction_id="txn-1")
+
+    session.refresh_from_db()
+    assert session.cancelled_order == first_cancelled_order
+    assert session.cancelled_error is None
+    mock_notify.assert_called_once()  # still 1, not 2 — no duplicate notification
+
+
+@pytest.mark.django_db
+def test_trigger_cancel_still_dispatches_normally_after_a_prior_cancel_attempt_only_errored(
+    bap_identity_settings,
+):
+    """Regression guard for the idempotent guard's own boundary (§10.1's second
+    checklist item): a prior attempt that only ever recorded an *error*
+    (cancelled_order still None) is not a genuine success and must still go
+    through the normal dispatch path — the guard checks cancelled_order
+    specifically, not "has cancel ever been attempted"."""
+    session = _session_with_confirmed_order()
+    session.cancelled_error = {"code": "SLOT_UNAVAILABLE", "message": "No matching booking"}
+    session.save()
+
+    captured_requests = []
+
+    def bpp_cancel_callback(request):
+        captured_requests.append(request)
+        body = json.loads(request.body)
+        return (
+            200,
+            {},
+            json.dumps({"context": body["context"], "message": {"ack": {"status": "ACK"}}}),
+        )
+
+    with responses.RequestsMock() as rsps:
+        _mock_bpp_registry_lookup(rsps)
+        rsps.add_callback(
+            responses.POST, "https://bpp.example.com/cancel", callback=bpp_cancel_callback
+        )
+        cancel_service.trigger_cancel(transaction_id="txn-1")
+
+    assert len(captured_requests) == 1
+    session.refresh_from_db()
+    assert session.cancelled_error is None
+
+
+@pytest.mark.django_db
 @patch("core.cancel_service.record_on_cancel_result")
 def test_on_cancel_view_acks_when_both_bpp_and_gateway_signatures_are_valid(mock_record, client):
     bpp_pub, bpp_priv = generate_signing_key_pair()

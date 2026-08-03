@@ -74,6 +74,17 @@ CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 LOG_LEVEL = env("LOG_LEVEL", default="INFO")
 
+# livetracker6.md §2.3: this app's first-ever email configuration — mirrors
+# `BAP/backend/bap/settings.py`'s own exact env-var-driven shape (file-based in
+# dev, real SMTP in prod via the same env vars), not a new convention invented
+# for this app. A real, ninth-self-audit-pass finding: nothing here existed
+# before the vendor order-confirmation notification needed it.
+EMAIL_BACKEND = env(
+    "EMAIL_BACKEND", default="django.core.mail.backends.filebased.EmailBackend"
+)
+EMAIL_FILE_PATH = env("EMAIL_FILE_PATH", default=str(BASE_DIR / "data" / "sent_emails"))
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="noreply@bpp-backend.local")
+
 REGISTRY_BASE_URL = env("REGISTRY_BASE_URL")
 GATEWAY_BASE_URL = env("GATEWAY_BASE_URL")
 SUBSCRIBER_ID = env("SUBSCRIBER_ID", default="")

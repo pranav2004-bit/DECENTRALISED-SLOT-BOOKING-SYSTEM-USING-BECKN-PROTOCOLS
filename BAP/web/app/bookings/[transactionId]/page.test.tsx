@@ -144,6 +144,125 @@ describe('BookingStatusPage', () => {
     expect(await screen.findByText('Booking failed')).toBeInTheDocument();
   });
 
+  it('reschedules a single-resource booking to a new time', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(bookingApi, 'getConfirmResult').mockResolvedValue({
+      transaction_id: 'tx-1',
+      confirmed_error: null,
+      confirmed_order: CONFIRMED_ORDER,
+    });
+    vi.spyOn(bookingApi, 'triggerUpdate').mockResolvedValue(undefined);
+    vi.spyOn(bookingApi, 'getUpdateResult').mockResolvedValue({
+      transaction_id: 'tx-1',
+      updated_error: null,
+      updated_order: {
+        id: 'booking-1',
+        status: 'ACTIVE',
+        provider: { id: 'provider-1' },
+        items: [{ id: 'item-1' }],
+        fulfillments: [
+          { id: 'booking-1', stops: [{ type: 'start', time: { timestamp: '2026-08-05T11:00:00+00:00' } }] },
+        ],
+      },
+    });
+    render(<BookingStatusPage />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Reschedule' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Reschedule' }));
+    await user.type(screen.getByLabelText('New date and time'), '2026-08-05T11:00');
+    await user.click(screen.getByRole('button', { name: 'Confirm new time' }));
+
+    expect(await screen.findByText('This booking has been rescheduled.')).toBeInTheDocument();
+    expect(bookingApi.triggerUpdate).toHaveBeenCalledWith('tx-1', expect.any(String));
+  });
+
+  it('livetracker6.md §2.1: reschedules a real Automotive multi-resource (bay+mechanic) booking, moving both together', async () => {
+    const user = userEvent.setup();
+    const multiResourceOrder = {
+      ...CONFIRMED_ORDER,
+      items: [{ id: 'bay-1' }, { id: 'mechanic-1' }],
+      quote: {
+        price: { currency: 'INR', value: '1200.00' },
+        breakup: [
+          { item: { id: 'bay-1' }, title: 'Bay 1', price: { currency: 'INR', value: '800.00' } },
+          { item: { id: 'mechanic-1' }, title: 'Mechanic John', price: { currency: 'INR', value: '400.00' } },
+        ],
+      },
+    };
+    vi.spyOn(bookingApi, 'getConfirmResult').mockResolvedValue({
+      transaction_id: 'tx-1',
+      confirmed_error: null,
+      confirmed_order: multiResourceOrder,
+    });
+    vi.spyOn(bookingApi, 'triggerUpdate').mockResolvedValue(undefined);
+    vi.spyOn(bookingApi, 'getUpdateResult').mockResolvedValue({
+      transaction_id: 'tx-1',
+      updated_error: null,
+      // dispatch_on_update's own real shape: every booking in the group gets its
+      // own fulfillment entry, all moved to the same new requested time together.
+      updated_order: {
+        id: 'bay-1',
+        status: 'ACTIVE',
+        provider: { id: 'provider-1' },
+        items: [{ id: 'bay-1' }, { id: 'mechanic-1' }],
+        fulfillments: [
+          { id: 'bay-1', stops: [{ type: 'start', time: { timestamp: '2026-08-05T11:00:00+00:00' } }] },
+          { id: 'mechanic-1', stops: [{ type: 'start', time: { timestamp: '2026-08-05T11:00:00+00:00' } }] },
+        ],
+      },
+    });
+    render(<BookingStatusPage />);
+
+    await waitFor(() => expect(screen.getByText('Bay 1 + Mechanic John')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Reschedule' }));
+    await user.type(screen.getByLabelText('New date and time'), '2026-08-05T11:00');
+    await user.click(screen.getByRole('button', { name: 'Confirm new time' }));
+
+    expect(await screen.findByText('This booking has been rescheduled.')).toBeInTheDocument();
+    // The combined-name display is untouched by the reschedule — only the time moved.
+    expect(screen.getByText('Bay 1 + Mechanic John')).toBeInTheDocument();
+  });
+
+  it('shows a failure state with retry when rescheduling fails', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(bookingApi, 'getConfirmResult').mockResolvedValue({
+      transaction_id: 'tx-1',
+      confirmed_error: null,
+      confirmed_order: CONFIRMED_ORDER,
+    });
+    vi.spyOn(bookingApi, 'triggerUpdate').mockResolvedValue(undefined);
+    vi.spyOn(bookingApi, 'getUpdateResult').mockResolvedValue({
+      transaction_id: 'tx-1',
+      updated_order: null,
+      updated_error: { code: 'SLOT_UNAVAILABLE', message: 'No matching slot for the requested time' },
+    });
+    render(<BookingStatusPage />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Reschedule' })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Reschedule' }));
+    await user.type(screen.getByLabelText('New date and time'), '2026-08-05T11:00');
+    await user.click(screen.getByRole('button', { name: 'Confirm new time' }));
+
+    expect(await screen.findByText('Booking failed')).toBeInTheDocument();
+  });
+
+  it('does not offer to reschedule a CANCELLED booking', async () => {
+    vi.spyOn(bookingApi, 'getConfirmResult').mockResolvedValue({
+      transaction_id: 'tx-1',
+      confirmed_error: null,
+      confirmed_order: { ...CONFIRMED_ORDER, status: 'CANCELLED' },
+    });
+    vi.spyOn(bookingApi, 'getStatusResult').mockResolvedValue({
+      transaction_id: 'tx-1',
+      status_order: { ...CONFIRMED_ORDER, status: 'CANCELLED' },
+      status_error: null,
+    });
+    render(<BookingStatusPage />);
+
+    await waitFor(() => expect(screen.getByText('Haircut')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Reschedule' })).not.toBeInTheDocument();
+  });
+
   it('does not show a rating prompt for a still-ACTIVE booking', async () => {
     vi.spyOn(bookingApi, 'getConfirmResult').mockResolvedValue({
       transaction_id: 'tx-1',

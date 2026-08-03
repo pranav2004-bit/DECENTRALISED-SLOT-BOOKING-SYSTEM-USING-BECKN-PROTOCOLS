@@ -41,6 +41,7 @@ urlpatterns = [
         name="resource-availability-create",
     ),
     path("api/v1/catalog/resources", core_views.resources_list_view, name="resources-list"),
+    path("api/v1/orders", core_views.orders_list_view, name="orders-list"),
     path("api/v1/staff", core_views.staff_view, name="staff"),
     path(
         "api/v1/staff/<uuid:staff_id>/status",

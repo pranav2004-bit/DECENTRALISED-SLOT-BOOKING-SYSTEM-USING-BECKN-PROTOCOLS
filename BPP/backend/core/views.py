@@ -5,7 +5,7 @@ from decimal import Decimal, InvalidOperation
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model, login, logout, password_validation
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import transaction
+from django.db import models, transaction
 from django.http import HttpResponse, JsonResponse
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
@@ -13,13 +13,14 @@ from django.views.decorators.http import require_http_methods
 from django_observability.errors import error_response
 from django_observability.rate_limit import by_authenticated_account, rate_limit
 from inventory_core.domain_adapter import get_adapter
-from inventory_core.models import AvailabilityCalendar, Resource, Slot
+from inventory_core.models import AvailabilityCalendar, Booking, Resource, Slot
 
 from . import (
     cancel_service,
     confirm_service,
     init_service,
     onboarding_service,
+    pagination,
     rating_service,
     search_service,
     select_service,
@@ -449,6 +450,82 @@ def resources_list_view(request):
     domain_code = request.GET.get("domain") or settings.DOMAIN_BEAUTY
     resources = visible_resources(domain_code).values("id", "name", "owner_ref")
     return JsonResponse({"resources": list(resources)}, status=200)
+
+
+def _accessible_order_resource_ids(user):
+    """Same resource-set resolution `core/consumers.py`'s `BusinessOrdersConsumer`
+    uses for its own WebSocket group membership (livetracker6.md §2.2) — one
+    scoping rule, not two independently-written ones that could drift apart."""
+    BusinessAccount = get_user_model()
+    if user.role == BusinessAccount.Role.OWNER:
+        return Resource.objects.filter(owner_ref=str(user.id)).values_list("id", flat=True)
+    return Resource.objects.filter(
+        owner_ref=str(user.managed_by_id), domain_data__assigned_staff_id=str(user.id)
+    ).values_list("id", flat=True)
+
+
+@require_http_methods(["GET"])
+def orders_list_view(request):
+    """The logged-in business's own real Orders list (livetracker6.md §2.2) — the
+    initial page load the `BusinessOrdersConsumer` WebSocket then keeps live.
+    Scoped to exactly the same resource set as that consumer (an owner sees every
+    owned resource's orders, staff sees only their one assigned resource's own).
+
+    Cursor-paginated the same way as BAP's own `booking_history_service` — with
+    one real difference, not an oversight: `Booking.id` is a random UUID, not a
+    monotonically-increasing integer PK, so `id` alone can't serve as a stable
+    newest-first cursor the way it does there. Ordered by `created_at` (a real
+    `DateTimeField`) with `id` as an explicit tiebreaker for two bookings created
+    in the same instant, avoiding the correctness bug a bare `id`-based cursor
+    would silently have here."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+
+    resource_ids = list(_accessible_order_resource_ids(request.user))
+    limit = pagination.parse_limit(request.GET.get("limit"))
+    queryset = (
+        Booking.objects.filter(slot__resource_id__in=resource_ids)
+        .exclude(status=Booking.Status.HELD)
+        .select_related("slot__resource")
+        .order_by("-created_at", "-id")
+    )
+
+    cursor = request.GET.get("cursor")
+    if cursor:
+        try:
+            cursor_created_at, cursor_id = cursor.split("|", 1)
+            cursor_dt = dt.datetime.fromisoformat(cursor_created_at)
+        except ValueError:
+            pass
+        else:
+            queryset = queryset.filter(
+                models.Q(created_at__lt=cursor_dt)
+                | (models.Q(created_at=cursor_dt) & models.Q(id__lt=cursor_id))
+            )
+
+    page = list(queryset[: limit + 1])
+    has_more = len(page) > limit
+    page = page[:limit]
+
+    def _cursor_for(booking):
+        return f"{booking.created_at.isoformat()}|{booking.id}"
+
+    return JsonResponse(
+        {
+            "orders": [
+                {
+                    "transaction_id": booking.holder_ref,
+                    "resource_id": str(booking.slot.resource_id),
+                    "resource_name": booking.slot.resource.name,
+                    "slot_time": booking.slot.start_time.isoformat(),
+                    "status": booking.status,
+                }
+                for booking in page
+            ],
+            "next_cursor": _cursor_for(page[-1]) if has_more and page else None,
+        },
+        status=200,
+    )
 
 
 @csrf_exempt

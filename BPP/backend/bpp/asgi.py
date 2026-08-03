@@ -21,7 +21,7 @@ django_asgi_app = get_asgi_application()
 
 from realtime.consumers import FoundationConsumer  # noqa: E402
 
-from core.consumers import ResourceAvailabilityConsumer  # noqa: E402
+from core.consumers import BusinessOrdersConsumer, ResourceAvailabilityConsumer  # noqa: E402
 
 application = ProtocolTypeRouter(
     {
@@ -37,6 +37,9 @@ application = ProtocolTypeRouter(
                         "ws/resources/<uuid:resource_id>/availability",
                         ResourceAvailabilityConsumer.as_asgi(),
                     ),
+                    # livetracker6.md §2.2: no resource_id in the route — this consumer
+                    # resolves its own connecting account's real resource set itself.
+                    path("ws/business/orders/", BusinessOrdersConsumer.as_asgi()),
                 ]
             )
         ),

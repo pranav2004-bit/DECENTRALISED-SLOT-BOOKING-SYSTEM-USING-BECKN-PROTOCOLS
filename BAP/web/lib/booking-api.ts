@@ -109,6 +109,28 @@ export async function getStatusResult(transactionId: string): Promise<StatusResu
   return resp.json();
 }
 
+export async function triggerUpdate(transactionId: string, requestedTimestamp: string): Promise<void> {
+  await apiFetch('/api/v1/update', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({
+      transaction_id: transactionId,
+      requested_timestamp: requestedTimestamp,
+    }),
+  });
+}
+
+export interface UpdateResultResponse {
+  transaction_id: string;
+  updated_order: Order | null;
+  updated_error: BecknError | null;
+}
+
+export async function getUpdateResult(transactionId: string): Promise<UpdateResultResponse> {
+  const resp = await apiFetch(`/api/v1/update/${transactionId}`);
+  return resp.json();
+}
+
 export async function triggerCancel(transactionId: string, cancellationReasonId = ''): Promise<void> {
   await apiFetch('/api/v1/cancel', {
     method: 'POST',

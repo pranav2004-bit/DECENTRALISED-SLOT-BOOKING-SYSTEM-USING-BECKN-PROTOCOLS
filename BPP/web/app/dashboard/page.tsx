@@ -274,9 +274,14 @@ function OwnerDashboard({ account }: { account: BusinessAccount }) {
         <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">
           {account.business_name}
         </h1>
-        <Link href="/staff" className="text-sm text-neutral-600 underline">
-          Manage staff
-        </Link>
+        <div className="flex items-center gap-4">
+          <Link href="/orders" className="text-sm text-neutral-600 underline">
+            Orders
+          </Link>
+          <Link href="/staff" className="text-sm text-neutral-600 underline">
+            Manage staff
+          </Link>
+        </div>
       </div>
 
       {resources.length === 0 ? (

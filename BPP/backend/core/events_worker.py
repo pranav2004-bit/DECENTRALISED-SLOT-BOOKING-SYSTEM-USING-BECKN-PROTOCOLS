@@ -13,7 +13,8 @@ from inventory_core.consumers import audit_log_consumer
 from inventory_core.events import BookingEvent, SlotEvent, process_event
 
 from .metrics import booking_lifecycle_consumer, hold_created_consumer
-from .realtime import broadcast_slot_update_consumer
+from .realtime import broadcast_order_confirmed_consumer, broadcast_slot_update_consumer
+from .vendor_notifications import notify_vendor_order_confirmed_consumer
 
 
 def _combined(*handlers):
@@ -36,7 +37,12 @@ DISPATCH: dict[str, callable] = {
     SlotEvent.CONFIRMED: _combined(broadcast_slot_update_consumer),
     SlotEvent.RESCHEDULED: _combined(broadcast_slot_update_consumer),
     SlotEvent.COMPLETED: _combined(broadcast_slot_update_consumer),
-    BookingEvent.CONFIRMED: _combined(audit_log_consumer, booking_lifecycle_consumer),
+    BookingEvent.CONFIRMED: _combined(
+        audit_log_consumer,
+        booking_lifecycle_consumer,
+        broadcast_order_confirmed_consumer,
+        notify_vendor_order_confirmed_consumer,
+    ),
     BookingEvent.CANCELLED: _combined(audit_log_consumer, booking_lifecycle_consumer),
     BookingEvent.COMPLETED: _combined(audit_log_consumer),
     BookingEvent.RESCHEDULED: _combined(audit_log_consumer),

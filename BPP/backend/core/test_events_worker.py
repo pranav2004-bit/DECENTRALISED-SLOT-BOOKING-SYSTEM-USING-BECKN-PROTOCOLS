@@ -257,6 +257,46 @@ def test_dispatch_covers_every_real_booking_and_slot_lifecycle_event():
     assert expected.issubset(DISPATCH.keys())
 
 
+@pytest.mark.django_db
+def test_booking_confirmed_dispatch_also_notifies_the_vendor():
+    """livetracker6.md §2.3: the same `BookingEvent.CONFIRMED` dispatch entry
+    already reacting to this event (audit-log, metrics) also drives the new
+    vendor email — composed via the same `_combined()` helper, not a second,
+    separate dispatch path. Exercised end to end through the real, already-built
+    `DISPATCH` table (not a mock of the consumer function, which `_combined()`'s
+    own closure already captured a direct reference to at import time, before
+    any test-time patch could apply) — a real `Booking`, a real dispatch call, a
+    real assertion against `mail.outbox`. The order-broadcast half of this same
+    dispatch entry is covered separately in `test_business_orders.py`, which
+    needs a real WebSocket communicator, not this file's plain sync test setup."""
+    from django.contrib.auth import get_user_model as _get_user_model
+    from django.core import mail
+
+    BusinessAccount = _get_user_model()
+    owner = BusinessAccount.objects.create_user(
+        contact="owner@example.com",
+        business_name="Glow Salon",
+        password="a-strong-passw0rd!",  # pragma: allowlist secret
+    )
+    resource = Resource.objects.create(owner_ref=str(owner.id), name="Stylist A")
+    now = timezone.now()
+    slot = Slot.objects.create(
+        resource=resource,
+        start_time=now + dt.timedelta(hours=1),
+        end_time=now + dt.timedelta(hours=1, minutes=30),
+        capacity_total=1,
+        capacity_remaining=0,
+    )
+    booking = Booking.objects.create(slot=slot, holder_ref="tx-1", status=Booking.Status.ACTIVE)
+
+    DISPATCH[BookingEvent.CONFIRMED](
+        _built_event(BookingEvent.CONFIRMED, booking_id=str(booking.id))
+    )
+
+    assert len(mail.outbox) == 1
+    assert mail.outbox[0].to == ["owner@example.com"]
+
+
 # --- The real Test Gate: a genuinely separate OS process, not inline --------
 
 

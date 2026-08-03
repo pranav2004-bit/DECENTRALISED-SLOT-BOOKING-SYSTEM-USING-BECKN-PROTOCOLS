@@ -35,6 +35,50 @@ def broadcast_slot_update(resource_id, slot) -> None:
     )
 
 
+def broadcast_order_confirmed(booking) -> None:
+    """livetracker6.md §2.2: fans a real newly-`CONFIRMED` `Booking` out to every
+    browser watching that resource's live Orders dashboard (`core/consumers.py`'s
+    `BusinessOrdersConsumer`) — the per-resource `resource-{resource_id}-orders`
+    group, a genuinely separate group from `broadcast_slot_update`'s own
+    `-availability` one (never mixed onto it — see this tracker's own sixth
+    self-audit finding for why: Channels dispatches `group_send` by type -> method
+    name, and `ResourceAvailabilityConsumer` has no handler for a new type)."""
+    layer = get_channel_layer()
+    if layer is None:
+        return
+    async_to_sync(layer.group_send)(
+        f"resource-{booking.slot.resource_id}-orders",
+        {
+            "type": "order.confirmed",
+            "order": {
+                "transaction_id": booking.holder_ref,
+                "resource_id": str(booking.slot.resource_id),
+                "resource_name": booking.slot.resource.name,
+                "slot_time": booking.slot.start_time.isoformat(),
+                "status": booking.status,
+            },
+        },
+    )
+
+
+def broadcast_order_confirmed_consumer(event: dict) -> None:
+    """The `BookingEvent.CONFIRMED` counterpart to `broadcast_slot_update_consumer`
+    — same discipline (detached worker, fresh DB read rather than trusting the
+    event payload's own snapshot), reacting via `events_worker.py`'s `DISPATCH`
+    table rather than any inline call from confirm-flow service code (the same
+    2026-08-02 cutover `broadcast_slot_update_consumer` already follows)."""
+    from inventory_core.models import Booking
+
+    payload = event.get("payload") or {}
+    booking_id = payload.get("booking_id")
+    if not booking_id:
+        return
+    booking = Booking.objects.select_related("slot__resource").filter(pk=booking_id).first()
+    if booking is None:
+        return
+    broadcast_order_confirmed(booking)
+
+
 def broadcast_slot_update_consumer(event: dict) -> None:
     """Real, queue-driven counterpart to the direct `broadcast_slot_update()` calls
     `select_service.py`/`cancel_service.py`/`update_service.py` used to make inline —

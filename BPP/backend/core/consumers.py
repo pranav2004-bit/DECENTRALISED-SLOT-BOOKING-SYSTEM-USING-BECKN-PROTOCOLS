@@ -12,6 +12,7 @@ import json
 from channels.auth import get_user
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
+from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from inventory_core.models import Resource
 
@@ -136,3 +137,79 @@ class ResourceAvailabilityConsumer(AsyncWebsocketConsumer):
     def _block_slot(self, slot_id):
         resource = Resource.objects.get(id=self.resource_id)
         return block_slots(resource, [slot_id])
+
+
+class BusinessOrdersConsumer(AsyncWebsocketConsumer):
+    """livetracker6.md §2.2: one connection per business Orders dashboard.
+
+    Distinct from `ResourceAvailabilityConsumer` above by design, not oversight:
+    that consumer is hard-coded to exactly one `resource_id` from its own URL
+    route and can't join a variable number of groups. This one has no
+    `resource_id` in its route at all — on connect it resolves the real, current
+    set of resources the authenticated account can access (every owned resource
+    for an owner, the one assigned resource for staff — the same
+    `_resource_accessible_to`-underlying access model Phase 4.3 already
+    established, not a second, independently-invented permission rule) and joins
+    exactly those resources' own `resource-{resource_id}-orders` groups.
+
+    Security discipline inherited from this exact file's own real incident
+    history (`livetracker3.md` §8.1's fourth/fifth/tenth post-close audits), not
+    left to be relearned: every forwarded broadcast re-validates access and
+    re-verifies the session's own credential via `channels.auth.get_user`,
+    rather than ever trusting a connect-time snapshot for the life of the
+    connection."""
+
+    async def connect(self):
+        user = self.scope.get("user")
+        if user is None or not user.is_authenticated:
+            await self.close(code=4401)
+            return
+        self.group_names = await self._resolve_order_groups(user)
+        for group_name in self.group_names:
+            await self.channel_layer.group_add(group_name, self.channel_name)
+        await self.accept()
+
+    async def disconnect(self, close_code):
+        for group_name in getattr(self, "group_names", []):
+            await self.channel_layer.group_discard(group_name, self.channel_name)
+
+    async def order_confirmed(self, event):
+        """Re-validates before forwarding — a resource unassigned/reassigned mid-
+        connection (staff) or no longer owned (can't happen for an owner today,
+        but checked the same way regardless, not assumed impossible) must not
+        keep receiving that resource's own broadcasts, closing this exact gap
+        from day one instead of shipping it and fixing it as a live incident
+        the way `ResourceAvailabilityConsumer` originally did."""
+        user = await get_user(self.scope)
+        if not user.is_authenticated:
+            await self.close(code=4401)
+            return
+        resource_id = event["order"]["resource_id"]
+        group_name = f"resource-{resource_id}-orders"
+        if not await self._user_can_access_resource_id(user, resource_id):
+            await self.channel_layer.group_discard(group_name, self.channel_name)
+            if group_name in self.group_names:
+                self.group_names.remove(group_name)
+            return
+        await self.send(text_data=json.dumps({"type": "order.confirmed", "order": event["order"]}))
+
+    @database_sync_to_async
+    def _resolve_order_groups(self, user) -> list[str]:
+        BusinessAccount = get_user_model()
+        if user.role == BusinessAccount.Role.OWNER:
+            resource_ids = Resource.objects.filter(owner_ref=str(user.id)).values_list(
+                "id", flat=True
+            )
+        else:
+            resource_ids = Resource.objects.filter(
+                owner_ref=str(user.managed_by_id), domain_data__assigned_staff_id=str(user.id)
+            ).values_list("id", flat=True)
+        return [f"resource-{rid}-orders" for rid in resource_ids]
+
+    @database_sync_to_async
+    def _user_can_access_resource_id(self, user, resource_id) -> bool:
+        try:
+            resource = Resource.objects.get(id=resource_id)
+        except (Resource.DoesNotExist, DjangoValidationError, ValueError):
+            return False
+        return _resource_accessible_to(user, resource)

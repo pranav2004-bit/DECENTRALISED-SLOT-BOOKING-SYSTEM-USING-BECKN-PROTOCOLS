@@ -37,6 +37,11 @@ export function AccountStatus() {
       <Link href="/dashboard" className="underline">
         Dashboard
       </Link>
+      {/* livetracker6.md §2.2: reachable for both roles — an owner sees every owned
+          resource's orders, staff see only their one assigned resource's own. */}
+      <Link href="/orders" className="underline">
+        Orders
+      </Link>
       <span>{account.business_name}</span>
       <button
         type="button"

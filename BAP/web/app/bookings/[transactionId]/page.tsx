@@ -13,11 +13,13 @@ import {
   getStatusResult,
   getSupportResult,
   getTrackResult,
+  getUpdateResult,
   triggerCancel,
   triggerRating,
   triggerStatus,
   triggerSupport,
   triggerTrack,
+  triggerUpdate,
 } from '@/lib/booking-api';
 import { ApiError } from '@/lib/api-client';
 import { formatDateTime, formatOrderItemName, formatPrice } from '@/lib/format';
@@ -49,6 +51,14 @@ export default function BookingStatusPage() {
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [cancelled, setCancelled] = useState(false);
+
+  const [showRescheduleForm, setShowRescheduleForm] = useState(false);
+  const [rescheduleTime, setRescheduleTime] = useState('');
+  const [rescheduling, setRescheduling] = useState(false);
+  const [rescheduleError, setRescheduleError] = useState<string | null>(null);
+  const [rescheduled, setRescheduled] = useState(false);
+
+  const [rescheduledTime, setRescheduledTime] = useState<string | null>(null);
 
   const [ratingValue, setRatingValue] = useState<number | null>(null);
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
@@ -142,6 +152,45 @@ export default function BookingStatusPage() {
       setCancelError(err instanceof ApiError ? err.message : 'Could not cancel this booking');
     } finally {
       setCancelling(false);
+    }
+  }
+
+  async function handleReschedule() {
+    if (!rescheduleTime) return;
+    setRescheduling(true);
+    setRescheduleError(null);
+    try {
+      // Wire shape is ISO 8601 — `datetime-local` gives seconds-less local time,
+      // so a plain `new Date(...)` round-trip is enough to get a real offset.
+      const isoTimestamp = new Date(rescheduleTime).toISOString();
+      await triggerUpdate(transactionId, isoTimestamp);
+      for (let attempt = 0; attempt < 15; attempt++) {
+        const result = await getUpdateResult(transactionId);
+        if (result.updated_order) {
+          // dispatch_on_update's own resolved_order carries no `quote` (it isn't
+          // a re-quote, just a slot move) — only the real new fulfillment
+          // time(s) are trustworthy here, so only that is applied, not a
+          // wholesale replacement of the already-loaded order display.
+          const newTime = result.updated_order.fulfillments?.[0]?.stops?.[0]?.time.timestamp;
+          if (newTime) {
+            setRescheduledTime(newTime);
+            setLiveStatus('ACTIVE');
+          }
+          setRescheduled(true);
+          setShowRescheduleForm(false);
+          return;
+        }
+        if (result.updated_error) {
+          setRescheduleError(result.updated_error.message);
+          return;
+        }
+        await sleep(1200);
+      }
+      setRescheduleError('Rescheduling is taking longer than expected — please try again.');
+    } catch (err) {
+      setRescheduleError(err instanceof ApiError ? err.message : 'Could not reschedule this booking');
+    } finally {
+      setRescheduling(false);
     }
   }
 
@@ -240,10 +289,11 @@ export default function BookingStatusPage() {
     );
   }
 
-  const time = order.fulfillments?.[0]?.stops?.[0]?.time.timestamp;
+  const time = rescheduledTime ?? order.fulfillments?.[0]?.stops?.[0]?.time.timestamp;
   const itemName = formatOrderItemName(order.quote, 'Service');
   const currentStatus = liveStatus ?? order.status ?? 'ACTIVE';
   const canCancel = currentStatus === 'ACTIVE' && !cancelled;
+  const canReschedule = currentStatus === 'ACTIVE' && !cancelled;
 
   return (
     <div className="mx-auto flex w-full max-w-md flex-1 flex-col px-4 py-8 sm:px-6 lg:px-8">
@@ -290,6 +340,58 @@ export default function BookingStatusPage() {
         >
           {cancelling ? 'Cancelling…' : 'Cancel booking'}
         </button>
+      )}
+
+      {rescheduled && (
+        <p role="status" className="mt-4 text-sm text-neutral-900">
+          This booking has been rescheduled.
+        </p>
+      )}
+
+      {canReschedule && !rescheduled && (
+        <div className="mt-4 flex flex-col gap-3 rounded-lg border border-neutral-200 p-4">
+          {!showRescheduleForm ? (
+            <button
+              type="button"
+              onClick={() => setShowRescheduleForm(true)}
+              className="self-start rounded-md border border-neutral-300 px-4 py-2 text-sm text-neutral-700"
+            >
+              Reschedule
+            </button>
+          ) : (
+            <>
+              <label htmlFor="reschedule-time" className="text-sm font-medium text-neutral-900">
+                New date and time
+              </label>
+              <input
+                id="reschedule-time"
+                type="datetime-local"
+                value={rescheduleTime}
+                onChange={(e) => setRescheduleTime(e.target.value)}
+                className="rounded-md border border-neutral-300 px-3 py-2 text-sm"
+              />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleReschedule}
+                  disabled={rescheduling || !rescheduleTime}
+                  className="rounded-md bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-50"
+                >
+                  {rescheduling ? 'Rescheduling…' : 'Confirm new time'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowRescheduleForm(false)}
+                  disabled={rescheduling}
+                  className="rounded-md border border-neutral-300 px-4 py-2 text-sm text-neutral-700 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </div>
+              {rescheduleError && <BookingFailedError onRetry={handleReschedule} />}
+            </>
+          )}
+        </div>
       )}
 
       {currentStatus === 'COMPLETE' && (

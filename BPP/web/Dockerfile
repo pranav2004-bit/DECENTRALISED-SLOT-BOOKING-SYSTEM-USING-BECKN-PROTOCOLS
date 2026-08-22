@@ -13,8 +13,12 @@ COPY . .
 # `next build` time, not read from the running container's environment.
 ARG NEXT_PUBLIC_API_BASE_URL
 ARG NEXT_PUBLIC_WS_BASE_URL
+# livetracker7.md Phase 4: selects which brand (lib/brand.ts) this build renders as —
+# same codebase for StyleNest/CareNest/AutoCare, differentiated only by this build arg.
+ARG NEXT_PUBLIC_BRAND_ID=beauty
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 ENV NEXT_PUBLIC_WS_BASE_URL=$NEXT_PUBLIC_WS_BASE_URL
+ENV NEXT_PUBLIC_BRAND_ID=$NEXT_PUBLIC_BRAND_ID
 RUN npm run build
 
 FROM node:20-alpine AS runtime

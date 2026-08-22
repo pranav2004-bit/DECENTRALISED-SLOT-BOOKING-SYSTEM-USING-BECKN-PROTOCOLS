@@ -44,11 +44,11 @@ def bpp_identity_settings(settings, tmp_path):
     yield settings
 
 
-def _build_search_payload(*, bap_id="bap.example.com", query=None):
+def _build_search_payload(*, bap_id="bap.example.com", query=None, domain="ONDC:RET13"):
     intent = {"item": {"descriptor": {"name": query}}} if query else {}
     return {
         "context": {
-            "domain": "ONDC:RET13",
+            "domain": domain,
             "location": {"country": {"code": "IND"}},
             "action": "search",
             "version": "1.1.0",
@@ -290,3 +290,128 @@ def test_dispatch_on_search_with_a_nonsense_query_returns_zero_providers_not_an_
 
     forwarded = json.loads(captured_requests[0].body)
     assert forwarded["message"]["catalog"]["providers"] == []
+
+
+@pytest.mark.django_db
+def test_search_view_nacks_a_direct_off_domain_request_when_bpp_is_single_domain_scoped(
+    settings, client
+):
+    """livetracker7.md §1.3 Test Gate: a BPP instance configured
+    `SUPPORTED_DOMAINS=["ONDC:SRV13"]` (Healthcare only) must genuinely reject a
+    direct `/search` for `"domain": "BECKN:AUTO01"` (Automotive) — a real NACK, not
+    a 200 the caller could mistake for "no results happen to exist". This proves
+    the BPP itself refuses the request at the request boundary, independent of
+    whatever Registry/Gateway filtering would otherwise have done.
+
+    The domain check runs before trust/signature verification (core/search_service.py
+    checks context/domain first, trust second), so — as this test's own absence of a
+    registered `/lookup` mock confirms — a rejected off-domain request never even
+    triggers a Registry lookup for the BAP/Gateway public keys, a real efficiency
+    side-benefit of failing fast on the cheapest check first."""
+    settings.SUPPORTED_DOMAINS = ["ONDC:SRV13"]
+    bap_pub, bap_priv = generate_signing_key_pair()
+    gateway_pub, gateway_priv = generate_signing_key_pair()
+    payload = _build_search_payload(domain="BECKN:AUTO01")
+    body = json.dumps(payload).encode()
+
+    bap_header = sign_outbound_request(
+        body=body, subscriber_id="bap.example.com", unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
+    )
+    gateway_header = sign_outbound_request(
+        body=body, subscriber_id="gateway.local", unique_key_id="key-1",
+        signing_private_key_b64=gateway_priv,
+    )
+
+    with responses.RequestsMock(assert_all_requests_are_fired=False):
+        resp = client.post(
+            reverse("search"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=bap_header,
+            HTTP_X_GATEWAY_AUTHORIZATION=gateway_header,
+        )
+
+    assert resp.status_code == 400
+    resp_json = resp.json()
+    assert resp_json["message"]["ack"]["status"] == "NACK"
+    assert resp_json["error"]["code"] == "SEARCH_ERROR"
+    assert "BECKN:AUTO01" in resp_json["error"]["message"]
+
+
+@pytest.mark.django_db
+@patch("core.search_service.dispatch_on_search_in_background")
+def test_search_view_acks_an_in_scope_domain_when_bpp_is_single_domain_scoped(
+    mock_dispatch, settings, client
+):
+    """The other half of the same Test Gate: the identical single-domain-scoped
+    instance still correctly ACKs a real, in-scope Healthcare search — narrowing
+    `SUPPORTED_DOMAINS` rejects only what's genuinely out of scope, not everything."""
+    settings.SUPPORTED_DOMAINS = ["ONDC:SRV13"]
+    bap_pub, bap_priv = generate_signing_key_pair()
+    gateway_pub, gateway_priv = generate_signing_key_pair()
+    payload = _build_search_payload(domain="ONDC:SRV13")
+    body = json.dumps(payload).encode()
+
+    bap_header = sign_outbound_request(
+        body=body, subscriber_id="bap.example.com", unique_key_id="key-1",
+        signing_private_key_b64=bap_priv,
+    )
+    gateway_header = sign_outbound_request(
+        body=body, subscriber_id="gateway.local", unique_key_id="key-1",
+        signing_private_key_b64=gateway_priv,
+    )
+    known = _known(bap_pub=bap_pub, gateway_pub=gateway_pub)
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(known)
+        )
+        resp = client.post(
+            reverse("search"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=bap_header,
+            HTTP_X_GATEWAY_AUTHORIZATION=gateway_header,
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["message"]["ack"]["status"] == "ACK"
+    mock_dispatch.assert_called_once_with(payload=payload)
+
+
+@pytest.mark.django_db
+def test_dispatch_on_search_returns_real_results_for_an_in_scope_healthcare_search(
+    settings, bpp_identity_settings,
+):
+    """livetracker7.md §1.3 Test Gate's other half, exercised at the dispatch layer
+    (matching test_dispatch_on_search_sends_the_real_catalog_to_gateway's own
+    pattern above): a single-domain-scoped instance's real Healthcare business is
+    still found and returned, proving the new request-boundary check doesn't also
+    accidentally narrow catalog *content* — only which domains are accepted at all."""
+    settings.SUPPORTED_DOMAINS = ["ONDC:SRV13"]
+    business = BusinessAccount.objects.create_user(
+        contact="clinic@example.com", business_name="Demo Health Clinic",
+        password=TEST_PASSWORD, domain_code="ONDC:SRV13",
+    )
+    Resource.objects.create(
+        owner_ref=str(business.id), name="Demo Doctor", category_id="ONDC:SRV13"
+    )
+
+    payload = _build_search_payload(domain="ONDC:SRV13")
+    captured_requests = []
+
+    def gateway_on_search_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://gateway:8000/on_search", callback=gateway_on_search_callback
+        )
+        search_service.dispatch_on_search(payload=payload)
+
+    forwarded = json.loads(captured_requests[0].body)
+    provider = forwarded["message"]["catalog"]["providers"][0]
+    assert provider["descriptor"]["name"] == "Demo Health Clinic"
+    assert provider["items"][0]["descriptor"]["name"] == "Demo Doctor"

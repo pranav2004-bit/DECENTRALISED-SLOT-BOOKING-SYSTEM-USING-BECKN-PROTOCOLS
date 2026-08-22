@@ -138,6 +138,17 @@ DOMAIN_HEALTHCARE = env("DOMAIN_HEALTHCARE", default="ONDC:SRV13")
 DOMAIN_AUTOMOTIVE = env("DOMAIN_AUTOMOTIVE", default="BECKN:AUTO01")
 DOMAIN_BEAUTY = env("DOMAIN_BEAUTY", default="ONDC:RET13")
 
+# livetracker7.md §1.1: which domain(s) *this* BPP instance actually serves — real
+# defense-in-depth, independent of Registry/Gateway's own domain filtering (which
+# only stops an out-of-scope request from being *routed* here, not from being
+# processed if one reaches this BPP directly). Defaults to all three, preserving
+# today's existing single-instance, all-3-domains behavior exactly; a single-domain
+# deployment (e.g. BPP-Medical) narrows this via its own env file to
+# `SUPPORTED_DOMAINS=ONDC:SRV13`. See core/domain_scope.py for the enforcement.
+SUPPORTED_DOMAINS = env.list(
+    "SUPPORTED_DOMAINS", default=[DOMAIN_HEALTHCARE, DOMAIN_AUTOMOTIVE, DOMAIN_BEAUTY]
+)
+
 SERVICE_NAME = "bpp-backend"
 
 INSTALLED_APPS = [

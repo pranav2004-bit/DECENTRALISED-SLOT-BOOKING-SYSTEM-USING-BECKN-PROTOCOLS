@@ -2,6 +2,10 @@
 .env
 .env.*
 !.env.example
+# livetracker7.md Phase 2: per-instance env templates (e.g. .env.medical.example)
+# are real, committed documentation, not secrets — only the un-suffixed *.example
+# name was exempted before, silently catching these too until this fix.
+!.env.*.example
 *.pem
 *.key
 *_private_key*

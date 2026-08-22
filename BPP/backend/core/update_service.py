@@ -37,6 +37,7 @@ from inventory_core.reservation import find_group_bookings, reschedule_booking_g
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
+from .domain_scope import DomainNotSupportedError, validate_domain_supported
 from .events import get_event_bus
 from .participant_keys import get_signing_keys
 
@@ -77,6 +78,16 @@ def validate_and_ack_update(
             build_nack_response(
                 context=payload.get("context", {}),
                 error={"code": "UPDATE_ERROR", "message": f"Invalid context: {exc}"},
+            ),
+            400,
+        )
+
+    try:
+        validate_domain_supported(context)
+    except DomainNotSupportedError as exc:
+        return (
+            build_nack_response(
+                context=context, error={"code": "UPDATE_ERROR", "message": str(exc)}
             ),
             400,
         )

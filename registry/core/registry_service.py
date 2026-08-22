@@ -364,6 +364,48 @@ def verify_challenge_answer(
     return True
 
 
+class ParticipantNotFoundError(Exception):
+    """Raised when `deactivate_participant_domain` is asked to deactivate a
+    (subscriber_id, domain, participant_type) combination with no matching row."""
+
+
+def deactivate_participant_domain(
+    *, subscriber_id: str, domain: str, participant_type: str, correlation_id: str | None = None
+) -> Participant:
+    """livetracker7.md §2.3: administrative deactivation of one Registry subscription
+    row — used when a participant is re-scoped to fewer domains than it originally
+    subscribed for (e.g. the original combined BPP narrowing to BPP-Beauty, Beauty-only,
+    once BPP-Medical/BPP-Automotive exist as their own separate participants). Sets
+    `status` to `UNSUBSCRIBED` (defined on `Participant.Status` since this model's own
+    Phase 1 design, never previously reachable by any real code path) rather than
+    deleting the row — preserves the audit trail (`AuditLogEntry`s already recorded
+    against this participant) instead of losing it via `on_delete=SET_NULL`.
+
+    Real, not cosmetic: `beckn-gateway/core/routing.py`'s `dispatch_search` only
+    forwards to a BPP whose row has `status == "SUBSCRIBED"` — an `UNSUBSCRIBED` row is
+    genuinely excluded from routing, the same as if it had never subscribed."""
+    try:
+        participant = Participant.objects.get(
+            subscriber_id=subscriber_id, domain=domain, participant_type=participant_type
+        )
+    except Participant.DoesNotExist as exc:
+        raise ParticipantNotFoundError(
+            f"No {participant_type} Participant found for subscriber_id={subscriber_id!r}, "
+            f"domain={domain!r}"
+        ) from exc
+
+    participant.status = Participant.Status.UNSUBSCRIBED
+    participant.save(update_fields=["status", "updated_at"])
+    _log_audit(
+        participant=participant,
+        subscriber_id=participant.subscriber_id,
+        event_type="UNSUBSCRIBED",
+        detail={"domain": domain, "participant_type": participant_type, "reason": "re-scoped"},
+        correlation_id=correlation_id,
+    )
+    return participant
+
+
 def handle_lookup(filters: dict) -> list[dict]:
     """POST /lookup — filter object on a subset of Subscription fields
     (protocol_compliance_notes_v1.1.md §A.1, §B.1). Returns an array of matching

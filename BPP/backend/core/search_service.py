@@ -24,6 +24,7 @@ from . import registry_client, trust
 from .catalog import filter_catalog
 from .catalog_cache import get_cached_catalog
 from .crypto import sign_outbound_request
+from .domain_scope import DomainNotSupportedError, validate_domain_supported
 from .participant_keys import get_signing_keys
 
 logger = logging.getLogger("bpp")
@@ -43,6 +44,16 @@ def validate_and_ack_search(
             build_nack_response(
                 context=payload.get("context", {}),
                 error={"code": "SEARCH_ERROR", "message": f"Invalid context: {exc}"},
+            ),
+            400,
+        )
+
+    try:
+        validate_domain_supported(context)
+    except DomainNotSupportedError as exc:
+        return (
+            build_nack_response(
+                context=context, error={"code": "SEARCH_ERROR", "message": str(exc)}
             ),
             400,
         )

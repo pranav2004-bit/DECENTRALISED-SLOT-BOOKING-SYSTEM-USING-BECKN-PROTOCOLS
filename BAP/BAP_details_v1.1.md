@@ -11,6 +11,23 @@
 - Discovers providers and manages the complete buyer booking lifecycle.
 - Communicates with the Registry, Gateway, BPP, and Payment Gateway.
 
+> **Implementation note (livetracker7.md §2, 2026-08-22):** two independently-
+> identified, independently-`SUBSCRIBED` deployments of this exact same codebase now
+> exist — BAP-X (`bap-backend`, the original instance) and BAP-Y (`bap-y-backend`,
+> new) — each its own container, database, and signing identity, both spanning all 3
+> domains (differentiated purely by env file, `BAP/backend/.env` vs `.env.y`, never
+> by forked code), representing two competing companies per the client's own
+> requirement.
+
+> **Implementation note (livetracker7.md §4, 2026-08-22, supersedes the "not yet done"
+> line above):** each instance now has its own real, distinct brand — **OnSlot**
+> (BAP-X, coral `#e11d48`, unchanged) and **GoFetch** (BAP-Y, green `#16a34a`) — own
+> name, color, tagline, and real designer-delivered icon/favicon set, selected at
+> build time via a `NEXT_PUBLIC_BRAND_ID` Docker build arg into a per-instance
+> `lib/brand.ts` config (`BAP/web`), the same "one codebase, config-selected" pattern
+> as the backend. BAP also got a real landing page for the first time in this same
+> phase (previously only PWA/icon assets had ever touched `BAP/web/app/page.tsx`).
+
 ## 2. Business Responsibilities / Capabilities
 
 **Buyer Management**

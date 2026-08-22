@@ -2,6 +2,7 @@ import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { RealtimeStatus } from './RealtimeStatus';
 import { AccountStatus } from './AccountStatus';
+import { BRAND } from '@/lib/brand';
 
 export function AppShell({ appName, children }: { appName: string; children: ReactNode }) {
   return (
@@ -16,8 +17,14 @@ export function AppShell({ appName, children }: { appName: string; children: Rea
         <div className="mx-auto flex max-w-3xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
           <Link
             href="/"
-            className="rounded text-sm font-semibold tracking-tight text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900 sm:text-base"
+            className="flex items-center gap-2 rounded text-sm font-semibold tracking-tight text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900 sm:text-base"
           >
+            <span
+              aria-hidden="true"
+              className="flex h-7 items-center rounded-md bg-[var(--brand-600)] px-2 text-xs font-extrabold tracking-tight text-white"
+            >
+              {BRAND.monogram}
+            </span>
             {appName}
           </Link>
           <div className="flex items-center gap-4">

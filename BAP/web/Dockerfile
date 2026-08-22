@@ -15,8 +15,12 @@ COPY . .
 # from docker-compose.yml's build.args, same real values as .env for local dev.
 ARG NEXT_PUBLIC_API_BASE_URL
 ARG NEXT_PUBLIC_WS_BASE_URL
+# livetracker7.md Phase 4: selects which brand (lib/brand.ts) this build renders as —
+# same codebase for OnSlot/GoFetch, differentiated only by this build arg.
+ARG NEXT_PUBLIC_BRAND_ID=x
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 ENV NEXT_PUBLIC_WS_BASE_URL=$NEXT_PUBLIC_WS_BASE_URL
+ENV NEXT_PUBLIC_BRAND_ID=$NEXT_PUBLIC_BRAND_ID
 RUN npm run build
 
 FROM node:20-alpine AS runtime

@@ -37,6 +37,7 @@ from inventory_core.reservation import hold_multi_resource_booking, hold_slot, r
 from . import registry_client, trust
 from .automotive_adapter import find_paired_resource
 from .crypto import sign_outbound_request
+from .domain_scope import DomainNotSupportedError, validate_domain_supported
 from .events import get_event_bus
 from .models import BusinessAccount
 from .participant_keys import get_signing_keys
@@ -84,6 +85,16 @@ def validate_and_ack_select(
             build_nack_response(
                 context=payload.get("context", {}),
                 error={"code": "SELECT_ERROR", "message": f"Invalid context: {exc}"},
+            ),
+            400,
+        )
+
+    try:
+        validate_domain_supported(context)
+    except DomainNotSupportedError as exc:
+        return (
+            build_nack_response(
+                context=context, error={"code": "SELECT_ERROR", "message": str(exc)}
             ),
             400,
         )

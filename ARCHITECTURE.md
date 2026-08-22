@@ -2,18 +2,40 @@
 
 System-level index for the BECKN project. Component-level detail lives in each `*_details_v1.1.md` file; this document covers decisions that span all four applications.
 
-**Related documents:** [project_details.md](project_details.md) · [registry_details_v1.1.md](registry/registry_details_v1.1.md) · [beckn_gateway_details_v1.1.md](beckn-gateway/beckn_gateway_details_v1.1.md) · [BAP_details_v1.1.md](BAP/BAP_details_v1.1.md) · [BPP_details_v1.1.md](BPP/BPP_details_v1.1.md) · [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) · [livetracker1.md](livetracker1.md) (trust layer, closed) · [livetracker2.md](livetracker2.md) (business workflow, closed) · [livetracker3.md](livetracker3.md) (functional/UX gaps, designed) · [livetracker4.md](livetracker4.md) (infrastructure/scale readiness, designed)
+**Related documents:** [project_details.md](project_details.md) · [registry_details_v1.1.md](registry/registry_details_v1.1.md) · [beckn_gateway_details_v1.1.md](beckn-gateway/beckn_gateway_details_v1.1.md) · [BAP_details_v1.1.md](BAP/BAP_details_v1.1.md) · [BPP_details_v1.1.md](BPP/BPP_details_v1.1.md) · [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) · [livetracker1.md](livetracker1.md) (trust layer, closed) · [livetracker2.md](livetracker2.md) (business workflow, closed) · [livetracker3.md](livetracker3.md) (functional/UX gaps, designed) · [livetracker4.md](livetracker4.md) (infrastructure/scale readiness, designed) · [livetracker7.md](livetracker7.md) (multi-participant decentralization, closed)
 
 ## System Overview
 
-Four independent applications form a Beckn-compliant, private decentralized slot booking network, built to Beckn-ONDC Implementation Guidelines but not connected to the real ONDC network (see [livetracker1.md](livetracker1.md)'s scope declaration):
+Four independent **application codebases** form a Beckn-compliant, private decentralized slot booking network, built to Beckn-ONDC Implementation Guidelines but not connected to the real ONDC network (see [livetracker1.md](livetracker1.md)'s scope declaration):
 
-- **Registry** — trust & identity (PKI). Stateless of business data; Python/Django; PostgreSQL.
-- **Beckn Gateway** — discovery routing (search → on_search) between BAP and BPP. Stateless; Python/Django; no database, optional cache.
-- **BAP** (Buyer App Platform) — buyer-side participant. Python/Django backend + Next.js/TypeScript web app; PostgreSQL + Redis.
-- **BPP** (Beckn Provider Platform) — provider-side participant, serving healthcare/automotive/beauty domains. Python/Django backend + Next.js/TypeScript web app; PostgreSQL + Redis.
+- **Registry** — trust & identity (PKI). Stateless of business data; Python/Django; PostgreSQL. One real deployment.
+- **Beckn Gateway** — discovery routing (search → on_search) between any BAP and any BPP. Stateless; Python/Django; no database, optional cache. One real deployment.
+- **BAP** (Buyer App Platform) — buyer-side participant. Python/Django backend + Next.js/TypeScript web app; PostgreSQL + Redis. **Two independent real deployments** of this one codebase — see "Multi-Participant Network Topology" below.
+- **BPP** (Beckn Provider Platform) — provider-side participant. Python/Django backend + Next.js/TypeScript web app; PostgreSQL + Redis. **Three independent real deployments** of this one codebase, each scoped to exactly one domain (healthcare/automotive/beauty) — see below.
 
-All four communicate over signed HTTP/JSON per the Beckn protocol (see [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) for the verified wire contracts). No participant trusts another directly — trust is mediated through the Registry.
+All communicate over signed HTTP/JSON per the Beckn protocol (see [protocol_compliance_notes_v1.1.md](protocol_compliance_notes_v1.1.md) for the verified wire contracts). No participant trusts another directly — trust is mediated through the Registry.
+
+## Multi-Participant Network Topology
+
+**Real requirement, closed by [livetracker7.md](livetracker7.md) (2026-08-22):** a single BAP and a single BPP instance — however genuinely multi-domain internally — cannot demonstrate the network's actual *decentralization* property (many independent participants, freely discoverable and interoperable, no gatekeeper). This network now runs **5 real, independently-identified participants**, each with its own Registry subscription, signing identity, database, and branded web UI — not 5 forked codebases, 5 *deployments* of the 4 codebases above, differentiated purely by environment configuration.
+
+| Participant | Codebase | Brand | Domain(s) served | Subscriber ID | Backend port | Web port |
+|---|---|---|---|---|---|---|
+| BPP-Beauty | BPP | StyleNest | Beauty (`ONDC:RET13`) only | `bpp-backend.local` | 8002 | 3001 |
+| BPP-Medical | BPP | CareNest | Healthcare (`ONDC:SRV13`) only | `bpp-medical.local` | 8004 | 3003 |
+| BPP-Automotive | BPP | AutoCare | Automotive (`BECKN:AUTO01`) only | `bpp-automotive.local` | 8005 | 3004 |
+| BAP-X | BAP | OnSlot | All 3 domains | `bap-backend.local` | 8001 | 3000 |
+| BAP-Y | BAP | GoFetch | All 3 domains | `bap-y.local` | 8006 | 3005 |
+
+**How "no forked code" actually works:** every row above builds from the exact same `BPP/backend`+`BPP/web` or `BAP/backend`+`BAP/web` source. What differs per row is entirely environment configuration, layered at two points:
+- **Backend**: its own `.env` file (`SUBSCRIBER_ID`, signing/encryption key paths → its own named Docker secret volume, database connection string, and — the real second enforcement layer `livetracker7.md` Phase 1 added — `SUPPORTED_DOMAINS`, checked at the request boundary independently of Registry/Gateway's own domain filtering).
+- **Web**: a `NEXT_PUBLIC_BRAND_ID` Docker build arg selecting one entry from that app's own `lib/brand.ts` (name, color, tagline, icon set — `livetracker7.md` Phase 4).
+
+**Domain-scoping is enforced at three independent layers**, not one, live-verified end-to-end in Phase 5: Registry's own per-domain `Participant` subscription rows (a BPP with no `SUBSCRIBED` row for a domain is never looked up for it), Gateway's `dispatch_search` domain filter (never routes a search to a BPP not subscribed for that domain), and each BPP's own `SUPPORTED_DOMAINS` check (rejects an out-of-domain request that reaches it directly, bypassing Gateway entirely — confirmed live: a direct `/search` for `BECKN:AUTO01` sent straight to BPP-Medical, no Gateway hop, returns a real `400 NACK`, not a routed-around empty result).
+
+**Shared infrastructure, a recorded demo-scale simplification:** all 3 BPP-family instances share one `bpp-cache` Redis container (each on its own DB index), and both BAP-family instances share one `bap-cache` container likewise — not 5 separate Redis containers. Revisit before any real multi-operator production deployment (`livetracker7.md` §2.2's own caveat).
+
+**Proven live, not just configured** (`livetracker7.md` Phase 5): both BAP-X and BAP-Y run the identical domain-scoped discovery against all 3 BPPs (6 total search checks, each returning only the correctly-scoped BPP); a full search→select→init→confirm booking completed end-to-end through BAP-X against BPP-Medical, and a second through BAP-Y against BPP-Automotive (a genuine multi-resource Bay+Mechanic pairing, resolved automatically) — a different BAP paired with a different BPP than the first, proving any-to-any interoperability rather than one hardcoded working pair.
 
 ## Shared Libraries (`shared/`)
 

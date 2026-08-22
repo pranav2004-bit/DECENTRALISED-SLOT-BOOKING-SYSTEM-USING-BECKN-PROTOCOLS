@@ -38,6 +38,7 @@ from inventory_core.reservation import ReservationHold, find_group_bookings
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
+from .domain_scope import DomainNotSupportedError, validate_domain_supported
 from .participant_keys import get_signing_keys
 
 logger = logging.getLogger("bpp")
@@ -72,6 +73,16 @@ def validate_and_ack_init(
             build_nack_response(
                 context=payload.get("context", {}),
                 error={"code": "INIT_ERROR", "message": f"Invalid context: {exc}"},
+            ),
+            400,
+        )
+
+    try:
+        validate_domain_supported(context)
+    except DomainNotSupportedError as exc:
+        return (
+            build_nack_response(
+                context=context, error={"code": "INIT_ERROR", "message": str(exc)}
             ),
             400,
         )

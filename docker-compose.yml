@@ -47,7 +47,56 @@ services:
       timeout: 5s
       retries: 5
 
+  # --- livetracker7.md Phase 2: the 3 genuinely new participant databases ---
+  # Same Postgres image/healthcheck pattern as registry-db/bap-db/bpp-db above — one
+  # real, separate database per new instance (§2.2), not shared with any existing DB.
+  bpp-medical-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bpp_medical
+      POSTGRES_PASSWORD: bpp_medical  # pragma: allowlist secret
+      POSTGRES_DB: bpp_medical
+    volumes:
+      - bpp-medical-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bpp_medical"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bpp-automotive-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bpp_automotive
+      POSTGRES_PASSWORD: bpp_automotive  # pragma: allowlist secret
+      POSTGRES_DB: bpp_automotive
+    volumes:
+      - bpp-automotive-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bpp_automotive"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bap-y-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bap_y
+      POSTGRES_PASSWORD: bap_y  # pragma: allowlist secret
+      POSTGRES_DB: bap_y
+    volumes:
+      - bap-y-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bap_y"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # --- Cache ---
+  # livetracker7.md §2.2: shared by every BAP-family instance (bap-backend/BAP-X today,
+  # bap-y-backend/BAP-Y added below), each on its own Redis DB index — a demo-scale
+  # decision (not 5 separate Redis containers, one per new instance); revisit before any
+  # real multi-operator production deployment.
   bap-cache:
     image: redis:7-alpine
     healthcheck:
@@ -56,6 +105,9 @@ services:
       timeout: 5s
       retries: 5
 
+  # livetracker7.md §2.2: shared by every BPP-family instance (bpp-backend/BPP-Beauty,
+  # bpp-medical-backend, bpp-automotive-backend below), each on its own Redis DB index —
+  # same demo-scale decision as bap-cache above.
   bpp-cache:
     image: redis:7-alpine
     healthcheck:
@@ -145,6 +197,7 @@ services:
       args:
         NEXT_PUBLIC_API_BASE_URL: http://localhost:8001
         NEXT_PUBLIC_WS_BASE_URL: ws://localhost:8001
+        NEXT_PUBLIC_BRAND_ID: x
     env_file: ./BAP/web/.env
     depends_on:
       - bap-backend
@@ -205,11 +258,139 @@ services:
       args:
         NEXT_PUBLIC_API_BASE_URL: http://localhost:8002
         NEXT_PUBLIC_WS_BASE_URL: ws://localhost:8002
+        NEXT_PUBLIC_BRAND_ID: beauty
     env_file: ./BPP/web/.env
     depends_on:
       - bpp-backend
     ports:
       - "3001:3000"
+
+  # --- livetracker7.md Phase 2: the 3 genuinely new participants ---
+  # Every service below builds from the exact same Dockerfile/codebase as
+  # bpp-backend/bpp-web or bap-backend/bap-web above — no forked code, per this
+  # tracker's own explicit "no new forked codebases" rule. Each is differentiated
+  # only by its own env_file (BPP/backend/.env.medical, .env.automotive,
+  # BAP/backend/.env.y) and build args (its own backend port).
+
+  bpp-medical-backend:
+    build:
+      context: .
+      dockerfile: BPP/backend/Dockerfile
+    env_file: ./BPP/backend/.env.medical
+    volumes:
+      - bpp-medical-secrets:/app/data/secrets
+    depends_on:
+      bpp-medical-db:
+        condition: service_healthy
+      bpp-cache:
+        condition: service_healthy
+      registry:
+        condition: service_started
+    ports:
+      - "8004:8000"
+
+  bpp-medical-worker:
+    build:
+      context: .
+      dockerfile: BPP/backend/Dockerfile
+    env_file: ./BPP/backend/.env.medical
+    command: ["python", "manage.py", "run_event_worker"]
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    depends_on:
+      bpp-medical-db:
+        condition: service_healthy
+      bpp-cache:
+        condition: service_healthy
+
+  bpp-medical-web:
+    build:
+      context: ./BPP/web
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8004
+        NEXT_PUBLIC_WS_BASE_URL: ws://localhost:8004
+        NEXT_PUBLIC_BRAND_ID: medical
+    env_file: ./BPP/web/.env
+    depends_on:
+      - bpp-medical-backend
+    ports:
+      - "3003:3000"
+
+  bpp-automotive-backend:
+    build:
+      context: .
+      dockerfile: BPP/backend/Dockerfile
+    env_file: ./BPP/backend/.env.automotive
+    volumes:
+      - bpp-automotive-secrets:/app/data/secrets
+    depends_on:
+      bpp-automotive-db:
+        condition: service_healthy
+      bpp-cache:
+        condition: service_healthy
+      registry:
+        condition: service_started
+    ports:
+      - "8005:8000"
+
+  bpp-automotive-worker:
+    build:
+      context: .
+      dockerfile: BPP/backend/Dockerfile
+    env_file: ./BPP/backend/.env.automotive
+    command: ["python", "manage.py", "run_event_worker"]
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    depends_on:
+      bpp-automotive-db:
+        condition: service_healthy
+      bpp-cache:
+        condition: service_healthy
+
+  bpp-automotive-web:
+    build:
+      context: ./BPP/web
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8005
+        NEXT_PUBLIC_WS_BASE_URL: ws://localhost:8005
+        NEXT_PUBLIC_BRAND_ID: automotive
+    env_file: ./BPP/web/.env
+    depends_on:
+      - bpp-automotive-backend
+    ports:
+      - "3004:3000"
+
+  bap-y-backend:
+    build:
+      context: .
+      dockerfile: BAP/backend/Dockerfile
+    env_file: ./BAP/backend/.env.y
+    volumes:
+      - bap-y-secrets:/app/data/secrets
+    depends_on:
+      bap-y-db:
+        condition: service_healthy
+      bap-cache:
+        condition: service_healthy
+      registry:
+        condition: service_started
+    ports:
+      - "8006:8000"
+
+  bap-y-web:
+    build:
+      context: ./BAP/web
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8006
+        NEXT_PUBLIC_WS_BASE_URL: ws://localhost:8006
+        NEXT_PUBLIC_BRAND_ID: y
+    env_file: ./BAP/web/.env
+    depends_on:
+      - bap-y-backend
+    ports:
+      - "3005:3000"
 
   # --- Monitoring (Phase 4.4 follow-up) ---
   # Optional, like gateway-cache — a local Prometheus/Grafana pair scraping the four
@@ -245,6 +426,11 @@ volumes:
   registry-db-data:
   bap-db-data:
   bpp-db-data:
+  # livetracker7.md Phase 2: one real, separate DB volume per new participant —
+  # same persistence pattern as bap-db-data/bpp-db-data above.
+  bpp-medical-db-data:
+  bpp-automotive-db-data:
+  bap-y-db-data:
   prometheus-data:
   grafana-data:
   # Signing/encryption key persistence (Phase 3 Exit fix, livetracker2.md 2026-07-24)
@@ -257,3 +443,9 @@ volumes:
   gateway-secrets:
   bap-secrets:
   bpp-secrets:
+  # livetracker7.md Phase 2: same key-persistence pattern, one volume per new
+  # participant's own signing/encryption identity (§2.1) — never shared with an
+  # existing instance's keys.
+  bpp-medical-secrets:
+  bpp-automotive-secrets:
+  bap-y-secrets:

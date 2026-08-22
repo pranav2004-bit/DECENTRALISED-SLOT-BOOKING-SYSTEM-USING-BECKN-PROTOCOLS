@@ -12,6 +12,35 @@ The Beckn Provider Platform (BPP) is the provider-side application of the Beckn 
 - Automotive
 - Beauty
 
+> **Implementation note (livetracker7.md §1.1, 2026-08-21):** which of these three
+> domains a *given deployed instance* actually serves is now a real, enforced
+> setting — `SUPPORTED_DOMAINS` (`BPP/backend/bpp/settings.py`), env-driven,
+> defaulting to all three (today's single combined instance, unchanged). Every
+> `/action` entry point (`core/domain_scope.py`) checks the incoming request's
+> `context.domain` against it and returns a real NACK for a mismatch — a second,
+> independent enforcement layer alongside Registry's per-domain `Participant`
+> subscriptions and Gateway's own domain-filtered dispatch, so a single-domain
+> deployment (e.g. a future Healthcare-only instance) genuinely refuses an
+> out-of-scope request that reaches it directly, not merely one that Gateway
+> never happened to route to it.
+
+> **Implementation note (livetracker7.md §2, 2026-08-22):** "a future Healthcare-only
+> instance" above is no longer future — three independently-identified, independently-
+> `SUBSCRIBED` deployments of this exact same codebase now exist: BPP-Beauty
+> (`bpp-backend`, the original instance, narrowed to `ONDC:RET13` only),
+> BPP-Medical (`bpp-medical-backend`, `ONDC:SRV13` only), and BPP-Automotive
+> (`bpp-automotive-backend`, `BECKN:AUTO01` only) — each its own container, database,
+> and signing identity, differentiated purely by env file (`BPP/backend/.env`,
+> `.env.medical`, `.env.automotive`), never by forked code.
+
+> **Implementation note (livetracker7.md §4, 2026-08-22, supersedes the "not yet done"
+> line above):** each of the 3 instances now has its own real, distinct brand —
+> **StyleNest** (BPP-Beauty, amber `#d97706`, unchanged), **CareNest** (BPP-Medical,
+> teal `#0d9488`), **AutoCare** (BPP-Automotive, blue `#2563eb`) — own name, color,
+> tagline, and real designer-delivered icon/favicon set, selected at build time via a
+> `NEXT_PUBLIC_BRAND_ID` Docker build arg into a per-instance `lib/brand.ts` config
+> (`BPP/web`), the same "one codebase, config-selected" pattern as the backend.
+
 ## 2. Business Responsibilities / Capabilities
 - Provider Management
 - Provider Discovery Management

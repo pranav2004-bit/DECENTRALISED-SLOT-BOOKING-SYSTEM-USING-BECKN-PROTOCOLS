@@ -8,6 +8,28 @@
 - **Health/readiness:** `GET /health` and `GET /ready` on every backend app.
 - **Metrics:** `GET /metrics` (Prometheus format) on every backend app.
 
+## Running the 5-Participant Network Locally (livetracker7.md)
+
+The local `docker compose` stack now runs **5 real, independently-identified participants** — 3 single-domain BPPs and 2 all-domain BAPs, all the same 2 codebases (`BPP/backend`+`BPP/web`, `BAP/backend`+`BAP/web`), differentiated purely by config. See [ARCHITECTURE.md](ARCHITECTURE.md)'s "Multi-Participant Network Topology" for the full design; this section is the operational how-to.
+
+| Participant | Brand | Backend service | Web service | Backend port | Web port |
+|---|---|---|---|---|---|
+| BPP-Beauty | StyleNest | `bpp-backend` | `bpp-web` | 8002 | 3001 |
+| BPP-Medical | CareNest | `bpp-medical-backend` | `bpp-medical-web` | 8004 | 3003 |
+| BPP-Automotive | AutoCare | `bpp-automotive-backend` | `bpp-automotive-web` | 8005 | 3004 |
+| BAP-X | OnSlot | `bap-backend` | `bap-web` | 8001 | 3000 |
+| BAP-Y | GoFetch | `bap-y-backend` | `bap-y-web` | 8006 | 3005 |
+
+**Bring the whole network up:** `docker compose up -d` — this also starts `registry`, `beckn-gateway`, the shared `bpp-cache`/`bap-cache` Redis containers (each BPP-family/BAP-family instance uses its own DB index on the shared container — see ARCHITECTURE.md, not 5 separate Redis containers), and `bpp-medical-worker`/`bpp-automotive-worker`/`bpp-worker` (each BPP instance's own audit-log/metrics/WebSocket-broadcast consumer — the existing "rebuild backend+worker together" lesson below applies to all 3 pairs now, not just the original one).
+
+**Rebuilding after a code change:** the existing "images, not bind-mounts" and "backend+worker share a build, rebuild both together" lessons below apply per-instance now — e.g. a `BPP/backend` change needs `docker compose build bpp-backend bpp-worker bpp-medical-backend bpp-medical-worker bpp-automotive-backend bpp-automotive-worker` (all 3 pairs, since all 3 build from the identical Dockerfile/context) before `docker compose up -d` for whichever of those 6 you actually need running with the new code.
+
+**A real gap found and fixed live standing up this topology (`livetracker7.md` Phase 2, 2026-08-22): a fresh multi-container DB pair (a new instance's `-backend` + `-worker`, both racing `migrate` against a genuinely empty database at once) can crash on first boot** — confirmed live for both `bpp-medical-*` and `bpp-automotive-*` (`relation "inventory_core_rating" already exists` / a `pg_type` duplicate-key error), never hit before because the original `bpp-backend`/`bpp-worker` pair always shared an already-migrated dev volume. Fixed permanently: `entrypoint.sh` now runs `migrate_locked` (a Postgres session-level advisory lock around `migrate`) instead of plain `migrate --noinput`, so this is a non-issue going forward for any new instance — mentioned here only so a future from-scratch stand-up of a 6th/7th instance doesn't need to re-discover it.
+
+**Registry onboarding for a new instance** (already done for all 5 above; only needed again if you wipe Registry's own DB or add a 6th participant): `docker compose exec <backend-service> python manage.py onboarding_approve <domain-code>` then `onboarding_subscribe <domain-code>`, one call per domain the instance should serve (3 calls for a BAP, 1 for a single-domain BPP). To **narrow** an existing participant's scope (e.g. if BPP-Beauty needed to drop a domain again), there is a real command for it now — `docker compose exec registry python manage.py deactivate_participant <subscriber_id> <domain-code>` — added in `livetracker7.md` Phase 2 (Registry had no such capability before).
+
+**Seeding demo data on a fresh BPP instance:** through the real API only, never direct DB inserts — `POST /api/v1/auth/csrf` → `/api/v1/auth/signup` → `/api/v1/auth/login` → `POST /api/v1/resources` → `POST /api/v1/resources/<id>/availability`. For an Automotive instance specifically, seed **two** resources (`resource_type: "bay"` and `resource_type: "mechanic"`) with the **identical** `range_start`/`range_end`/`times` on their availability calls — the multi-resource pairing (`automotive_adapter.find_paired_resource`) only finds a match at a given timestamp if both resources genuinely have a slot there.
+
 ## Known Operational Facts (filled in as Phase 2–4 progress)
 
 - The Registry is a single point of trust for the whole network. **Confirmed live in Phase 4.2** (not just theorized): stopping the Registry container and hitting Gateway's `/search` returns a clean `500 INTERNAL_ERROR` (fails closed, no crash) — but takes **~19 seconds** to fail, because `resilient_http`'s retry policy re-attempts DNS resolution on a now-unreachable hostname several times before giving up. If Registry-outage symptoms include slow (not fast) failures elsewhere, this is why — it is not a hang or a deadlock.

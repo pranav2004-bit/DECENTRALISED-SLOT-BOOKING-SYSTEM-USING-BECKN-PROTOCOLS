@@ -38,6 +38,7 @@ from inventory_core.models import Booking
 
 from . import registry_client, trust
 from .crypto import sign_outbound_request
+from .domain_scope import DomainNotSupportedError, validate_domain_supported
 from .models import BusinessAccount
 from .participant_keys import get_signing_keys
 
@@ -58,6 +59,16 @@ def validate_and_ack_support(
             build_nack_response(
                 context=payload.get("context", {}),
                 error={"code": "SUPPORT_ERROR", "message": f"Invalid context: {exc}"},
+            ),
+            400,
+        )
+
+    try:
+        validate_domain_supported(context)
+    except DomainNotSupportedError as exc:
+        return (
+            build_nack_response(
+                context=context, error={"code": "SUPPORT_ERROR", "message": str(exc)}
             ),
             400,
         )

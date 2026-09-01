@@ -10,7 +10,9 @@ No custom migration tooling on top of Django's own — sufficient at this scale,
 
 ## Backup Strategy
 
-**`[MVP]`/`[PILOT]`:** daily automated `pg_dump` (custom format, `-F c`) per database, retained for 7 days locally / in object storage once a real Staging environment exists (per [INFRASTRUCTURE.md](INFRASTRUCTURE.md) — no cloud footprint exists yet for Local/Dev, which run entirely on `docker compose`). Scheduling mechanism (cron / CI scheduled job) gets wired in when Staging is provisioned, matching the same "activation trigger" pattern already used for Terraform in `infra/`.
+**Update (2026-09-02):** Local/dev's 6 databases moved from local `docker compose` Postgres containers to Neon (managed Postgres) — see RUNBOOK.md's "Postgres moved to Neon" note. This does give Local/Dev a real cloud footprint now, ahead of the "once a real Staging environment exists" framing below — Neon provides its own point-in-time recovery and branch-based restore independent of the `pg_dump`/`pg_restore` procedure documented here, which remains the correct approach for whatever hosts Staging/Production once provisioned (not necessarily Neon itself — an open decision, not yet made).
+
+**`[MVP]`/`[PILOT]`:** daily automated `pg_dump` (custom format, `-F c`) per database, retained for 7 days locally / in object storage once a real Staging environment exists (per [INFRASTRUCTURE.md](INFRASTRUCTURE.md)). Scheduling mechanism (cron / CI scheduled job) gets wired in when Staging is provisioned, matching the same "activation trigger" pattern already used for Terraform in `infra/`.
 
 **`[BETA]`+:** continuous WAL archiving / point-in-time recovery, once transaction volume justifies the added operational complexity. Not built now — deliberate scope discipline, not an oversight.
 

@@ -31,7 +31,11 @@ USER app
 WORKDIR /app/beckn-gateway
 
 EXPOSE 8000
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+# timeout bumped 3s -> 10s (2026-09-01): confirmed live that the app itself was healthy
+# and answering /health correctly, but the probe process alone missed a 3s timeout under
+# real CPU contention on a resource-constrained host — false "unhealthy" flags, not a real
+# failure. 10s still catches a genuinely dead container well within interval*retries=90s.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()" || exit 1
 
 CMD ["gunicorn", "gateway.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2"]

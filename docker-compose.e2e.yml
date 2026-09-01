@@ -24,16 +24,85 @@
 #    convention exactly (real Docker service DNS names) — this is not new configuration, just
 #    the already-established local-identity pattern made available to a CI runner that can't
 #    read a gitignored file.
+#
+# 3. Isolated, disposable Postgres for CI only (added 2026-09-02, when local dev moved to Neon
+#    — see RUNBOOK.md's "Postgres moved to Neon" note). CI must never point at the same Neon
+#    databases local dev/production use: shared state between CI runs and real data, real
+#    credentials sitting in CI env/logs, and ongoing Neon cost per run — all real problems a
+#    disposable local container avoids for exactly the isolated/repeatable use case CI needs.
+#    Only the 3 DBs this job's own service list actually needs (registry, bap, bpp — matches
+#    the "Build the real docker-compose stack" step below; bpp-medical/automotive/bap-y and
+#    their DBs are never built here, so no DB for them either).
 services:
+  registry-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: registry
+      POSTGRES_PASSWORD: registry # pragma: allowlist secret — CI-only, disposable
+      POSTGRES_DB: registry
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U registry"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bap-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bap
+      POSTGRES_PASSWORD: bap # pragma: allowlist secret — CI-only, disposable
+      POSTGRES_DB: bap
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bap"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bpp-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bpp
+      POSTGRES_PASSWORD: bpp # pragma: allowlist secret — CI-only, disposable
+      POSTGRES_DB: bpp
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bpp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  registry:
+    depends_on:
+      registry-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://registry:registry@registry-db:5432/registry # pragma: allowlist secret
+
+  bap-backend:
+    depends_on:
+      bap-db:
+        condition: service_healthy
+    environment:
+      SUBSCRIBER_ID: bap-backend.local
+      SUBSCRIBER_URL: http://bap-backend:8000
+      DATABASE_URL: postgres://bap:bap@bap-db:5432/bap # pragma: allowlist secret
+
   bpp-backend:
+    depends_on:
+      bpp-db:
+        condition: service_healthy
     environment:
       RECONCILIATION_INTERVAL_SECONDS: "15"
       SUBSCRIBER_ID: bpp-backend.local
       SUBSCRIBER_URL: http://bpp-backend:8000
-  bap-backend:
+      DATABASE_URL: postgres://bpp:bpp@bpp-db:5432/bpp # pragma: allowlist secret
+
+  bpp-worker:
+    depends_on:
+      bpp-db:
+        condition: service_healthy
     environment:
-      SUBSCRIBER_ID: bap-backend.local
-      SUBSCRIBER_URL: http://bap-backend:8000
+      DATABASE_URL: postgres://bpp:bpp@bpp-db:5432/bpp # pragma: allowlist secret
+
   beckn-gateway:
     environment:
       SUBSCRIBER_ID: beckn-gateway.local

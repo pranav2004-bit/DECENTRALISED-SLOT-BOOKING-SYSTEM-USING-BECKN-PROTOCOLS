@@ -1,97 +1,15 @@
-# Local/dev full-stack orchestration — 4 apps + 3 Postgres DBs + Redis.
+# Local/dev full-stack orchestration — 4 apps + Redis. Postgres moved to Neon (managed,
+# cloud-hosted) 2026-09-02 — see CLOUD_KEY_PERSISTENCE.md's sibling reasoning; each
+# service's own .env DATABASE_URL now points at its Neon connection string instead of
+# a local container. This removes 6 containers from the local stack (registry-db,
+# bap-db, bpp-db, bpp-medical-db, bpp-automotive-db, bap-y-db) — real relief for the
+# CPU/RAM contention root-caused earlier (2026-08-30/09-01) on a resource-constrained
+# host, confirmed live.
 # See README.md for setup steps and ARCHITECTURE.md for the system overview.
 # STATUS: scaffolded ahead of Phase 1 application code — see README.md "Status note".
 # services will not report healthy until Phase 1 lands each app's /health endpoint.
 
 services:
-  # --- Databases ---
-  registry-db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: registry
-      POSTGRES_PASSWORD: registry  # pragma: allowlist secret
-      POSTGRES_DB: registry
-    volumes:
-      - registry-db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U registry"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  bap-db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: bap
-      POSTGRES_PASSWORD: bap  # pragma: allowlist secret
-      POSTGRES_DB: bap
-    volumes:
-      - bap-db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bap"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  bpp-db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: bpp
-      POSTGRES_PASSWORD: bpp  # pragma: allowlist secret
-      POSTGRES_DB: bpp
-    volumes:
-      - bpp-db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bpp"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # --- livetracker7.md Phase 2: the 3 genuinely new participant databases ---
-  # Same Postgres image/healthcheck pattern as registry-db/bap-db/bpp-db above — one
-  # real, separate database per new instance (§2.2), not shared with any existing DB.
-  bpp-medical-db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: bpp_medical
-      POSTGRES_PASSWORD: bpp_medical  # pragma: allowlist secret
-      POSTGRES_DB: bpp_medical
-    volumes:
-      - bpp-medical-db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bpp_medical"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  bpp-automotive-db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: bpp_automotive
-      POSTGRES_PASSWORD: bpp_automotive  # pragma: allowlist secret
-      POSTGRES_DB: bpp_automotive
-    volumes:
-      - bpp-automotive-db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bpp_automotive"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  bap-y-db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: bap_y
-      POSTGRES_PASSWORD: bap_y  # pragma: allowlist secret
-      POSTGRES_DB: bap_y
-    volumes:
-      - bap-y-db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bap_y"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   # --- Cache ---
   # livetracker7.md §2.2: shared by every BAP-family instance (bap-backend/BAP-X today,
   # bap-y-backend/BAP-Y added below), each on its own Redis DB index — a demo-scale
@@ -149,9 +67,6 @@ services:
     # warning seen repeatedly in this session's own live testing.
     volumes:
       - registry-secrets:/run/secrets
-    depends_on:
-      registry-db:
-        condition: service_healthy
     ports:
       - "8000:8000"
 
@@ -182,8 +97,6 @@ services:
     volumes:
       - bap-secrets:/app/data/secrets
     depends_on:
-      bap-db:
-        condition: service_healthy
       bap-cache:
         condition: service_healthy
       registry:
@@ -213,8 +126,6 @@ services:
     volumes:
       - bpp-secrets:/app/data/secrets
     depends_on:
-      bpp-db:
-        condition: service_healthy
       bpp-cache:
         condition: service_healthy
       registry:
@@ -247,8 +158,6 @@ services:
     # compose stop`.
     restart: unless-stopped
     depends_on:
-      bpp-db:
-        condition: service_healthy
       bpp-cache:
         condition: service_healthy
 
@@ -280,8 +189,6 @@ services:
     volumes:
       - bpp-medical-secrets:/app/data/secrets
     depends_on:
-      bpp-medical-db:
-        condition: service_healthy
       bpp-cache:
         condition: service_healthy
       registry:
@@ -299,8 +206,6 @@ services:
       disable: true
     restart: unless-stopped
     depends_on:
-      bpp-medical-db:
-        condition: service_healthy
       bpp-cache:
         condition: service_healthy
 
@@ -325,8 +230,6 @@ services:
     volumes:
       - bpp-automotive-secrets:/app/data/secrets
     depends_on:
-      bpp-automotive-db:
-        condition: service_healthy
       bpp-cache:
         condition: service_healthy
       registry:
@@ -344,8 +247,6 @@ services:
       disable: true
     restart: unless-stopped
     depends_on:
-      bpp-automotive-db:
-        condition: service_healthy
       bpp-cache:
         condition: service_healthy
 
@@ -370,8 +271,6 @@ services:
     volumes:
       - bap-y-secrets:/app/data/secrets
     depends_on:
-      bap-y-db:
-        condition: service_healthy
       bap-cache:
         condition: service_healthy
       registry:
@@ -423,14 +322,6 @@ services:
       - prometheus
 
 volumes:
-  registry-db-data:
-  bap-db-data:
-  bpp-db-data:
-  # livetracker7.md Phase 2: one real, separate DB volume per new participant —
-  # same persistence pattern as bap-db-data/bpp-db-data above.
-  bpp-medical-db-data:
-  bpp-automotive-db-data:
-  bap-y-db-data:
   prometheus-data:
   grafana-data:
   # Signing/encryption key persistence (Phase 3 Exit fix, livetracker2.md 2026-07-24)

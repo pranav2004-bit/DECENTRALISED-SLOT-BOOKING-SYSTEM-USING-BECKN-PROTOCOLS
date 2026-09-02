@@ -271,7 +271,7 @@ def test_blake512_digest_is_deterministic_and_64_bytes():
     assert len(b64.b64decode(d1)) == 64
 
 
-def test_ephemeral_registry_keys_are_consistent_across_worker_processes(tmp_path, monkeypatch):
+def test_ephemeral_registry_keys_are_consistent_across_worker_processes(tmp_path, settings):
     """Found for real during Phase 3 end-to-end onboarding: Registry runs multiple
     gunicorn workers, each its own process with its own @lru_cache. A pure in-memory
     ephemeral key meant one worker could encrypt a challenge with a key another worker
@@ -280,7 +280,7 @@ def test_ephemeral_registry_keys_are_consistent_across_worker_processes(tmp_path
     from core import registry_keys
 
     signing_path = tmp_path / "signing.json"
-    monkeypatch.setattr(registry_keys, "_EPHEMERAL_SIGNING_KEY_PATH", signing_path)
+    settings.SIGNING_PRIVATE_KEY_PATH = str(signing_path)
 
     # Simulate "worker A": cache is empty, generates and persists.
     registry_keys.get_registry_signing_keys.cache_clear()

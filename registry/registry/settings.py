@@ -26,6 +26,8 @@ if env_file.exists():
 # --- Required, fail-fast if missing (per ENVIRONMENTS.md "Configuration Strategy") ---
 SECRET_KEY = env("DJANGO_SECRET_KEY")  # raises ImproperlyConfigured if absent — no insecure default
 DATABASE_URL = env("DATABASE_URL")
+SIGNING_PRIVATE_KEY_PATH = env("REGISTRY_SIGNING_PRIVATE_KEY_PATH")
+ENCRYPTION_PRIVATE_KEY_PATH = env("REGISTRY_ENCRYPTION_PRIVATE_KEY_PATH")
 
 # --- Optional with sane defaults ---
 DEBUG = env.bool("DJANGO_DEBUG", default=False)

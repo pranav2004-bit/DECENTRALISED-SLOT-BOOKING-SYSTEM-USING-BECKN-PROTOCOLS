@@ -120,17 +120,23 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        lib: [beckn_crypto, beckn_transaction, event_bus, resilient_http, redis_safe]
-    # These 5 shared/ libraries are framework-free (no Django — confirmed directly in each
-    # tests.py's own imports) but live outside every app's own working directory, so none of
-    # the per-app test-python job's pytest runs above ever discover or execute them — a real
-    # gap found live while adding new tests to resilient_http/tests.py (livetracker2.md's
+        lib:
+          [beckn_crypto, beckn_transaction, event_bus, resilient_http, redis_safe, resilient_db]
+    # 5 of these 6 shared/ libraries are framework-free (no Django — confirmed directly in
+    # each tests.py's own imports) but live outside every app's own working directory, so
+    # none of the per-app test-python job's pytest runs above ever discover or execute them —
+    # a real gap found live while adding new tests to resilient_http/tests.py (livetracker2.md's
     # Phase 3.11 follow-up fixes) and confirming they'd actually run anywhere in CI, not just
     # manually inside a container. event_bus and resilient_http need a real Redis for their
     # Redis-backed tests (TEST_REDIS_URL, the exact env var name both files' own fixtures
     # already read); beckn_crypto, beckn_transaction, and redis_safe don't touch Redis at all
     # (redis_safe is a generic hard-deadline primitive, confirmed by direct read to have no
     # Redis import of its own — callers elsewhere wire it to real Redis clients).
+    # resilient_db (added 2026-09-02) is the one exception to "framework-free" — it wraps
+    # Django's own postgresql DB backend, so it genuinely needs django+psycopg2 installed to
+    # even import, unlike the other 5. Installed for every lib in this matrix regardless
+    # (harmless, unused extra deps for the other 5) rather than a per-lib install step, to
+    # keep this job's structure the same single shared step for all 6.
     services:
       redis:
         image: redis:7-alpine
@@ -151,7 +157,7 @@ jobs:
         # No per-library requirements.txt exists (these are plain importable modules, not
         # separately packaged) — the small, explicit set actually imported across all four
         # tests.py files, confirmed by direct grep, not guessed.
-        run: pip install pytest cryptography requests responses redis
+        run: pip install pytest cryptography requests responses redis django psycopg2-binary
       - name: Run pytest
         working-directory: shared/${{ matrix.lib }}
         run: pytest tests.py -v

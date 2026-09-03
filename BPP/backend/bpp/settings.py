@@ -218,6 +218,11 @@ WSGI_APPLICATION = "bpp.wsgi.application"
 
 DATABASES = {"default": env.db_url_config(DATABASE_URL)}
 DATABASES["default"]["CONN_MAX_AGE"] = env.int("DB_CONN_MAX_AGE", default=60)
+# resilient_db retries a database's first connection attempt after a short backoff —
+# works around Neon free-tier's "scale to zero when inactive" cold-start behavior
+# (confirmed live, RUNBOOK.md's "Postgres moved to Neon" note). See shared/resilient_db/
+# base.py for the full reasoning; not affordable to switch to a paid always-on plan yet.
+DATABASES["default"]["ENGINE"] = "resilient_db"  # Django appends ".base" itself
 # livetracker3.md §8.1's own second post-close audit: a real connection leak was found
 # live — `pg_stat_activity` showed several connections stuck `idle` (wait_event
 # `ClientRead`, i.e. the query already finished; Postgres was simply waiting for Django

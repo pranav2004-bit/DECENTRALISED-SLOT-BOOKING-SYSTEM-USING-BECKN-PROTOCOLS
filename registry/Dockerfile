@@ -22,6 +22,7 @@ COPY shared/resilient_http ./shared/resilient_http
 COPY shared/beckn_crypto ./shared/beckn_crypto
 COPY shared/testing/contract_schemas ./shared/testing/contract_schemas
 COPY shared/redis_safe ./shared/redis_safe
+COPY shared/resilient_db ./shared/resilient_db
 COPY registry/ ./registry/
 # Phase 3 Exit fix (livetracker2.md, 2026-07-24) — see BAP/backend/Dockerfile's
 # identical comment. Registry's own key path is /run/secrets (outside /app, unlike

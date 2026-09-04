@@ -12,6 +12,7 @@ import time
 import pytest
 import responses
 from beckn_crypto import (
+    ChallengeDecryptionError,
     build_authorization_header,
     build_signing_string,
     build_verification_file_content,
@@ -209,6 +210,77 @@ def test_subscribe_stays_under_subscription_on_wrong_answer(client):
     assert participant.status == Participant.Status.UNDER_SUBSCRIPTION  # never promoted
 
     assert AuditLogEntry.objects.filter(event_type="CHALLENGE_ANSWER_MISMATCH").exists()
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_subscribe_fails_safely_if_registry_encryption_key_rotates_mid_challenge(
+    client, settings, tmp_path
+):
+    """livetracker8.md §1.2 gap-closure (2026-09-04): traces the exact real race a key
+    rotation could hit. Registry encrypts the challenge with its *current* key inside
+    `_dispatch_on_subscribe_challenge`; the participant fetches Registry's *current* key
+    fresh, at decrypt time, from inside their own `/on_subscribe` handler (confirmed by
+    direct read of BAP's `handle_on_subscribe` — not cached in advance). If a rotation
+    lands in the gap between those two moments, the participant derives a different
+    shared secret and decryption fails. That gap is bounded to a single HTTP round-trip
+    — `handle_subscribe`'s own docstring: "synchronously dispatch... before returning" —
+    not an open-ended window. This proves the failure mode when it does happen: exactly
+    like `test_subscribe_handles_unreachable_participant_gracefully` below (a real
+    participant's own `handle_on_subscribe` doesn't catch `ChallengeDecryptionError`
+    either, so their Django app would 500 the same way this mock does), Registry handles
+    it cleanly — no crash, participant stays UNDER_SUBSCRIPTION, real audit trail, and a
+    simple Subscribe retry (now safely past the rotation) succeeds normally."""
+    settings.ENCRYPTION_PRIVATE_KEY_PATH = str(tmp_path / "encryption.json")
+    get_registry_encryption_keys()  # provision the key that rotate_encryption_keys() rotates
+
+    signing_pub, signing_priv = generate_signing_key_pair()
+    encryption_pub, encryption_priv = generate_encryption_key_pair()
+
+    payload = _build_subscribe_payload(
+        subscriber_id="racer.example.com",
+        subscriber_url="https://racer.example.com",
+        domain="ONDC:RET13",
+        participant_type="sellerApp",
+        signing_pub=signing_pub,
+        encryption_pub=encryption_pub,
+    )
+    _mock_valid_domain_verification(
+        subscriber_url="https://racer.example.com", request_id="req-1", signing_priv=signing_priv
+    )
+
+    def on_subscribe_callback(request):
+        # The real race: rotation happens here — after Registry already encrypted the
+        # challenge with the OLD key (before this callback fired), but before this
+        # "participant" does its own fresh key fetch below.
+        from core.registry_keys import rotate_encryption_keys
+
+        rotate_encryption_keys()
+
+        body = json.loads(request.body)
+        registry_pub, _ = get_registry_encryption_keys()  # the NEW key — mismatched
+        try:
+            answer = decrypt_challenge(
+                encrypted_challenge=body["challenge"],
+                own_private_key_b64=encryption_priv,
+                peer_public_key_b64_der=registry_pub,
+            )
+        except ChallengeDecryptionError:
+            # Matches real BAP/BPP/Gateway behavior exactly: their own handle_on_subscribe
+            # doesn't catch this, so their app would 500 — not send a graceful NACK body.
+            return (500, {}, "Internal Server Error")
+        return (200, {}, json.dumps({"answer": answer}))
+
+    responses.add_callback(
+        responses.POST, "https://racer.example.com/on_subscribe", callback=on_subscribe_callback
+    )
+
+    resp = _post_subscribe(client, payload, signing_priv=signing_priv)
+    assert resp.status_code == 200  # /subscribe itself doesn't fail even if dispatch does
+
+    participant = Participant.objects.get(subscriber_id="racer.example.com")
+    assert participant.status == Participant.Status.UNDER_SUBSCRIPTION  # never falsely promoted
+    assert AuditLogEntry.objects.filter(event_type="ON_SUBSCRIBE_DISPATCH_FAILED").exists()
 
 
 @pytest.mark.django_db

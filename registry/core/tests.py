@@ -273,25 +273,26 @@ def test_blake512_digest_is_deterministic_and_64_bytes():
 
 def test_ephemeral_registry_keys_are_consistent_across_worker_processes(tmp_path, settings):
     """Found for real during Phase 3 end-to-end onboarding: Registry runs multiple
-    gunicorn workers, each its own process with its own @lru_cache. A pure in-memory
-    ephemeral key meant one worker could encrypt a challenge with a key another worker
-    (answering GET /identity) didn't share, breaking decryption unpredictably. Simulates
-    two separate worker processes via monkeypatched file paths + separate lru_caches."""
+    gunicorn workers, each its own process. A pure in-memory ephemeral key meant one
+    worker could encrypt a challenge with a key another worker (answering GET /identity)
+    didn't share, breaking decryption unpredictably. Simulates two separate worker
+    processes via monkeypatched file paths — each call re-reads the file directly
+    (no `@lru_cache` since livetracker8.md §1.2, 2026-09-03 — see registry_keys.py's own
+    docstring for why an in-process cache is actively wrong for key rotation), so
+    consistency across "processes" is now inherent rather than needing a manual
+    cache-clear between the two simulated calls."""
     from core import registry_keys
 
     signing_path = tmp_path / "signing.json"
     settings.SIGNING_PRIVATE_KEY_PATH = str(signing_path)
 
-    # Simulate "worker A": cache is empty, generates and persists.
-    registry_keys.get_registry_signing_keys.cache_clear()
+    # Simulate "worker A": no key file yet, generates and persists.
     worker_a_pub, worker_a_priv = registry_keys.get_registry_signing_keys()
 
-    # Simulate "worker B": separate process, its own empty cache, but the same file exists.
-    registry_keys.get_registry_signing_keys.cache_clear()
+    # Simulate "worker B": separate process, but the same file now exists.
     worker_b_pub, worker_b_priv = registry_keys.get_registry_signing_keys()
 
     assert (worker_a_pub, worker_a_priv) == (worker_b_pub, worker_b_priv)
-    registry_keys.get_registry_signing_keys.cache_clear()
 
 
 def test_identity_view_returns_registry_public_keys(client):

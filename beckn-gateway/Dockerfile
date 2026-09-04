@@ -21,6 +21,7 @@ COPY shared/resilient_http ./shared/resilient_http
 COPY shared/beckn_crypto ./shared/beckn_crypto
 COPY shared/beckn_transaction ./shared/beckn_transaction
 COPY shared/redis_safe ./shared/redis_safe
+COPY shared/key_rotation ./shared/key_rotation
 COPY beckn-gateway/ ./beckn-gateway/
 # Phase 3 Exit fix (livetracker2.md, 2026-07-24) — see BAP/backend/Dockerfile's
 # identical comment: /app/data/secrets must already exist, app-owned, in the image

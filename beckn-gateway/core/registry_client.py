@@ -11,15 +11,14 @@ requires SubscriberAuth via a signed Authorization header", the same rule BAP/BP
 X-Gateway-Authorization is for Phase 3's actual search-routing work (livetracker2.md),
 not this.
 
-The circuit breaker is Redis-backed (Phase 4.2 follow-up) only when CACHE_ENABLED. Still
-gated on the flag (not hardcoded), but the flag itself now defaults to `true` and
-`gateway-cache` is an always-on `docker-compose.yml` service (livetracker2.md §3.11's
-explicit decision — `search`, §3.1, put Gateway on continuous customer-facing traffic,
-matching BAP's/BPP's own unconditional Redis dependency instead of the old opt-in
-`[BETA]`/`with-gateway-cache`-profile default from Phase 4.2). With `CACHE_ENABLED=false`
-this still falls back to the in-memory `CircuitBreaker` as before — the real
-cross-worker-consistency bug confirmed live in Phase 4.2 (a stopped Registry took ~19s to
-fail on every request, never failing fast) is only fixed when the cache is enabled.
+The circuit breaker is Redis-backed, unconditionally (livetracker8.md §2.1, 2026-09-04) —
+the old `CACHE_ENABLED` opt-out is gone. It used to default to `true` (livetracker2.md
+§3.11) but remained a real, reachable escape hatch to the in-memory, per-worker
+`CircuitBreaker` fallback — the exact cross-worker-consistency bug confirmed live in
+Phase 4.2 (a stopped Registry took ~19s to fail on every request, never failing fast)
+was only fixed while the flag happened to be left on. Matches BAP's/BPP's own posture:
+`REDIS_URL` is a required setting with no default, `gateway-cache` is an always-on
+`docker-compose.yml` service — there is no supported way to run Gateway without it.
 """
 
 import json
@@ -37,13 +36,11 @@ _participant_clients: dict[str, ResilientHttpClient] = {}
 def get_client() -> ResilientHttpClient:
     global _client
     if _client is None:
-        redis_client = None
-        if settings.CACHE_ENABLED and settings.REDIS_URL:
-            import redis
+        import redis
 
-            redis_client = redis.Redis.from_url(
-                settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5
-            )
+        redis_client = redis.Redis.from_url(
+            settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5
+        )
         _client = ResilientHttpClient(
             timeout_seconds=settings.REGISTRY_LOOKUP_TIMEOUT_MS / 1000,
             redis_client=redis_client,
@@ -66,13 +63,11 @@ def get_participant_client(subscriber_id: str) -> ResilientHttpClient:
     number of real onboarded participants on the network."""
     client = _participant_clients.get(subscriber_id)
     if client is None:
-        redis_client = None
-        if settings.CACHE_ENABLED and settings.REDIS_URL:
-            import redis
+        import redis
 
-            redis_client = redis.Redis.from_url(
-                settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5
-            )
+        redis_client = redis.Redis.from_url(
+            settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5
+        )
         client = ResilientHttpClient(
             timeout_seconds=settings.REGISTRY_LOOKUP_TIMEOUT_MS / 1000,
             redis_client=redis_client,

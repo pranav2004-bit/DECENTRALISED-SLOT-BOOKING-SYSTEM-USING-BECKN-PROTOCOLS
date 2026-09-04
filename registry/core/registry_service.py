@@ -406,6 +406,32 @@ def deactivate_participant_domain(
     return participant
 
 
+def rotate_registry_key(*, key_type: str, correlation_id: str | None = None) -> str:
+    """livetracker8.md §1.2: rotates Registry's own signing or encryption identity key
+    (not a participant's — see `deactivate_participant_domain` above for that). Returns
+    the new public key so the caller (the management command) can print it for operator
+    confirmation without ever exposing the private key. `key_type` is `"signing"` or
+    `"encryption"` — matches `registry_keys.rotate_signing_keys`/`rotate_encryption_keys`.
+    """
+    from core import registry_keys
+
+    if key_type == "signing":
+        public_key, _ = registry_keys.rotate_signing_keys()
+    elif key_type == "encryption":
+        public_key, _ = registry_keys.rotate_encryption_keys()
+    else:
+        raise ValueError(f"Unknown key_type: {key_type!r} (expected 'signing' or 'encryption')")
+
+    _log_audit(
+        participant=None,
+        subscriber_id="__registry__",
+        event_type=f"REGISTRY_{key_type.upper()}_KEY_ROTATED",
+        detail={"key_type": key_type},
+        correlation_id=correlation_id,
+    )
+    return public_key
+
+
 def handle_lookup(filters: dict) -> list[dict]:
     """POST /lookup — filter object on a subset of Subscription fields
     (protocol_compliance_notes_v1.1.md §A.1, §B.1). Returns an array of matching

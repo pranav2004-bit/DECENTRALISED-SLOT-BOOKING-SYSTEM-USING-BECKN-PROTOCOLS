@@ -89,22 +89,17 @@ def onboarding_settings(settings, tmp_path):
     settings.SUBSCRIBER_ID = "beckn-gateway.example.com"
     settings.UNIQUE_KEY_ID = "key-1"
     settings.SUBSCRIBER_URL = "https://beckn-gateway.example.com"
-    from core import participant_keys
-
-    participant_keys.get_signing_keys.cache_clear()
-    participant_keys.get_encryption_keys.cache_clear()
     yield settings
-    participant_keys.get_signing_keys.cache_clear()
-    participant_keys.get_encryption_keys.cache_clear()
 
 
 def test_participant_keys_persist_across_calls(onboarding_settings):
     """Real persistence, not per-process ephemeral — see BAP's equivalent test for the
-    full rationale (identical here)."""
+    full rationale (identical here). No `@lru_cache` here since livetracker8.md §2.2
+    (2026-09-04) — every call already re-reads from disk, so two calls agreeing is now
+    inherent rather than needing a manual cache-clear between them."""
     from core import participant_keys
 
     pub1, priv1 = participant_keys.get_signing_keys()
-    participant_keys.get_signing_keys.cache_clear()
     pub2, priv2 = participant_keys.get_signing_keys()
     assert (pub1, priv1) == (pub2, priv2)
     assert Path(onboarding_settings.SIGNING_PRIVATE_KEY_PATH).exists()

@@ -42,7 +42,7 @@ The Gateway may maintain trusted locally cached Registry information (such as pa
 
 > **Implementation note:** participant onboarding/subscription progress is persisted to a local file, not a Django DB model — this preserves the "Database: Not Required" characterization above, since it's operational bootstrap state, not business data.
 
-> **Implementation note:** when enabled (`CACHE_ENABLED=true`), this optional cache also backs a shared circuit-breaker state fix (livetracker1.md Phase 4.2) — without it, a downstream Registry outage takes ~19s to fail on every single request across all gunicorn workers instead of failing fast after the first few. Purely a resilience concern, not required for correctness.
+> **Implementation note:** this cache also backs a shared circuit-breaker state fix (livetracker1.md Phase 4.2) — without it, a downstream Registry outage takes ~19s to fail on every single request across all gunicorn workers instead of failing fast after the first few. **As of `livetracker8.md` §2.1 (2026-09-04), this is no longer optional** — the old `CACHE_ENABLED` opt-out is gone; `REDIS_URL` is a required setting with no default, matching BAP's/BPP's own unconditional posture. A resilience concern real enough to be mandatory, not a nice-to-have.
 
 ## 5. Who Communicates with the Gateway
 - BAP Backend
@@ -60,6 +60,8 @@ The Gateway may maintain trusted locally cached Registry information (such as pa
 | Beckn Gateway Backend ↔ BPP Backend | HTTP/HTTPS | RESTful APIs | Asynchronous (Request → ACK/NACK → Callback Response) | JSON |
 
 > **Implementation note:** the Gateway is itself a Registry-registered participant and goes through the same Subscribe → on_subscribe → Lookup lifecycle as BAP/BPP — including hosting `ondc-site-verification.html` for domain-ownership verification and receiving the registry-initiated `on_subscribe` reverse callback. The generic row above doesn't capture that asymmetry, which is spelled out more precisely in the BAP/BPP/Registry docs.
+
+> **Implementation note (livetracker8.md §2.2, 2026-09-04):** Gateway's own signing/encryption identity now rotates automatically too, on the same 90-day cadence as Registry's — but unlike Registry, this genuinely re-Subscribes (`onboarding_rotate_keys`), since Gateway is itself a participant. New keys are generated in memory and only ever written to disk after Registry actually confirms the new identity, so a rejected re-Subscribe leaves nothing to roll back. See `SECURITY.md`'s "Secrets & Key Management" section for the full mechanism, including two real protocol-level subtleties found live: the re-Subscribe's Authorization header must still be signed with the old key, and the on_subscribe challenge must be decrypted with the new one.
 
 ## 7. Framework / Programming Language
 

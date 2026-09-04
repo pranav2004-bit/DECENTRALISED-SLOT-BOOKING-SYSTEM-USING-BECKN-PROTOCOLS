@@ -28,6 +28,14 @@ SECRET_KEY = env("DJANGO_SECRET_KEY")  # raises ImproperlyConfigured if absent �
 DATABASE_URL = env("DATABASE_URL")
 SIGNING_PRIVATE_KEY_PATH = env("REGISTRY_SIGNING_PRIVATE_KEY_PATH")
 ENCRYPTION_PRIVATE_KEY_PATH = env("REGISTRY_ENCRYPTION_PRIVATE_KEY_PATH")
+REDIS_URL = env("REDIS_URL")
+
+# livetracker8.md §1.2: the actual defined rotation cadence — 90 days, a standard
+# industry baseline for API/signing key rotation (not a number derived from traffic
+# data, since a rotation cadence is a security posture decision, not a load measurement
+# — different from this project's own "no invented SLA" discipline, which is about not
+# faking a *performance* number). Env-overridable per deployment.
+REGISTRY_KEY_ROTATION_DAYS = env.int("REGISTRY_KEY_ROTATION_DAYS", default=90)
 
 # --- Optional with sane defaults ---
 DEBUG = env.bool("DJANGO_DEBUG", default=False)
@@ -96,6 +104,22 @@ DATABASES["default"]["CONN_MAX_AGE"] = env.int("DB_CONN_MAX_AGE", default=60)
 # (confirmed live, RUNBOOK.md's "Postgres moved to Neon" note). See shared/resilient_db/
 # base.py for the full reasoning; not affordable to switch to a paid always-on plan yet.
 DATABASES["default"]["ENGINE"] = "resilient_db"  # Django appends ".base" itself
+
+# livetracker8.md §1.1: replaces the old LocMemCache-backed rate limiter (per-process,
+# so the effective limit was configured_limit * worker_count under multiple gunicorn
+# workers — a real, previously-tracked gap, RUNBOOK.md's own "Postgres moved to Neon"
+# era notes). Same pattern as BAP's/BPP's own CACHES config (bap/settings.py,
+# bpp/settings.py) for consistency, including the TESTING DB-15 isolation.
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": f"{REDIS_URL.rsplit('/', 1)[0]}/15" if TESTING else REDIS_URL,
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            "CONNECTION_POOL_KWARGS": {"socket_connect_timeout": 0.5, "socket_timeout": 0.5},
+        },
+    }
+}
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},

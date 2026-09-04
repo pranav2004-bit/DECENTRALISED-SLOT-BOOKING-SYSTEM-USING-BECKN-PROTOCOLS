@@ -4,9 +4,9 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django_observability.context import correlation_id_var
+from django_observability.rate_limit import rate_limit
 
 from . import metrics, registry_service
-from .rate_limit import rate_limit
 from .registry_keys import get_registry_encryption_keys, get_registry_signing_keys
 from .validation import PayloadValidationError, validate_against_schema
 

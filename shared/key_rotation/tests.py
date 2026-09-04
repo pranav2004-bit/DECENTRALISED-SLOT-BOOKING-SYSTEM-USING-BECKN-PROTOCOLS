@@ -42,7 +42,10 @@ def test_backup_key_file_creates_a_timestamped_copy_with_the_same_content(tmp_pa
     atomic_write_key_file(str(path), "pub", "priv")
     backup_path = backup_key_file(str(path))
     assert backup_path.startswith(str(path)) and ".bak." in backup_path
-    assert json.loads(open(backup_path).read()) == {"public_key": "pub", "private_key": "priv"}
+    assert json.loads(open(backup_path).read()) == {
+        "public_key": "pub",
+        "private_key": "priv",  # pragma: allowlist secret
+    }
 
 
 def test_restore_key_file_puts_the_backed_up_content_back(tmp_path):

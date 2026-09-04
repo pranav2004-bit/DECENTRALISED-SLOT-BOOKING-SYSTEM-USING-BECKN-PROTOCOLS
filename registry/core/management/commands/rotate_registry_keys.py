@@ -38,7 +38,10 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        key_types = ["signing", "encryption"] if options["key_type"] == "both" else [options["key_type"]]
+        if options["key_type"] == "both":
+            key_types = ["signing", "encryption"]
+        else:
+            key_types = [options["key_type"]]
         for key_type in key_types:
             path_str = getattr(settings, _KEY_PATH_SETTING[key_type])
             if not options["force"] and not is_rotation_due(

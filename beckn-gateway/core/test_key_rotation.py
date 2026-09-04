@@ -17,9 +17,9 @@ import pytest
 import responses
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from key_rotation import NoExistingKeyError, is_rotation_due, key_age_days
 
 from core import participant_keys
-from key_rotation import NoExistingKeyError, is_rotation_due, key_age_days
 
 
 @pytest.fixture
@@ -127,7 +127,7 @@ def test_command_signs_the_subscribe_request_with_the_old_key_not_the_new_one(ro
     re-Subscribe (it requires the CURRENTLY REGISTERED key). Proves the fix: captures
     what key actually signed the outbound request and confirms it's the pre-rotation
     one, not the new one the payload declares."""
-    from beckn_crypto import parse_authorization_header, verify_request_signature
+    from beckn_crypto import verify_request_signature
 
     from core import onboarding_service
 
@@ -276,7 +276,9 @@ def test_verification_file_is_signed_with_the_pending_new_key_during_rotation(ro
         def subscribe_callback(request):
             body = json.loads(request.body)
             captured["request_id"] = body["message"]["request_id"]
-            captured["new_signing_pub"] = body["message"]["entity"]["key_pair"]["signing_public_key"]
+            captured["new_signing_pub"] = body["message"]["entity"]["key_pair"][
+                "signing_public_key"
+            ]
             # Simulate Registry's own domain-ownership check: fetch the verification
             # file exactly like _verify_domain_ownership does, mid-flow.
             served = onboarding_service.get_verification_file_content()
@@ -297,6 +299,7 @@ def test_key_age_and_due_check_wired_to_gateways_own_setting(rotation_settings):
     """Sanity check that Gateway's KEY_ROTATION_DAYS setting is the one actually
     consulted, not a hardcoded/mismatched number."""
     participant_keys.get_signing_keys()
-    age = key_age_days(rotation_settings.SIGNING_PRIVATE_KEY_PATH)
+    path = rotation_settings.SIGNING_PRIVATE_KEY_PATH
+    age = key_age_days(path)
     assert age is not None
-    assert is_rotation_due(rotation_settings.SIGNING_PRIVATE_KEY_PATH, rotation_settings.KEY_ROTATION_DAYS) is False
+    assert is_rotation_due(path, rotation_settings.KEY_ROTATION_DAYS) is False

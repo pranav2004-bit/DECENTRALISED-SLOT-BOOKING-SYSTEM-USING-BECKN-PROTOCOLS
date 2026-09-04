@@ -131,4 +131,6 @@ def restore_keys_from_backup(backup_paths: dict[str, str]) -> None:
     signing with a key Registry never actually learned about."""
     restore_key_file(settings.SIGNING_PRIVATE_KEY_PATH, backup_paths["signing"])
     restore_key_file(settings.ENCRYPTION_PRIVATE_KEY_PATH, backup_paths["encryption"])
-    logger.warning("Restored Gateway's signing+encryption keys from backup after a failed rotation.")
+    logger.warning(
+        "Restored Gateway's signing+encryption keys from backup after a failed rotation."
+    )

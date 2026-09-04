@@ -34,6 +34,17 @@ services:
       timeout: 5s
       retries: 5
 
+  # livetracker8.md §1.1: Registry's own rate limiter moved off in-memory (LocMemCache)
+  # to Redis-backed, so the Subscribe/Lookup limits are enforced correctly across
+  # gunicorn's 2 worker processes instead of each worker keeping its own separate counter.
+  registry-cache:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   gateway-cache:
     image: redis:7-alpine
     # livetracker2.md §3.11: promoted from the optional with-gateway-cache profile to an
@@ -67,8 +78,41 @@ services:
     # warning seen repeatedly in this session's own live testing.
     volumes:
       - registry-secrets:/run/secrets
+    depends_on:
+      registry-cache:
+        condition: service_healthy
     ports:
       - "8000:8000"
+    # livetracker8.md §1.2: the actual scheduled trigger for `rotate_registry_keys` — read
+    # by the `key-rotation-scheduler` (ofelia) service below. The command itself only rotates a
+    # key once it's actually due (settings.REGISTRY_KEY_ROTATION_DAYS), so invoking it daily
+    # here is safe/idempotent, not "rotates every day."
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-exec.rotate-registry-keys.schedule: "@daily"
+      ofelia.job-exec.rotate-registry-keys.command: "python manage.py rotate_registry_keys"
+
+  # livetracker8.md §1.2/§2.2: the real, always-running scheduler that closes "doesn't
+  # depend on a human remembering to do it" — a lightweight (~15MB), Docker-native cron
+  # sidecar (ofelia) that reads `ofelia.*` labels from EVERY container on the Docker
+  # socket, not just one — a single instance schedules both `registry`'s and
+  # `beckn-gateway`'s own key rotation (renamed from `registry-scheduler` once Gateway
+  # needed the identical mechanism, §2.2's own "shared tooling" ask). Deliberately not a
+  # whole new worker service/microservice for this — the actual job (check + maybe
+  # rotate) runs a few times a year at most; a full service would be over-engineering for
+  # that. Cloud-provider-agnostic: this is the same mechanism whether the eventual
+  # production host is a single VM or anything else running this same Compose file — it's
+  # not tied to any specific cloud choice, so it doesn't need to wait on §1.6.
+  key-rotation-scheduler:
+    image: mcuadros/ofelia:latest
+    depends_on:
+      registry:
+        condition: service_healthy
+      beckn-gateway:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: daemon --docker
 
   beckn-gateway:
     build:
@@ -87,6 +131,15 @@ services:
         condition: service_healthy
     ports:
       - "8003:8000"
+    # livetracker8.md §2.2: same shared scheduler that already watches `registry` above —
+    # ofelia's daemon reads `ofelia.*` labels from every container on the Docker socket,
+    # not just one, so no second scheduler instance is needed for Gateway's own rotation.
+    # Gateway's rotation needs a domain to re-Subscribe with — ONDC:RET13, its one real
+    # subscribed domain (confirmed live via Registry's own Participant table, 2026-09-04).
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-exec.rotate-gateway-keys.schedule: "@daily"
+      ofelia.job-exec.rotate-gateway-keys.command: "python manage.py onboarding_rotate_keys ONDC:RET13"
 
   bap-backend:
     build:

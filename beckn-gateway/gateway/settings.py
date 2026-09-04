@@ -13,10 +13,6 @@ sys.path.insert(0, str(BASE_DIR.parent / "shared"))
 
 env = environ.Env(
     DJANGO_DEBUG=(bool, False),
-    # livetracker2.md §3.11: on by default — search now puts Gateway on continuous
-    # customer-facing traffic, so its Redis-backed circuit breaker needs to be active
-    # by default too, matching BAP/BPP's own unconditional Redis dependency.
-    CACHE_ENABLED=(bool, True),
 )
 env_file = BASE_DIR / ".env"
 if env_file.exists():
@@ -30,10 +26,11 @@ LOG_LEVEL = env("LOG_LEVEL", default="INFO")
 
 REGISTRY_BASE_URL = env("REGISTRY_BASE_URL")
 REGISTRY_LOOKUP_TIMEOUT_MS = env.int("REGISTRY_LOOKUP_TIMEOUT_MS", default=3000)
-CACHE_ENABLED = env.bool("CACHE_ENABLED", default=True)
-# Only meaningful when CACHE_ENABLED — see core/registry_client.py for why the
-# Redis-backed circuit breaker fix is opt-in here but not for BAP/BPP.
-REDIS_URL = env("REDIS_URL", default="")
+# livetracker8.md §2.1: required, no default, no opt-out — the Redis-backed circuit
+# breaker is now mandatory, matching BAP's/BPP's own unconditional Redis dependency
+# instead of Gateway being the one component where a stopped Registry could silently
+# degrade to ~19s-per-request fail-slow (the old CACHE_ENABLED=false path, removed).
+REDIS_URL = env("REDIS_URL")
 
 # --- Gateway's own network identity (Phase 3.3 onboarding) ---
 SUBSCRIBER_ID = env("SUBSCRIBER_ID", default="")
@@ -46,10 +43,35 @@ ON_SUBSCRIBE_CALLBACK_PATH = env("ON_SUBSCRIBE_CALLBACK_PATH", default="/on_subs
 # core/onboarding_state.py for why this can't be a Django model like BAP/BPP's).
 ONBOARDING_STATE_PATH = env("ONBOARDING_STATE_PATH", default="/app/data/onboarding_state.json")
 
+# livetracker8.md §2.2: same defined cadence as Registry's own REGISTRY_KEY_ROTATION_DAYS
+# (§1.2) — 90 days, a standard industry baseline for API/signing key rotation.
+KEY_ROTATION_DAYS = env.int("KEY_ROTATION_DAYS", default=90)
+
 # Django's test runner forces DEBUG=False regardless of .env — TESTING is the correct
 # signal for "is this a local/test run" checks that must hold true even though DEBUG is
 # off, matching registry/registry/settings.py's established fix for the same issue.
 TESTING = "pytest" in sys.modules
+
+# livetracker8.md §2.2: a real, previously-hidden bug found live 2026-09-04 — Gateway
+# never had this block, so `django.core.cache.cache` (used by
+# onboarding_service.py's pending-rotation-key hand-off) silently defaulted to Django's
+# in-memory `LocMemCache`, per-gunicorn-worker, exactly the class of bug this whole
+# tracker exists to close elsewhere (§1.1's rate limiter, §1.2's Registry key cache).
+# `settings.REDIS_URL` was already mandatory for the circuit breaker (§2.1) but was
+# never wired into Django's generic cache framework — confirmed live: a key set from a
+# separate `manage.py shell` process was invisible to the gunicorn worker serving the
+# real HTTP request, causing a genuine, reproducible rotation failure. Same pattern as
+# Registry's/BAP's/BPP's own CACHES config for consistency.
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": f"{REDIS_URL.rsplit('/', 1)[0]}/15" if TESTING else REDIS_URL,
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            "CONNECTION_POOL_KWARGS": {"socket_connect_timeout": 0.5, "socket_timeout": 0.5},
+        },
+    }
+}
 
 SERVICE_NAME = "beckn-gateway"
 

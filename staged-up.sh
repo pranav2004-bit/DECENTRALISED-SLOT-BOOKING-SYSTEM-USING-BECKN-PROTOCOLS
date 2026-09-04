@@ -14,11 +14,11 @@ WAIT_TIMEOUT=480 # later stages need more margin — by the last backend, everyt
 
 echo "== Stage 1/5: Caches (Postgres moved to Neon 2026-09-02 — no local DB containers) =="
 docker compose up -d --wait --wait-timeout $WAIT_TIMEOUT \
-  bap-cache bpp-cache gateway-cache
+  bap-cache bpp-cache gateway-cache registry-cache
 
 echo "== Stage 2/5: Trust layer (Registry + Gateway) =="
 docker compose up -d --wait --wait-timeout $WAIT_TIMEOUT \
-  registry beckn-gateway
+  registry beckn-gateway key-rotation-scheduler
 
 echo "== Stage 3/5: Backends (one at a time — 5 backends starting together still exceeds"
 echo "   the healthcheck probe's 3s timeout under CPU contention, confirmed live 2026-09-01) =="

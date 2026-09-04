@@ -28,6 +28,8 @@ The Registry is the trust and identity component of the Beckn ecosystem. It main
 
    > **Implementation note:** the Registry also exposes a `GET /identity` endpoint returning its own public keys, so participants can decrypt `on_subscribe` challenges. This is a fourth endpoint beyond the three-endpoint spec noted above — real ONDC publishes registry keys out-of-band, but this project's network needed an in-band mechanism, so this is a pragmatic, non-spec addition specific to this deployment.
 
+   > **Implementation note (livetracker8.md §1.2, 2026-09-04):** the Registry's *own* signing/encryption identity — distinct from a participant's key, above — now rotates automatically on a 90-day cadence (`rotate_registry_keys`, backup-before-overwrite, real audit log entry, zero-restart propagation to every gunicorn worker), invoked daily by a scheduler sidecar that only actually rotates once a key is genuinely due. See `SECURITY.md`'s "Secrets & Key Management" section for the full mechanism.
+
 ## 4. Who Communicates with the Registry
 The following backend systems communicate directly with the Registry:
 - BAP Backend

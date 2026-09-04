@@ -110,7 +110,19 @@ jobs:
         run: |
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
-            pytest --cov --cov-fail-under=0
+            # livetracker8.md §1.5: registry gets a real, blocking coverage gate — TESTING.md's
+            # own "Coverage Policy" (§"once Phase 2 Registry business logic exists") set this
+            # exact trigger condition, and that's long true now (registry_service.py, the full
+            # Subscribe/Lookup/onboarding flow, is real and tested). 85%, a real ~7-point buffer
+            # below registry's actual measured 92% (2026-09-03) — enough margin that normal
+            # code churn doesn't trip it, tight enough to catch a genuine regression. The other
+            # 3 apps here stay at --cov-fail-under=0 (unchanged, out of this tracker's scope —
+            # livetracker8.md is Registry/Gateway only, and Gateway has no §1.5-equivalent item).
+            if [ "${{ matrix.app }}" = "registry" ]; then
+              pytest --cov --cov-fail-under=85
+            else
+              pytest --cov --cov-fail-under=0
+            fi
           else
             echo "no requirements.txt yet — Phase 1 pending"
           fi
@@ -121,7 +133,7 @@ jobs:
     strategy:
       matrix:
         lib:
-          [beckn_crypto, beckn_transaction, event_bus, resilient_http, redis_safe, resilient_db]
+          [beckn_crypto, beckn_transaction, event_bus, resilient_http, redis_safe, resilient_db, key_rotation]
     # 5 of these 6 shared/ libraries are framework-free (no Django — confirmed directly in
     # each tests.py's own imports) but live outside every app's own working directory, so
     # none of the per-app test-python job's pytest runs above ever discover or execute them —

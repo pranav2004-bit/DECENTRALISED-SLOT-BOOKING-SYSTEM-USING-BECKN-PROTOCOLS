@@ -54,9 +54,6 @@ def bpp_identity_settings(settings, tmp_path):
     settings.SUBSCRIBER_URL = "https://bpp-backend.local"
     settings.GATEWAY_BASE_URL = "http://gateway:8000"
     settings.RESERVATION_HOLD_TTL_SECONDS = 600
-    from core import participant_keys
-
-    participant_keys.get_signing_keys.cache_clear()
     yield settings
 
 

@@ -93,6 +93,7 @@ SUBSCRIBER_URL = env("SUBSCRIBER_URL", default="")
 SIGNING_PRIVATE_KEY_PATH = env("BPP_SIGNING_PRIVATE_KEY_PATH")
 ENCRYPTION_PRIVATE_KEY_PATH = env("BPP_ENCRYPTION_PRIVATE_KEY_PATH")
 ON_SUBSCRIBE_CALLBACK_PATH = env("ON_SUBSCRIBE_CALLBACK_PATH", default="/on_subscribe")
+KEY_ROTATION_DAYS = env.int("KEY_ROTATION_DAYS", default=90)
 EVENT_BUS_URL = env("EVENT_BUS_URL", default=REDIS_URL)
 # livetracker4.md §2.1: env-overridable (was hardcoded) — a real gap found once
 # tests started spawning genuine, separate worker subprocesses: those run

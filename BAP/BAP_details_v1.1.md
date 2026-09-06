@@ -118,6 +118,8 @@ The BAP communicates with:
 
 > **Implementation note:** the Registry also performs domain-ownership verification during Subscribe by issuing a direct, unauthenticated `GET` to the BAP's own `ondc-site-verification.html` (served by the BAP itself, distinct from the JSON `/on_subscribe` callback above) and validating the signed content before accepting the submitted key.
 
+> **Implementation note (2026-09-06, `SECURITY.md`/`RUNBOOK.md` §"BAP received the identical rotation fix"):** BAP's signing/encryption key rotation (`onboarding_rotate_keys <domain-code>`) is now automated on the same 90-day cadence as Registry/Gateway/BPP, wired into the shared `key-rotation-scheduler` sidecar for both `bap-backend` and `bap-y-backend`. Same generate-in-memory/submit-first/persist-only-after-confirmed design as the rest of the network. See `SECURITY.md` for the full fix history, including a real signature-expiry-during-retry finding and a pre-existing Registry/disk key-drift recovery.
+
 ## 7. Framework / Programming Language
 
 | Item | Technology |

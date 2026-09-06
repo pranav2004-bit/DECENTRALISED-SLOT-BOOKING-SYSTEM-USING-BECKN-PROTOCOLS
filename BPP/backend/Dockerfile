@@ -22,6 +22,7 @@ COPY shared/resilient_http ./shared/resilient_http
 COPY shared/event_bus ./shared/event_bus
 COPY shared/beckn_crypto ./shared/beckn_crypto
 COPY shared/beckn_transaction ./shared/beckn_transaction
+COPY shared/key_rotation ./shared/key_rotation
 COPY shared/inventory_core ./shared/inventory_core
 COPY shared/realtime ./shared/realtime
 COPY shared/testing/contract_schemas ./shared/testing/contract_schemas

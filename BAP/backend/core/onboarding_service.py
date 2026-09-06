@@ -11,6 +11,7 @@ import uuid
 import requests
 from beckn_crypto import build_verification_file_content, decrypt_challenge
 from django.conf import settings
+from django.core.cache import cache
 from django.utils import timezone
 
 from . import registry_client
@@ -18,6 +19,54 @@ from .models import OnboardingStatus, SiteVerification
 from .participant_keys import get_encryption_keys, get_signing_keys
 
 logger = logging.getLogger("bap")
+
+# Short-TTL, Redis-backed hand-off for the *new* signing AND encryption private keys
+# during a rotation's re-Subscribe flow — mirrors beckn-gateway/core/onboarding_service.py
+# §2.2 and BPP's own copy. Real reason this exists: Registry requires a re-Subscribe's
+# Authorization header to be signed with the CURRENTLY REGISTERED (old) signing key, but
+# its domain-ownership verification file must be signed with the NEW signing key being
+# submitted in that same request's payload. The identical split exists for encryption:
+# Registry's on_subscribe challenge dispatch (synchronous, mid-Subscribe) encrypts the
+# challenge using the NEW encryption public key just submitted. Both callbacks arrive as
+# genuinely separate HTTP requests — possibly a different worker than the one running
+# the rotation command — so this can't be a plain in-process variable either. A short
+# TTL (comfortably longer than one Subscribe round trip) means an interrupted/crashed
+# rotation attempt can't leave either lingering.
+_PENDING_ROTATION_SIGNING_CACHE_KEY = "bap:pending_rotation_signing_key"
+_PENDING_ROTATION_ENCRYPTION_CACHE_KEY = "bap:pending_rotation_encryption_key"
+_PENDING_ROTATION_TTL_SECONDS = 60
+
+
+def set_pending_rotation_signing_key(signing_private_key_b64: str) -> None:
+    cache.set(
+        _PENDING_ROTATION_SIGNING_CACHE_KEY,
+        signing_private_key_b64,
+        timeout=_PENDING_ROTATION_TTL_SECONDS,
+    )
+
+
+def get_pending_rotation_signing_key() -> str | None:
+    return cache.get(_PENDING_ROTATION_SIGNING_CACHE_KEY)
+
+
+def clear_pending_rotation_signing_key() -> None:
+    cache.delete(_PENDING_ROTATION_SIGNING_CACHE_KEY)
+
+
+def set_pending_rotation_encryption_key(encryption_private_key_b64: str) -> None:
+    cache.set(
+        _PENDING_ROTATION_ENCRYPTION_CACHE_KEY,
+        encryption_private_key_b64,
+        timeout=_PENDING_ROTATION_TTL_SECONDS,
+    )
+
+
+def get_pending_rotation_encryption_key() -> str | None:
+    return cache.get(_PENDING_ROTATION_ENCRYPTION_CACHE_KEY)
+
+
+def clear_pending_rotation_encryption_key() -> None:
+    cache.delete(_PENDING_ROTATION_ENCRYPTION_CACHE_KEY)
 
 
 class OnboardingError(Exception):
@@ -40,7 +89,12 @@ def get_verification_file_content() -> str:
     site_verification = SiteVerification.objects.filter(pk=1).first()
     if site_verification is None:
         raise OnboardingError("No domain-verification request_id has been set yet")
-    _, signing_priv = get_signing_keys()
+    # A rotation in progress signs this with the NEW key being submitted (see
+    # set_pending_rotation_signing_key's own docstring for why) — falls back to the
+    # normal on-disk key for an ordinary first-time Subscribe.
+    signing_priv = get_pending_rotation_signing_key()
+    if signing_priv is None:
+        _, signing_priv = get_signing_keys()
     return build_verification_file_content(
         request_id=site_verification.request_id, signing_private_key_b64=signing_priv
     )
@@ -67,9 +121,21 @@ def approve(domain: str) -> OnboardingStatus:
     return status
 
 
-def _build_subscribe_payload(*, domain: str, request_id: str) -> dict:
-    signing_pub, _ = get_signing_keys()
-    encryption_pub, _ = get_encryption_keys()
+def _build_subscribe_payload(
+    *,
+    domain: str,
+    request_id: str,
+    signing_public_key: str | None = None,
+    encryption_public_key: str | None = None,
+) -> dict:
+    """`signing_public_key`/`encryption_public_key` override what's declared in the
+    payload's `entity.key_pair` — used by a rotation to submit the *new* public keys
+    while `submit_subscribe`'s own Authorization-header signing (via
+    `registry_client.subscribe` -> `get_signing_keys()`) still uses whatever's on disk
+    (the old key, not yet rotated). Defaults to the current on-disk keys for an ordinary
+    first-time Subscribe, unchanged from before."""
+    signing_pub = signing_public_key or get_signing_keys()[0]
+    encryption_pub = encryption_public_key or get_encryption_keys()[0]
     now = timezone.now()
     later = now + timezone.timedelta(days=365)
     return {
@@ -100,12 +166,25 @@ def _build_subscribe_payload(*, domain: str, request_id: str) -> dict:
     }
 
 
-def submit_subscribe(domain: str) -> OnboardingStatus:
+def submit_subscribe(
+    domain: str,
+    *,
+    signing_public_key: str | None = None,
+    encryption_public_key: str | None = None,
+) -> OnboardingStatus:
     """Submits Subscribe to the Registry for this domain. Refuses to proceed unless the
     manual approval gate has been passed (3.1: 'don't auto-approve'). Generates a fresh
     request_id, publishes it as the current domain-verification content, then uses that
     SAME request_id in the Subscribe payload — guaranteeing Registry's synchronous fetch
-    of /ondc-site-verification.html (triggered by this call) sees a file that matches."""
+    of /ondc-site-verification.html (triggered by this call) sees a file that matches.
+
+    `signing_public_key`/`encryption_public_key`: only passed by a key rotation —
+    submits these as the *new* key_pair in the payload while the actual HTTP request is
+    still signed with whatever's currently on disk. Registry's own
+    `verify_subscribe_authorization` requires exactly this split for a re-Subscribe: the
+    Authorization header must be signed with the CURRENTLY REGISTERED key, while the
+    domain-ownership verification file it fetches via callback must be signed with the
+    NEW key. Get this wrong and Registry returns a clean, expected `401 UNAUTHORIZED`."""
     status = get_or_create_status(domain)
     if not status.approved_for_subscribe:
         raise OnboardingError(
@@ -119,7 +198,12 @@ def submit_subscribe(domain: str) -> OnboardingStatus:
         )
 
     request_id = request_domain_verification()
-    payload = _build_subscribe_payload(domain=domain, request_id=request_id)
+    payload = _build_subscribe_payload(
+        domain=domain,
+        request_id=request_id,
+        signing_public_key=signing_public_key,
+        encryption_public_key=encryption_public_key,
+    )
 
     # Real, deeper race found live in BPP's identical code (2026-07-26, root-caused
     # after a first fix here turned out insufficient on its own): Registry's own
@@ -174,8 +258,14 @@ def handle_on_subscribe(payload: dict) -> dict:
     challenge just resolved (Registry's callback payload carries subscriber_id only, not
     domain), but responding correctly is the strongest local signal available short of
     polling Lookup (which Phase 3.4's trust-establishment utilities do for the
-    authoritative check)."""
-    _, encryption_priv = get_encryption_keys()
+    authoritative check).
+
+    A rotation in progress decrypts this with the NEW encryption key being submitted
+    (see set_pending_rotation_encryption_key's own docstring for why) — falls back to
+    the normal on-disk key for an ordinary first-time Subscribe."""
+    encryption_priv = get_pending_rotation_encryption_key()
+    if encryption_priv is None:
+        _, encryption_priv = get_encryption_keys()
     registry_identity = registry_client.get_registry_identity()
     answer = decrypt_challenge(
         encrypted_challenge=payload["challenge"],

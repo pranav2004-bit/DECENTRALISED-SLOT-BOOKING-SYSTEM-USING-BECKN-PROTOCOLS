@@ -110,6 +110,16 @@ services:
         condition: service_healthy
       beckn-gateway:
         condition: service_healthy
+      bpp-backend:
+        condition: service_healthy
+      bpp-medical-backend:
+        condition: service_healthy
+      bpp-automotive-backend:
+        condition: service_healthy
+      bap-backend:
+        condition: service_healthy
+      bap-y-backend:
+        condition: service_healthy
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     command: daemon --docker
@@ -156,6 +166,12 @@ services:
         condition: service_started
     ports:
       - "8001:8000"
+    # Same shared key-rotation-scheduler mechanism as registry/beckn-gateway/bpp-backend
+    # above — BAP's own onboarding_rotate_keys is now live-verified end-to-end (2026-09-06).
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-exec.rotate-bap-keys.schedule: "@daily"
+      ofelia.job-exec.rotate-bap-keys.command: "python manage.py onboarding_rotate_keys ONDC:RET13"
 
   bap-web:
     build:
@@ -185,6 +201,15 @@ services:
         condition: service_started
     ports:
       - "8002:8000"
+    # ofelia's daemon (the key-rotation-scheduler sidecar) reads these labels off this
+    # container directly, same mechanism already used for registry/beckn-gateway above
+    # — BPP's own onboarding_rotate_keys command is now live-verified end-to-end
+    # (2026-09-06) and follows the identical generate-in-memory/submit-before-persist
+    # design as Gateway's, so it's safe to put on the same automated cadence.
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-exec.rotate-bpp-keys.schedule: "@daily"
+      ofelia.job-exec.rotate-bpp-keys.command: "python manage.py onboarding_rotate_keys ONDC:RET13"
 
   # livetracker4.md §2.1 cutover (2026-08-02): BPP's audit-log/metrics/WebSocket-
   # broadcast consumers no longer run inline inside bpp-backend's own request path —
@@ -248,6 +273,12 @@ services:
         condition: service_started
     ports:
       - "8004:8000"
+    # Same shared key-rotation-scheduler mechanism as bpp-backend above — same codebase
+    # (BPP/backend/Dockerfile), own domain (SUPPORTED_DOMAINS=ONDC:SRV13 in .env.medical).
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-exec.rotate-bpp-medical-keys.schedule: "@daily"
+      ofelia.job-exec.rotate-bpp-medical-keys.command: "python manage.py onboarding_rotate_keys ONDC:SRV13"
 
   bpp-medical-worker:
     build:
@@ -289,6 +320,12 @@ services:
         condition: service_started
     ports:
       - "8005:8000"
+    # Same shared key-rotation-scheduler mechanism as bpp-backend above — same codebase
+    # (BPP/backend/Dockerfile), own domain (SUPPORTED_DOMAINS=BECKN:AUTO01 in .env.automotive).
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-exec.rotate-bpp-automotive-keys.schedule: "@daily"
+      ofelia.job-exec.rotate-bpp-automotive-keys.command: "python manage.py onboarding_rotate_keys BECKN:AUTO01"
 
   bpp-automotive-worker:
     build:
@@ -330,6 +367,14 @@ services:
         condition: service_started
     ports:
       - "8006:8000"
+    # Same shared codebase/fix as bap-backend above (BAP/backend/Dockerfile) — not yet
+    # onboarded in this environment (zero OnboardingStatus rows, confirmed 2026-09-06),
+    # so this job will fail safely (logged as a failed ofelia run, not a crash) until
+    # that's done — same situation as BPP's medical/automotive instances.
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-exec.rotate-bap-y-keys.schedule: "@daily"
+      ofelia.job-exec.rotate-bap-y-keys.command: "python manage.py onboarding_rotate_keys ONDC:RET13"
 
   bap-y-web:
     build:

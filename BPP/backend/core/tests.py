@@ -127,13 +127,7 @@ def onboarding_settings(settings, tmp_path):
     settings.SUBSCRIBER_ID = "bpp.example.com"
     settings.UNIQUE_KEY_ID = "key-1"
     settings.SUBSCRIBER_URL = "https://bpp.example.com"
-    from core import participant_keys
-
-    participant_keys.get_signing_keys.cache_clear()
-    participant_keys.get_encryption_keys.cache_clear()
     yield settings
-    participant_keys.get_signing_keys.cache_clear()
-    participant_keys.get_encryption_keys.cache_clear()
 
 
 @pytest.mark.django_db
@@ -141,7 +135,6 @@ def test_participant_keys_persist_across_calls(onboarding_settings):
     from core import participant_keys
 
     pub1, priv1 = participant_keys.get_signing_keys()
-    participant_keys.get_signing_keys.cache_clear()
     pub2, priv2 = participant_keys.get_signing_keys()
     assert (pub1, priv1) == (pub2, priv2)
     assert Path(onboarding_settings.SIGNING_PRIVATE_KEY_PATH).exists()

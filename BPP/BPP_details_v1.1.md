@@ -130,6 +130,8 @@ The Beckn Provider Platform (BPP) communicates directly with the following compo
 
 > **Implementation note:** the Registry also performs domain-ownership verification during Subscribe by issuing a direct, unauthenticated `GET` to the BPP's own `ondc-site-verification.html` (served by the BPP itself, distinct from the JSON `/on_subscribe` callback above) and validating the signed content before accepting the submitted key.
 
+> **Implementation note (2026-09-06, `SECURITY.md`/`RUNBOOK.md` §"BPP received the identical rotation fix"):** BPP's signing/encryption key rotation (`onboarding_rotate_keys <domain-code>`) is now automated on the same 90-day cadence as Registry/Gateway, wired into the shared `key-rotation-scheduler` sidecar. A rotation generates new keys in memory and submits them to Registry via re-Subscribe *before* ever writing them to disk — the old key stays live and signing throughout the attempt, only overwritten once Registry actually confirms the new identity. See `SECURITY.md` for the full fix history (three latent bugs ported from, and one new bug found beyond, the equivalent Gateway fix).
+
 ## 7. Internal Communication Mechanism
 
 | Communication Between | Communication Mechanism |

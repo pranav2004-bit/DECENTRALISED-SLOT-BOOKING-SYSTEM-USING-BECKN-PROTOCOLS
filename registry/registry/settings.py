@@ -156,6 +156,14 @@ SECURE_REFERRER_POLICY = "no-referrer"
 SECURE_SSL_REDIRECT = not DEBUG and not TESTING
 SESSION_COOKIE_SECURE = not DEBUG and not TESTING
 CSRF_COOKIE_SECURE = not DEBUG and not TESTING
+# Real gap found live deploying behind Caddy (livetracker5.md's client-presentation
+# deployment, 2026-09-25): a TLS-terminating reverse proxy forwards plain HTTP to
+# this container, so Django's own `request.is_secure()` is always False unless told
+# to trust the proxy's `X-Forwarded-Proto` header instead — without this, every
+# request satisfies SECURE_SSL_REDIRECT's condition and gets redirected to itself,
+# forever. Caddy's `reverse_proxy` directive sets this header by default; no other
+# app in this codebase has SECURE_SSL_REDIRECT at all, so only Registry needed this.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # --- Observability (per OBSERVABILITY.md) ---
 OBSERVABILITY_READINESS_CHECKS = [

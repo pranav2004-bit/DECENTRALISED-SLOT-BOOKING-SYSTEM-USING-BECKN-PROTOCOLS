@@ -31,6 +31,21 @@ services:
       - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data # persists the issued cert/key across container restarts
       - caddy-config:/config
+    # Real gap found live during Stage 2 onboarding: Registry (running on this same
+    # EC2 host) calls each participant's own public SUBSCRIBER_URL for the real
+    # on_subscribe verification challenge — a call from inside this host, out through
+    # its own public IP, and back in (hairpin NAT), which AWS's VPC networking does
+    # not reliably support and which hung until the caller's own client timeout
+    # fired. This alias makes Docker's internal DNS resolve PUBLIC_HOSTNAME straight
+    # to this container for every other service on this same compose network — the
+    # TLS handshake still succeeds (Caddy's cert is genuinely for that hostname), the
+    # hairpin round-trip through AWS's public network is just skipped entirely. Real
+    # external callers (a browser, Razorpay's webhook) are unaffected — they only
+    # ever resolve PUBLIC_HOSTNAME via real public DNS (nip.io), never this alias.
+    networks:
+      default:
+        aliases:
+          - "${PUBLIC_HOSTNAME}"
     depends_on:
       - registry
       - bap-backend

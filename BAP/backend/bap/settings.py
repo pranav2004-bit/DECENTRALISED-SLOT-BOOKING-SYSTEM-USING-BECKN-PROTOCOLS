@@ -57,6 +57,21 @@ EVENT_BUS_URL = env("EVENT_BUS_URL", default=REDIS_URL)
 EVENT_BUS_QUEUE_NAME = "bap-internal-events"
 EVENT_BUS_DLQ_NAME = env("EVENT_BUS_DLQ_NAME", default="bap-internal-dlq")
 
+# livetracker5.md Phase 1.4: the vendor's opaque bearer API key — a plain secret
+# file read (shared/payment_gateway's own adapter reads the raw text at this path),
+# not the structured signing/encryption key-pair format shared/key_rotation handles;
+# that module is explicitly not reused here (Phase 1.4's own corrected-scope note).
+PAYMENT_GATEWAY_API_KEY_PATH = env("PAYMENT_GATEWAY_API_KEY_PATH", default="")
+# Phase 2.1: Razorpay's own key_id is a public identifier, not a secret — a plain
+# env var. key_secret is PAYMENT_GATEWAY_API_KEY_PATH above; the webhook secret
+# (Phase 2.2) gets the same file-mount treatment as the API key, since it's a real
+# secret too. All empty by default — core/apps.py's ready() hook skips adapter
+# registration gracefully when unset (sandbox credentials, explicitly authorized
+# per this tracker's own Rule 4 — not present in this codebase or CI).
+RAZORPAY_KEY_ID = env("RAZORPAY_KEY_ID", default="")
+PAYMENT_GATEWAY_BASE_URL = env("PAYMENT_GATEWAY_BASE_URL", default="")
+PAYMENT_GATEWAY_WEBHOOK_SECRET_PATH = env("PAYMENT_GATEWAY_WEBHOOK_SECRET_PATH", default="")
+
 HTTP_CLIENT_TIMEOUT_MS = env.int("HTTP_CLIENT_TIMEOUT_MS", default=5000)
 HTTP_CLIENT_MAX_RETRIES = env.int("HTTP_CLIENT_MAX_RETRIES", default=3)
 HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD = env.int("HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD", default=5)
@@ -100,6 +115,19 @@ INSTALLED_APPS = [
 # only, see shared/realtime/consumers.py. "daphne" must be first in INSTALLED_APPS per
 # Channels' own documented setup.
 ASGI_APPLICATION = "bap.asgi.application"
+
+# livetracker5.md Phase 3.3: real payment-status push needs `group_send` to fan out
+# to a specific connected browser, which the default in-memory channel layer only
+# does within a single process — Redis-backed, matching BPP's own identical
+# CHANNEL_LAYERS config (bpp/settings.py) for the same reason, not a new pattern.
+# Never configured for BAP before this phase — FoundationConsumer alone never
+# needed groups.
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {"hosts": [REDIS_URL]},
+    }
+}
 
 MIDDLEWARE = [
     "django_observability.middleware.CorrelationIdMiddleware",

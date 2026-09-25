@@ -25,6 +25,18 @@ const STATUS_LABEL: Record<string, string> = {
   CANCELLED: 'Cancelled',
 };
 
+const PAYMENT_STATUS_LABEL: Record<string, string> = {
+  SUCCEEDED: 'Paid',
+  REFUNDED: 'Refunded',
+  PARTIALLY_REFUNDED: 'Partially refunded',
+};
+
+const PAYMENT_STATUS_CLASS: Record<string, string> = {
+  SUCCEEDED: 'bg-green-100 text-green-800',
+  REFUNDED: 'bg-neutral-100 text-neutral-600',
+  PARTIALLY_REFUNDED: 'bg-amber-100 text-amber-800',
+};
+
 function formatSlotTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
     weekday: 'short',
@@ -88,9 +100,9 @@ function OrdersDashboard() {
   // (app/resources/[resourceId]/availability/page.tsx).
   const handleRealtimeMessage = useCallback((raw: unknown) => {
     if (raw == null || typeof raw !== 'object') return;
-    const message = raw as { type?: string; order?: Order };
+    const message = raw as { type?: string; order?: Partial<Order> & { transaction_id?: string } };
     if (message.type === 'order.confirmed' && message.order) {
-      const incoming = message.order;
+      const incoming = message.order as Order;
       setOrders((prev) => {
         const existing = prev ?? [];
         // A real refresh (e.g. a manual reload racing the live broadcast for the
@@ -98,6 +110,16 @@ function OrdersDashboard() {
         if (existing.some((o) => o.transaction_id === incoming.transaction_id)) return existing;
         return [incoming, ...existing];
       });
+    } else if (message.type === 'order.payment_status_changed' && message.order) {
+      // livetracker5.md Phase 4.1: the broadcast only carries transaction_id/
+      // resource_id/payment_status (core/realtime.py::broadcast_payment_status),
+      // not a full Order — merge into the existing row rather than replacing it.
+      const { transaction_id, payment_status } = message.order;
+      setOrders((prev) =>
+        (prev ?? []).map((o) =>
+          o.transaction_id === transaction_id ? { ...o, payment_status: payment_status ?? o.payment_status } : o
+        )
+      );
     }
   }, []);
 
@@ -140,9 +162,20 @@ function OrdersDashboard() {
                 <p className="text-sm font-medium text-neutral-900">{order.resource_name}</p>
                 <p className="text-xs text-neutral-600">{formatSlotTime(order.slot_time)}</p>
               </div>
-              <span className="rounded-full bg-neutral-100 px-2.5 py-0.5 text-xs font-medium text-neutral-700">
-                {STATUS_LABEL[order.status] ?? order.status}
-              </span>
+              <div className="flex items-center gap-2">
+                {order.payment_status && (
+                  <span
+                    className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                      PAYMENT_STATUS_CLASS[order.payment_status] ?? 'bg-neutral-100 text-neutral-700'
+                    }`}
+                  >
+                    {PAYMENT_STATUS_LABEL[order.payment_status] ?? order.payment_status}
+                  </span>
+                )}
+                <span className="rounded-full bg-neutral-100 px-2.5 py-0.5 text-xs font-medium text-neutral-700">
+                  {STATUS_LABEL[order.status] ?? order.status}
+                </span>
+              </div>
             </li>
           ))}
         </ul>

@@ -25,7 +25,7 @@ from django.conf import settings
 from django.utils import timezone
 from django_observability.context import correlation_id_var
 
-from . import registry_client, trust
+from . import payment_service, registry_client, trust
 from .crypto import sign_outbound_request
 from .models import SearchSession
 from .notifications import notify_booking_cancelled_in_background
@@ -241,3 +241,11 @@ def record_on_cancel_result(*, payload: dict) -> None:
     # the same value either way.
     if error is None:
         notify_booking_cancelled_in_background(session=session, order=session.confirmed_order)
+
+        # livetracker5.md Phase 4.2: this one hook covers both BAP- and BPP-initiated
+        # cancellations, since both converge on this real /on_cancel wire callback
+        # regardless of who requested the cancellation. A no-op if nothing was ever
+        # paid (payment_service.refund_if_paid checks the payment's own status), and
+        # never raises — a downstream refund problem must never reopen or fail an
+        # already-genuine cancellation.
+        payment_service.refund_if_paid(transaction_id=transaction_id)

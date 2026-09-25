@@ -193,6 +193,25 @@ class BusinessOrdersConsumer(AsyncWebsocketConsumer):
             return
         await self.send(text_data=json.dumps({"type": "order.confirmed", "order": event["order"]}))
 
+    async def order_payment_status_changed(self, event):
+        """livetracker5.md Phase 4.1 — same re-validation discipline as
+        `order_confirmed` above, same `resource-{resource_id}-orders` group, just a
+        different `type`."""
+        user = await get_user(self.scope)
+        if not user.is_authenticated:
+            await self.close(code=4401)
+            return
+        resource_id = event["order"]["resource_id"]
+        group_name = f"resource-{resource_id}-orders"
+        if not await self._user_can_access_resource_id(user, resource_id):
+            await self.channel_layer.group_discard(group_name, self.channel_name)
+            if group_name in self.group_names:
+                self.group_names.remove(group_name)
+            return
+        await self.send(
+            text_data=json.dumps({"type": "order.payment_status_changed", "order": event["order"]})
+        )
+
     @database_sync_to_async
     def _resolve_order_groups(self, user) -> list[str]:
         BusinessAccount = get_user_model()

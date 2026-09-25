@@ -55,7 +55,7 @@ export default function RootLayout({
     <html lang="en" className="h-full antialiased" style={brandStyle}>
       <body className="min-h-full flex flex-col bg-white text-neutral-900">
         <PWARegister />
-        <AppShell appName="Provider App">{children}</AppShell>
+        <AppShell appName={BRAND.name}>{children}</AppShell>
       </body>
     </html>
   );

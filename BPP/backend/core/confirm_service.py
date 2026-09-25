@@ -225,6 +225,15 @@ def dispatch_on_confirm(*, payload: dict, correlation_id: str | None = None) -> 
             confirmed_booking = next(b for b in confirmed_bookings if b.id == booking.id)
             resources = [b.slot.resource for b in confirmed_bookings]
             total_value = sum(r.price_value for r in resources)
+            # livetracker5.md Phase 0.4/1.5: persist this group's combined confirmed
+            # price on every Booking in the group — the only place BPP's own confirmed
+            # total is durably recorded, needed for Phase 4.3's collected_by=BPP charge
+            # path and future reconciliation (§6.3), independent of BAP's own
+            # SearchSession.confirmed_order.
+            Booking.objects.filter(id__in=[b.id for b in confirmed_bookings]).update(
+                confirmed_total_value=total_value,
+                confirmed_total_currency=resources[0].price_currency,
+            )
             resolved_order = {
                 "id": str(confirmed_booking.id),
                 "status": confirmed_booking.status,

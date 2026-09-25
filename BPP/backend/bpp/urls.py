@@ -68,6 +68,7 @@ urlpatterns = [
     path("select", core_views.select_view, name="select"),
     path("init", core_views.init_view, name="init"),
     path("confirm", core_views.confirm_view, name="confirm"),
+    path("payment_status", core_views.payment_status_view, name="payment-status"),
     path("status", core_views.status_view, name="status"),
     path("cancel", core_views.cancel_view, name="cancel"),
     path("update", core_views.update_view, name="update"),

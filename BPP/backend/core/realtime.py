@@ -79,6 +79,43 @@ def broadcast_order_confirmed_consumer(event: dict) -> None:
     broadcast_order_confirmed(booking)
 
 
+def broadcast_payment_status(booking) -> None:
+    """livetracker5.md Phase 4.1: fans a real payment-status change out to the same
+    `resource-{resource_id}-orders` group `broadcast_order_confirmed` already uses —
+    the same live Orders dashboard connection, a new `type` on it, not a new group or
+    a new consumer class."""
+    layer = get_channel_layer()
+    if layer is None:
+        return
+    async_to_sync(layer.group_send)(
+        f"resource-{booking.slot.resource_id}-orders",
+        {
+            "type": "order.payment_status_changed",
+            "order": {
+                "transaction_id": booking.holder_ref,
+                "resource_id": str(booking.slot.resource_id),
+                "payment_status": booking.payment_status,
+            },
+        },
+    )
+
+
+def broadcast_payment_status_consumer(event: dict) -> None:
+    """The `BookingEvent.PAYMENT_SUCCEEDED`/`PAYMENT_REFUNDED` counterpart to
+    `broadcast_order_confirmed_consumer` — same discipline: detached worker, fresh
+    DB read rather than trusting the event payload's own snapshot."""
+    from inventory_core.models import Booking
+
+    payload = event.get("payload") or {}
+    booking_id = payload.get("booking_id")
+    if not booking_id:
+        return
+    booking = Booking.objects.select_related("slot__resource").filter(pk=booking_id).first()
+    if booking is None:
+        return
+    broadcast_payment_status(booking)
+
+
 def broadcast_slot_update_consumer(event: dict) -> None:
     """Real, queue-driven counterpart to the direct `broadcast_slot_update()` calls
     `select_service.py`/`cancel_service.py`/`update_service.py` used to make inline —

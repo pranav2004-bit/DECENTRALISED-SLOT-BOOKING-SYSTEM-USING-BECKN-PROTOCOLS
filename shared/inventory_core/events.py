@@ -60,13 +60,19 @@ class BookingEvent:
     care about the booking/order side, not the underlying slot. Wired now: `CONFIRMED`
     (`reservation.confirm_hold`), `CANCELLED` (`reservation.release_expired_hold`/
     `reservation.cancel_booking`, §3.5), `RESCHEDULED` (`reservation.reschedule_active_booking`,
-    §3.5), `COMPLETED` (`reservation.complete_active_booking`, §4.5).
+    §3.5), `COMPLETED` (`reservation.complete_active_booking`, §4.5), `PAYMENT_SUCCEEDED`/
+    `PAYMENT_REFUNDED` (`payment_status_service.record_payment_status`, livetracker5.md Phase
+    4.1 — the one BookingEvent pair whose real trigger is a signed inbound notification from
+    BAP, not a local BPP-side reservation/confirm/cancel call, since BPP never collects
+    payment itself at `[MVP]`).
     """
 
     CONFIRMED = "BookingConfirmed"
     CANCELLED = "BookingCancelled"
     RESCHEDULED = "BookingRescheduled"
     COMPLETED = "BookingCompleted"
+    PAYMENT_SUCCEEDED = "BookingPaymentSucceeded"
+    PAYMENT_REFUNDED = "BookingPaymentRefunded"
 
 
 def publish_event(bus, event_type: str, *, version: int = CURRENT_EVENT_VERSION, **data) -> str:

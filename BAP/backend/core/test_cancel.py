@@ -5,17 +5,20 @@ receipt (verifying both the BPP and the forwarding Gateway).
 """
 
 import json
+from decimal import Decimal
 from unittest.mock import patch
 
+import payment_gateway
 import pytest
 import responses
 from django.contrib.auth import get_user_model
 from django.test import Client
 from django.urls import reverse
 
-from core import cancel_service
+from core import cancel_service, payment_service
 from core.crypto import generate_signing_key_pair, sign_outbound_request
-from core.models import SearchSession
+from core.models import PaymentTransaction, SearchSession
+from core.payment_service import initiate_payment
 
 Customer = get_user_model()
 
@@ -600,3 +603,95 @@ def test_record_on_cancel_result_does_not_email_on_a_real_error(mock_notify):
     cancel_service.record_on_cancel_result(payload=payload)
 
     mock_notify.assert_not_called()
+
+
+# --- Cancellation-triggered refund (livetracker5.md Phase 4.2) ---
+
+
+class _FakeRefundableAdapter(payment_gateway.PaymentGatewayAdapter):
+    """Minimal real adapter double for this integration test only — charge() always
+    succeeds, refund() always fully refunds. `shared/payment_gateway`'s own adapter
+    contract (Phase 1) is exercised for real here; only the vendor's network call
+    itself is faked."""
+
+    vendor_code = "razorpay"
+
+    def __init__(self):
+        self.refund_calls: list[dict] = []
+
+    def charge(self, *, amount, currency, idempotency_key, metadata):
+        return payment_gateway.PaymentResult(
+            status=payment_gateway.PaymentStatus.SUCCEEDED, vendor_txn_id=f"vendor-{idempotency_key}"
+        )
+
+    def refund(self, *, vendor_txn_id, amount, idempotency_key):
+        self.refund_calls.append(
+            {"vendor_txn_id": vendor_txn_id, "amount": amount, "idempotency_key": idempotency_key}
+        )
+        return payment_gateway.RefundResult(
+            status=payment_gateway.PaymentStatus.REFUNDED,
+            vendor_refund_id=f"refund-{idempotency_key}",
+            refunded_amount=amount,
+        )
+
+    def verify_webhook(self, *, payload, headers):
+        raise NotImplementedError
+
+    def get_status(self, *, vendor_txn_id):
+        raise NotImplementedError
+
+
+@pytest.mark.django_db
+@patch("core.payment_service.refund_if_paid")
+def test_record_on_cancel_result_triggers_a_refund_check_on_success(mock_refund):
+    """Wiring proof: a real successful /on_cancel calls into Phase 4.2's refund
+    hook for the same transaction — the real refund behavior itself (no-op vs.
+    real refund vs. leaving a declined refund's SUCCEEDED status intact) is
+    covered by `test_payment.py`'s own `refund_if_paid` tests, not duplicated here."""
+    _session_with_confirmed_order()
+    payload = _build_on_cancel_payload()
+
+    cancel_service.record_on_cancel_result(payload=payload)
+
+    mock_refund.assert_called_once_with(transaction_id="txn-1")
+
+
+@pytest.mark.django_db
+@patch("core.payment_service.refund_if_paid")
+def test_record_on_cancel_result_does_not_attempt_a_refund_on_a_real_error(mock_refund):
+    _session_with_confirmed_order()
+    payload = _build_on_cancel_payload(
+        error={"code": "SLOT_UNAVAILABLE", "message": "No matching booking for this order"}
+    )
+
+    cancel_service.record_on_cancel_result(payload=payload)
+
+    mock_refund.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_record_on_cancel_result_triggers_a_real_refund_of_a_succeeded_payment():
+    """The actual Phase 4.2 integration proof — not just 'was refund_if_paid called'
+    but a real PaymentTransaction, charged then refunded, through the real
+    /on_cancel receipt path end to end (both BAP- and BPP-initiated cancellations
+    converge on this same callback, per `record_on_cancel_result`'s own docstring)."""
+    payment_gateway.interface._REGISTRY.clear()
+    adapter = _FakeRefundableAdapter()
+    payment_gateway.register_adapter("razorpay", adapter)
+    try:
+        session = _session_with_confirmed_order()
+        session.confirmed_order["quote"] = {"price": {"currency": "INR", "value": "500.00"}}
+        session.save()
+        initiate_payment(transaction_id="txn-1")
+        txn = PaymentTransaction.objects.get(transaction_id_text="txn-1")
+        assert txn.status == PaymentTransaction.Status.SUCCEEDED
+
+        payload = _build_on_cancel_payload()
+        cancel_service.record_on_cancel_result(payload=payload)
+
+        txn.refresh_from_db()
+        assert txn.status == PaymentTransaction.Status.REFUNDED
+        assert txn.refunded_amount == Decimal("500.00")
+        assert len(adapter.refund_calls) == 1
+    finally:
+        payment_gateway.interface._REGISTRY.clear()

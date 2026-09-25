@@ -21,6 +21,7 @@ from . import (
     init_service,
     onboarding_service,
     pagination,
+    payment_status_service,
     rating_service,
     search_service,
     select_service,
@@ -519,6 +520,7 @@ def orders_list_view(request):
                     "resource_name": booking.slot.resource.name,
                     "slot_time": booking.slot.start_time.isoformat(),
                     "status": booking.status,
+                    "payment_status": booking.payment_status,
                 }
                 for booking in page
             ],
@@ -1025,6 +1027,31 @@ def confirm_view(request):
     )
     if status_code == 200:
         confirm_service.dispatch_on_confirm_in_background(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def payment_status_view(request):
+    """Real /payment_status receipt (livetracker5.md Phase 4.1) — a signed, direct
+    BAP->BPP notification (not a real Beckn protocol action; see
+    core/payment_status_service.py's module docstring for why it's still shaped
+    and verified exactly like one). ACKs synchronously, then records the real
+    status change directly (not backgrounded — a cheap DB write + local event
+    publish, no external network call, same discipline as record_on_cancel_result)."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = payment_status_service.validate_and_ack_payment_status(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    if status_code == 200:
+        payment_status_service.record_payment_status(payload=payload)
     return JsonResponse(response_body, status=status_code)
 
 

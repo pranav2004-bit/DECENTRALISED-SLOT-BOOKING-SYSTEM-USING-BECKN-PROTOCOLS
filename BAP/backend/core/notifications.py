@@ -36,6 +36,7 @@ import threading
 
 from django.conf import settings
 from django.core.mail import send_mail
+from django.db import connection
 
 logger = logging.getLogger("bap")
 
@@ -146,22 +147,47 @@ def notify_booking_rescheduled(*, session, order: dict) -> None:
     _send(subject=subject, message=message, recipient=recipient)
 
 
+def _run_then_close_connection(target, kwargs: dict) -> None:
+    """livetracker5.md Phase 4's own audit finding: a `threading.Thread` that
+    touches the ORM (even just a lazy FK access like `session.customer`) opens a
+    real DB connection on that thread — Django only auto-closes connections at
+    the end of a real request/response cycle (`request_finished`), never for an
+    arbitrary background thread. Left unclosed, a `daemon=True` thread's
+    connection lingers until Python garbage-collects it, which is not
+    deterministic and, under enough volume (many payment/booking notifications
+    in a short window), can exhaust a real connection limit — reproduced
+    directly: a full local test run hit exactly this wall after ~200 tests, every
+    one afterward failing with "database is being accessed by other users."
+    Every background-thread target in this codebase should run through this
+    wrapper, not just the payment one that surfaced the bug."""
+    try:
+        target(**kwargs)
+    finally:
+        connection.close()
+
+
 def notify_booking_confirmed_in_background(*, session, order: dict) -> None:
     thread = threading.Thread(
-        target=notify_booking_confirmed, kwargs={"session": session, "order": order}, daemon=True
+        target=_run_then_close_connection,
+        kwargs={"target": notify_booking_confirmed, "kwargs": {"session": session, "order": order}},
+        daemon=True,
     )
     thread.start()
 
 
 def notify_booking_cancelled_in_background(*, session, order: dict) -> None:
     thread = threading.Thread(
-        target=notify_booking_cancelled, kwargs={"session": session, "order": order}, daemon=True
+        target=_run_then_close_connection,
+        kwargs={"target": notify_booking_cancelled, "kwargs": {"session": session, "order": order}},
+        daemon=True,
     )
     thread.start()
 
 
 def notify_booking_rescheduled_in_background(*, session, order: dict) -> None:
     thread = threading.Thread(
-        target=notify_booking_rescheduled, kwargs={"session": session, "order": order}, daemon=True
+        target=_run_then_close_connection,
+        kwargs={"target": notify_booking_rescheduled, "kwargs": {"session": session, "order": order}},
+        daemon=True,
     )
     thread.start()

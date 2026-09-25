@@ -34,6 +34,16 @@ export default function LoginPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-md flex-1 flex-col px-4 py-8 sm:px-6 lg:px-8">
+      <button
+        type="button"
+        onClick={() => router.back()}
+        className="mb-4 flex w-fit items-center gap-1.5 text-sm font-medium text-neutral-600 transition-colors hover:text-neutral-900 focus:outline-none focus:ring-2 focus:ring-neutral-900 focus:ring-offset-2 rounded"
+      >
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M15 18l-6-6 6-6" />
+        </svg>
+        Back
+      </button>
       <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">Business login</h1>
 
       <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-4">

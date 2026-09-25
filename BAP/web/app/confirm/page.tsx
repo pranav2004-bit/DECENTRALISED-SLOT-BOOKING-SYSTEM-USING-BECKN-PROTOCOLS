@@ -96,10 +96,11 @@ function ConfirmPageInner() {
 
   useEffect(() => {
     if (confirmData?.confirmed_order && transactionId) {
-      const search = providerName ? `?provider_name=${encodeURIComponent(providerName)}` : '';
-      router.push(`/bookings/${transactionId}${search}`);
+      // livetracker5.md Phase 3.1: payment starts only after a real confirm
+      // success (the booking + quote are final) — never before.
+      router.push(`/payment?transaction_id=${encodeURIComponent(transactionId)}`);
     }
-  }, [confirmData?.confirmed_order, transactionId, providerName, router]);
+  }, [confirmData?.confirmed_order, transactionId, router]);
 
   if (!transactionId) {
     return (
@@ -246,9 +247,14 @@ function ConfirmPageInner() {
 
       {confirmData?.confirmed_order && (
         <div className="mt-6 flex flex-col items-center gap-3 text-center">
-          <p className="text-sm font-medium text-neutral-900">Booking confirmed! Redirecting…</p>
-          <Link href={`/bookings/${transactionId}`} className="text-sm underline">
-            View your booking
+          <p className="text-sm font-medium text-neutral-900">
+            Booking confirmed! Taking you to payment…
+          </p>
+          <Link
+            href={`/payment?transaction_id=${encodeURIComponent(transactionId as string)}`}
+            className="text-sm underline"
+          >
+            Continue to payment
           </Link>
         </div>
       )}

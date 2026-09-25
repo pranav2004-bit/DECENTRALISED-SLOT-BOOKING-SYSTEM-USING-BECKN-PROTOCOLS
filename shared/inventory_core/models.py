@@ -263,6 +263,32 @@ class Booking(models.Model):
         max_length=20, choices=FulfillmentStatus.choices, default=FulfillmentStatus.SCHEDULED
     )
 
+    # livetracker5.md Phase 0.4 (audit-identified subtask, Option A) / Phase 1.5: BPP's
+    # own confirmed price was never persisted anywhere before this — only recomputed on
+    # demand by confirm_service.py's dispatch_on_confirm(). Written once, at the exact
+    # moment that function already computes total_value (confirm_service.py's own
+    # `total_value = sum(r.price_value for r in resources)` line), immutable after.
+    # Nullable/defaulted so this is additive, not a rewrite of existing confirm
+    # behavior — a pre-existing Booking row simply has neither field set.
+    # `confirmed_total_value`/`confirmed_total_currency` cover the WHOLE confirmed
+    # group's combined quote (e.g. Automotive's bay+mechanic pair), not a per-booking
+    # split — every Booking in a multi-resource confirm group gets the same values.
+    confirmed_total_value = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    confirmed_total_currency = models.CharField(max_length=10, blank=True)
+
+    # livetracker5.md Phase 4.1: real payment-status visibility, pushed here by a
+    # signed BAP->BPP HTTP notification (`BPP/backend/core/payment_status_service.py`)
+    # whenever BAP's own `PaymentTransaction` reaches a state BPP needs to know about
+    # to treat this booking as genuinely committed revenue. Deliberately a loose
+    # CharField, not a choices-enforced one: this app has no PaymentTransaction of
+    # its own to be the single source of truth for the value (BAP is), so this is a
+    # best-effort mirror, not authoritative state — blank means "unknown/not paid
+    # yet", not "confirmed unpaid". Expected values mirror BAP's own
+    # `PaymentTransaction.Status`: "SUCCEEDED", "REFUNDED", "PARTIALLY_REFUNDED".
+    payment_status = models.CharField(max_length=20, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -184,7 +184,7 @@ services:
     depends_on:
       - bap-backend
     ports:
-      - "3000:3000"
+      - "3006:3000"
 
   bpp-backend:
     build:
@@ -250,7 +250,7 @@ services:
     depends_on:
       - bpp-backend
     ports:
-      - "3001:3000"
+      - "3007:3000"
 
   # --- livetracker7.md Phase 2: the 3 genuinely new participants ---
   # Every service below builds from the exact same Dockerfile/codebase as
@@ -304,7 +304,7 @@ services:
     depends_on:
       - bpp-medical-backend
     ports:
-      - "3003:3000"
+      - "3008:3000"
 
   bpp-automotive-backend:
     build:
@@ -351,7 +351,7 @@ services:
     depends_on:
       - bpp-automotive-backend
     ports:
-      - "3004:3000"
+      - "3009:3000"
 
   bap-y-backend:
     build:
@@ -387,7 +387,7 @@ services:
     depends_on:
       - bap-y-backend
     ports:
-      - "3005:3000"
+      - "3010:3000"
 
   # --- Monitoring (Phase 4.4 follow-up) ---
   # Optional, like gateway-cache — a local Prometheus/Grafana pair scraping the four

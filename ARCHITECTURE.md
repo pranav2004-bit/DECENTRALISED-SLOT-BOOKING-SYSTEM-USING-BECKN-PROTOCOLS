@@ -51,6 +51,7 @@ Framework/business logic reused across apps rather than duplicated per-app, impo
 | `testing` | Plain Python | all | Shared contract-schema test fixtures (`shared/testing/contract_schemas/`) |
 | `inventory_core` | Django app | BPP (Phase 2.2) | Generic, domain-agnostic `Resource`/`Slot`/`Booking`/`AvailabilityCalendar` booking core — concurrency-safe capacity, a two-machine Booking/Fulfillment state model, a Redis-backed TTL hold window, event-bus wiring, and a Domain Adapter extension point — built once and shared across Beauty/Healthcare/Automotive (`livetracker2.md` Phase 1, ADR-0003) |
 | `realtime` | Django app (Channels consumer) | BAP, BPP | `FoundationConsumer` — the WebSocket transport foundation (`livetracker2.md` Phase 2.4): accepts a connection, sends a `connected` ack, echoes `pong` on `ping`. Routed via each app's `asgi.py` `ProtocolTypeRouter` (served by `daphne`, replacing the previous WSGI/gunicorn-only setup which had no WebSocket capability). The full live-inventory-push feature built on top of this transport is Phase 4.4's job, not this module's |
+| `payment_gateway` | Plain Python | BAP (primary), BPP | Vendor-agnostic payment adapter interface — one `PaymentGatewayAdapter` contract (`charge`/`refund`/`verify_webhook`/`get_status`), N vendor implementations via a `register_adapter`/`get_adapter` registry, mirroring `inventory_core`'s own `domain_adapter.py` pattern (`livetracker5.md` Phase 1.1) |
 
 ## Repository Strategy
 

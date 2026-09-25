@@ -81,7 +81,7 @@ describe('ConfirmPage', () => {
     expect(await screen.findByText('Slot no longer available')).toBeInTheDocument();
   });
 
-  it('confirms the booking and redirects to the booking-status screen', async () => {
+  it('confirms the booking and redirects to the payment screen', async () => {
     const user = userEvent.setup({ delay: null });
     vi.spyOn(bookingApi, 'triggerInit').mockResolvedValue(undefined);
     vi.spyOn(bookingApi, 'getInitResult').mockResolvedValue({
@@ -101,7 +101,7 @@ describe('ConfirmPage', () => {
     await user.click(screen.getByRole('button', { name: 'Confirm booking' }));
 
     expect(await screen.findByText(/Booking confirmed/)).toBeInTheDocument();
-    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/bookings/tx-1?provider_name=Glow%20Salon'));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/payment?transaction_id=tx-1'));
   });
 
   it('livetracker3.md §6.1: shows both resources for a real Automotive multi-resource (bay+mechanic) order', async () => {

@@ -187,7 +187,10 @@ def notify_booking_cancelled_in_background(*, session, order: dict) -> None:
 def notify_booking_rescheduled_in_background(*, session, order: dict) -> None:
     thread = threading.Thread(
         target=_run_then_close_connection,
-        kwargs={"target": notify_booking_rescheduled, "kwargs": {"session": session, "order": order}},
+        kwargs={
+            "target": notify_booking_rescheduled,
+            "kwargs": {"session": session, "order": order},
+        },
         daemon=True,
     )
     thread.start()

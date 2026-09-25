@@ -549,7 +549,9 @@ def payment_result_view(request, transaction_id):
     except payment_service.PaymentError as exc:
         return error_response(exc.code, exc.message, exc.status_code)
     if result is None:
-        return error_response("NOT_FOUND", "no payment has been initiated for this transaction", 404)
+        return error_response(
+            "NOT_FOUND", "no payment has been initiated for this transaction", 404
+        )
     return JsonResponse(result, status=200)
 
 

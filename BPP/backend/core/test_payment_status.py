@@ -101,7 +101,10 @@ def _known(*, bap_pub):
 def _signed_body(payload, *, priv):
     body = json.dumps(payload).encode()
     header = sign_outbound_request(
-        body=body, subscriber_id="bap.example.com", unique_key_id="key-1", signing_private_key_b64=priv
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=priv,
     )
     return body, header
 
@@ -118,9 +121,14 @@ def test_payment_status_view_acks_a_valid_signature_and_records_the_status(resou
     known = _known(bap_pub=bap_pub)
 
     with responses.RequestsMock() as rsps:
-        rsps.add_callback(responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(known))
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(known)
+        )
         resp = Client().post(
-            reverse("payment-status"), data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+            reverse("payment-status"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=header,
         )
 
     assert resp.status_code == 200
@@ -156,9 +164,14 @@ def test_payment_status_view_rejects_an_unrecognized_status_before_acking(resour
     known = _known(bap_pub=bap_pub)
 
     with responses.RequestsMock() as rsps:
-        rsps.add_callback(responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(known))
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/lookup", callback=_lookup_callback(known)
+        )
         resp = Client().post(
-            reverse("payment-status"), data=body, content_type="application/json", HTTP_AUTHORIZATION=header
+            reverse("payment-status"),
+            data=body,
+            content_type="application/json",
+            HTTP_AUTHORIZATION=header,
         )
 
     assert resp.status_code == 400

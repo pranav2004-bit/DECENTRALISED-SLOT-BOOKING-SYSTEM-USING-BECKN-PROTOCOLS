@@ -92,7 +92,10 @@ def validate_and_ack_payment_status(
         return (
             build_nack_response(
                 context=context,
-                error={"code": "PAYMENT_STATUS_ERROR", "message": f"Unrecognized payment_status: {status!r}"},
+                error={
+                    "code": "PAYMENT_STATUS_ERROR",
+                    "message": f"Unrecognized payment_status: {status!r}",
+                },
             ),
             400,
         )

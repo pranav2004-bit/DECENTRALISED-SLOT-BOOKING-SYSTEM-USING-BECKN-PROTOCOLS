@@ -50,6 +50,10 @@ DISPATCH: dict[str, callable] = {
     BookingEvent.CANCELLED: _combined(audit_log_consumer, booking_lifecycle_consumer),
     BookingEvent.COMPLETED: _combined(audit_log_consumer),
     BookingEvent.RESCHEDULED: _combined(audit_log_consumer),
-    BookingEvent.PAYMENT_SUCCEEDED: _combined(audit_log_consumer, broadcast_payment_status_consumer),
-    BookingEvent.PAYMENT_REFUNDED: _combined(audit_log_consumer, broadcast_payment_status_consumer),
+    BookingEvent.PAYMENT_SUCCEEDED: _combined(
+        audit_log_consumer, broadcast_payment_status_consumer
+    ),
+    BookingEvent.PAYMENT_REFUNDED: _combined(
+        audit_log_consumer, broadcast_payment_status_consumer
+    ),
 }

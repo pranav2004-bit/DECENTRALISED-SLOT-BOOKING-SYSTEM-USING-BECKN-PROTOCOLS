@@ -21,8 +21,8 @@ from .razorpay_adapter import RazorpayAdapter, _sanitize_refund_idempotency_key,
 def _adapter():
     return RazorpayAdapter(
         key_id="rzp_test_fake",
-        key_secret="fake_secret",
-        webhook_secret="whsec_fake",
+        key_secret="fake_secret",  # pragma: allowlist secret
+        webhook_secret="whsec_fake",  # pragma: allowlist secret
         http_client=ResilientHttpClient(max_retries=0),
     )
 
@@ -231,8 +231,8 @@ def test_charge_survives_a_transport_level_retry_with_the_same_idempotency_key()
 
     adapter = RazorpayAdapter(
         key_id="rzp_test_fake",
-        key_secret="fake_secret",
-        webhook_secret="whsec_fake",
+        key_secret="fake_secret",  # pragma: allowlist secret
+        webhook_secret="whsec_fake",  # pragma: allowlist secret
         http_client=ResilientHttpClient(max_retries=3, backoff_factor=0.01),
     )
     result = adapter.charge(
@@ -261,8 +261,8 @@ def test_a_timeout_with_retries_exhausted_returns_a_clean_failed_result_not_a_cr
     responses.add(responses.POST, "https://api.razorpay.com/v1/orders", status=500)
     adapter = RazorpayAdapter(
         key_id="rzp_test_fake",
-        key_secret="fake_secret",
-        webhook_secret="whsec_fake",
+        key_secret="fake_secret",  # pragma: allowlist secret
+        webhook_secret="whsec_fake",  # pragma: allowlist secret
         http_client=ResilientHttpClient(max_retries=0),
     )
     result = adapter.charge(
@@ -283,8 +283,8 @@ def test_repeated_failures_through_the_adapter_actually_open_the_circuit_breaker
     http_client = ResilientHttpClient(max_retries=0, circuit_breaker_threshold=2)
     adapter = RazorpayAdapter(
         key_id="rzp_test_fake",
-        key_secret="fake_secret",
-        webhook_secret="whsec_fake",
+        key_secret="fake_secret",  # pragma: allowlist secret
+        webhook_secret="whsec_fake",  # pragma: allowlist secret
         http_client=http_client,
     )
     assert http_client.circuit_state == "closed"

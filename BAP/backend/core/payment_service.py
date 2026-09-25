@@ -107,7 +107,8 @@ def record_webhook_event(*, vendor: str, payload: bytes, headers: dict) -> None:
         )
         if txn is None:
             logger.warning(
-                "record_webhook_event: no PaymentTransaction for vendor=%r vendor_txn_id=%r, dropping",
+                "record_webhook_event: no PaymentTransaction for vendor=%r "
+                "vendor_txn_id=%r, dropping",
                 vendor,
                 event.vendor_txn_id,
             )
@@ -190,7 +191,8 @@ def refund_if_paid(*, transaction_id: str) -> None:
         _refund_if_paid(transaction_id=transaction_id)
     except Exception:
         logger.exception(
-            "refund_if_paid: unexpected error refunding transaction_id=%r, left for manual reconciliation",
+            "refund_if_paid: unexpected error refunding transaction_id=%r, "
+            "left for manual reconciliation",
             transaction_id,
         )
 
@@ -234,7 +236,8 @@ def _refund_if_paid(*, transaction_id: str) -> None:
         )
     except Exception:
         logger.exception(
-            "refund_if_paid: refund call raised for transaction_id=%r, leaving SUCCEEDED status intact",
+            "refund_if_paid: refund call raised for transaction_id=%r, "
+            "leaving SUCCEEDED status intact",
             transaction_id,
         )
         return
@@ -267,7 +270,9 @@ def _refund_if_paid(*, transaction_id: str) -> None:
     broadcast_payment_status_changed(transaction_id=transaction_id, status=new_status.value)
     # livetracker5.md Phase 4.1: a refund genuinely un-does "is this paid for" —
     # BPP needs this one just as much as the original SUCCEEDED notification.
-    notify_bpp_of_payment_status_in_background(transaction_id=transaction_id, status=new_status.value)
+    notify_bpp_of_payment_status_in_background(
+        transaction_id=transaction_id, status=new_status.value
+    )
 
 
 def get_payment_result(*, transaction_id: str, customer=None) -> dict | None:

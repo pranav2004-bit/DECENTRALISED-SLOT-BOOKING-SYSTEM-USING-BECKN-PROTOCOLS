@@ -31,9 +31,16 @@ class _FakeAdapter(payment_gateway.PaymentGatewayAdapter):
 
     def charge(self, *, amount, currency, idempotency_key, metadata):
         self.charge_calls.append(
-            {"amount": amount, "currency": currency, "idempotency_key": idempotency_key, "metadata": metadata}
+            {
+                "amount": amount,
+                "currency": currency,
+                "idempotency_key": idempotency_key,
+                "metadata": metadata,
+            }
         )
-        return payment_gateway.PaymentResult(status=self.outcome, vendor_txn_id=f"vendor-{idempotency_key}")
+        return payment_gateway.PaymentResult(
+            status=self.outcome, vendor_txn_id=f"vendor-{idempotency_key}"
+        )
 
     def refund(self, *, vendor_txn_id, amount, idempotency_key):
         raise NotImplementedError

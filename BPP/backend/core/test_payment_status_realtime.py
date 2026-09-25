@@ -71,7 +71,11 @@ async def test_a_payment_status_change_reaches_the_live_orders_dashboard():
 
     fresh = await database_sync_to_async(_mark_paid_and_refetch)()
     await database_sync_to_async(broadcast_payment_status_consumer)(
-        {"event_id": "1", "event_type": BookingEvent.PAYMENT_SUCCEEDED, "payload": {"booking_id": str(fresh.id)}}
+        {
+            "event_id": "1",
+            "event_type": BookingEvent.PAYMENT_SUCCEEDED,
+            "payload": {"booking_id": str(fresh.id)},
+        }
     )
 
     message = await communicator.receive_json_from()

@@ -314,7 +314,10 @@ class PaymentTransaction(models.Model):
         if is_refund_transition and refunded_amount is None:
             raise ValueError(f"refunded_amount is required when transitioning to {new_status!r}")
         if not is_refund_transition and refunded_amount is not None:
-            raise ValueError(f"refunded_amount is only meaningful for a REFUNDED/PARTIALLY_REFUNDED transition, not {new_status!r}")
+            raise ValueError(
+                f"refunded_amount is only meaningful for a REFUNDED/PARTIALLY_REFUNDED "
+                f"transition, not {new_status!r}"
+            )
 
         from django.utils import timezone
 

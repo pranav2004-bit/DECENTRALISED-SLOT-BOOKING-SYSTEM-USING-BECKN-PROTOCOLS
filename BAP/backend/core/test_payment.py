@@ -81,11 +81,12 @@ class _FakeAdapter(payment_gateway.PaymentGatewayAdapter):
         )
         if self.refund_error is not None:
             raise self.refund_error
+        declined = self.refund_outcome == payment_gateway.PaymentStatus.FAILED
         return payment_gateway.RefundResult(
             status=self.refund_outcome,
             vendor_refund_id=f"refund-{idempotency_key}",
-            refunded_amount=amount if self.refund_outcome != payment_gateway.PaymentStatus.FAILED else Decimal("0"),
-            failure_reason=None if self.refund_outcome != payment_gateway.PaymentStatus.FAILED else "REFUND_DECLINED",
+            refunded_amount=Decimal("0") if declined else amount,
+            failure_reason="REFUND_DECLINED" if declined else None,
         )
 
     def verify_webhook(self, *, payload, headers):
@@ -186,13 +187,17 @@ def test_initiate_payment_twice_does_not_double_charge(confirmed_session):
 
 
 def test_a_declined_charge_can_be_retried_as_a_genuinely_new_attempt(confirmed_session):
-    payment_gateway.register_adapter("razorpay", _FakeAdapter(outcome=payment_gateway.PaymentStatus.FAILED))
+    payment_gateway.register_adapter(
+        "razorpay", _FakeAdapter(outcome=payment_gateway.PaymentStatus.FAILED)
+    )
     first = initiate_payment(transaction_id="txn-pay-1")
     assert first["status"] == "FAILED"
 
     # A genuine retry (not a network-level replay) must be able to charge again —
     # not be silently swallowed as "already resolved."
-    payment_gateway.register_adapter("razorpay", _FakeAdapter(outcome=payment_gateway.PaymentStatus.SUCCEEDED))
+    payment_gateway.register_adapter(
+        "razorpay", _FakeAdapter(outcome=payment_gateway.PaymentStatus.SUCCEEDED)
+    )
     second = initiate_payment(transaction_id="txn-pay-1")
     assert second["status"] == "SUCCEEDED"
 
@@ -280,7 +285,9 @@ def test_refund_if_paid_is_a_no_op_when_nothing_was_ever_charged(confirmed_sessi
 
 
 def test_refund_if_paid_is_a_no_op_for_a_failed_payment(confirmed_session):
-    payment_gateway.register_adapter("razorpay", _FakeAdapter(outcome=payment_gateway.PaymentStatus.FAILED))
+    payment_gateway.register_adapter(
+        "razorpay", _FakeAdapter(outcome=payment_gateway.PaymentStatus.FAILED)
+    )
     initiate_payment(transaction_id="txn-pay-1")
 
     payment_service.refund_if_paid(transaction_id="txn-pay-1")
@@ -321,7 +328,9 @@ def test_refund_if_paid_is_a_safe_no_op_when_called_twice(confirmed_session):
     assert txn.status == PaymentTransaction.Status.REFUNDED
 
 
-def test_refund_if_paid_leaves_succeeded_status_intact_when_the_vendor_declines_the_refund(confirmed_session):
+def test_refund_if_paid_leaves_succeeded_status_intact_when_the_vendor_declines_the_refund(
+    confirmed_session,
+):
     adapter = _FakeAdapter(refund_outcome=payment_gateway.PaymentStatus.FAILED)
     payment_gateway.register_adapter("razorpay", adapter)
     initiate_payment(transaction_id="txn-pay-1")
@@ -333,7 +342,9 @@ def test_refund_if_paid_leaves_succeeded_status_intact_when_the_vendor_declines_
     assert txn.refunded_amount == Decimal("0.00")
 
 
-def test_refund_if_paid_leaves_succeeded_status_intact_when_the_refund_call_raises(confirmed_session):
+def test_refund_if_paid_leaves_succeeded_status_intact_when_the_refund_call_raises(
+    confirmed_session,
+):
     adapter = _FakeAdapter(refund_error=ConnectionError("vendor unreachable"))
     payment_gateway.register_adapter("razorpay", adapter)
     initiate_payment(transaction_id="txn-pay-1")
@@ -636,7 +647,9 @@ def test_notify_bpp_of_payment_status_sends_a_real_signed_notification(
         rsps.add_callback(
             responses.POST, "https://bpp.example.com/payment_status", callback=bpp_callback
         )
-        payment_service._notify_bpp_of_payment_status(transaction_id="txn-pay-1", status="SUCCEEDED")
+        payment_service._notify_bpp_of_payment_status(
+            transaction_id="txn-pay-1", status="SUCCEEDED"
+        )
 
     assert len(captured_requests) == 1
     forwarded = json.loads(captured_requests[0].body)
@@ -653,7 +666,9 @@ def test_notify_bpp_of_payment_status_is_a_safe_no_op_without_a_selected_bpp(con
 
 
 def test_notify_bpp_of_payment_status_is_a_safe_no_op_for_an_unknown_transaction(db):
-    payment_service._notify_bpp_of_payment_status(transaction_id="txn-does-not-exist", status="SUCCEEDED")
+    payment_service._notify_bpp_of_payment_status(
+        transaction_id="txn-does-not-exist", status="SUCCEEDED"
+    )
 
 
 def test_notify_bpp_of_payment_status_swallows_a_network_failure(
@@ -664,7 +679,9 @@ def test_notify_bpp_of_payment_status_swallows_a_network_failure(
     with responses.RequestsMock() as rsps:
         _mock_bpp_registry_lookup(rsps)
         rsps.add(responses.POST, "https://bpp.example.com/payment_status", status=502)
-        payment_service._notify_bpp_of_payment_status(transaction_id="txn-pay-1", status="SUCCEEDED")
+        payment_service._notify_bpp_of_payment_status(
+            transaction_id="txn-pay-1", status="SUCCEEDED"
+        )
 
 
 @patch("core.payment_service.notify_bpp_of_payment_status_in_background")

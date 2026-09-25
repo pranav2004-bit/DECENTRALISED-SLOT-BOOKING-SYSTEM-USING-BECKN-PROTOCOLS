@@ -15,7 +15,7 @@ from django.contrib.auth import get_user_model
 from django.test import Client
 from django.urls import reverse
 
-from core import cancel_service, payment_service
+from core import cancel_service
 from core.crypto import generate_signing_key_pair, sign_outbound_request
 from core.models import PaymentTransaction, SearchSession
 from core.payment_service import initiate_payment
@@ -621,7 +621,8 @@ class _FakeRefundableAdapter(payment_gateway.PaymentGatewayAdapter):
 
     def charge(self, *, amount, currency, idempotency_key, metadata):
         return payment_gateway.PaymentResult(
-            status=payment_gateway.PaymentStatus.SUCCEEDED, vendor_txn_id=f"vendor-{idempotency_key}"
+            status=payment_gateway.PaymentStatus.SUCCEEDED,
+            vendor_txn_id=f"vendor-{idempotency_key}",
         )
 
     def refund(self, *, vendor_txn_id, amount, idempotency_key):

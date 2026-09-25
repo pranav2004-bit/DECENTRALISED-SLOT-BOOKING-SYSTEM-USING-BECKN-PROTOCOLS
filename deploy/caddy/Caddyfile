@@ -1,0 +1,35 @@
+# Client-presentation deployment (see docker-compose.prod.yml) — one Caddy instance
+# terminates real HTTPS (automatic Let's Encrypt) for every backend service, each on
+# its own port, all under the EC2 instance's own public DNS hostname (no domain
+# purchase needed — Let's Encrypt issues real certs for AWS's own *.amazonaws.com
+# hostnames). {$PUBLIC_HOSTNAME} is read from the Caddy container's own environment
+# (set on the host before `docker compose up`, e.g. `export PUBLIC_HOSTNAME=ec2-...`).
+#
+# Port-based, not path-based, routing: keeps every Django app's own URL config,
+# CSRF/cookie behavior, and signed Beckn callback URLs exactly as they already are —
+# no path-stripping edge cases to debug under time pressure (livetracker5.md's own
+# deployment plan, Stage 1).
+
+{$PUBLIC_HOSTNAME}:9000 {
+	reverse_proxy registry:8000
+}
+
+{$PUBLIC_HOSTNAME}:9001 {
+	reverse_proxy bap-backend:8000
+}
+
+{$PUBLIC_HOSTNAME}:9002 {
+	reverse_proxy bpp-backend:8000
+}
+
+{$PUBLIC_HOSTNAME}:9003 {
+	reverse_proxy beckn-gateway:8000
+}
+
+{$PUBLIC_HOSTNAME}:9004 {
+	reverse_proxy bpp-medical-backend:8000
+}
+
+{$PUBLIC_HOSTNAME}:9005 {
+	reverse_proxy bpp-automotive-backend:8000
+}

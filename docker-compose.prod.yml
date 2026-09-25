@@ -1,0 +1,44 @@
+# Client-presentation deployment override (livetracker5.md's deployment plan, Stage 1).
+# Adds Caddy for real HTTPS on top of the existing docker-compose.yml services — nothing
+# in the base file is changed, this only adds one new service. Run alongside the base
+# file, naming only the backend services actually needed for the demo (registry,
+# beckn-gateway, bap-backend, bpp-backend x3 + their workers, caddy) — bap-y-backend/web,
+# prometheus/grafana, and key-rotation-scheduler are deliberately left out by omission,
+# not by profile (Compose only starts services you name plus their depends_on chain):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d \
+#     registry beckn-gateway bap-backend bpp-backend bpp-worker \
+#     bpp-medical-backend bpp-medical-worker bpp-automotive-backend bpp-automotive-worker \
+#     caddy
+#
+# PUBLIC_HOSTNAME must be set in the shell environment before this runs — see
+# deploy/caddy/Caddyfile's own header comment.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:?set PUBLIC_HOSTNAME to the EC2 instance's public DNS hostname}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+      - "9002:9002"
+      - "9003:9003"
+      - "9004:9004"
+      - "9005:9005"
+      - "80:80" # Let's Encrypt HTTP-01 challenge — Caddy needs this even though app traffic is on 9000-9005
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # persists the issued cert/key across container restarts
+      - caddy-config:/config
+    depends_on:
+      - registry
+      - bap-backend
+      - bpp-backend
+      - beckn-gateway
+      - bpp-medical-backend
+      - bpp-automotive-backend
+
+volumes:
+  caddy-data:
+  caddy-config:

@@ -144,26 +144,29 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_REFERRER_POLICY = "no-referrer"
-# HTTPS-only headers are gated on DEBUG so local/dev over plain HTTP keeps working;
-# real deployments terminate TLS in front of gunicorn and must set DJANGO_DEBUG=false.
-# Also gated on TESTING: the Django test client always speaks plain http://testserver
-# by design, and DEBUG alone isn't a reliable signal here — this module-level DEBUG is
-# read once at import time, before pytest-django's setup_test_environment() forces
-# settings.DEBUG=False later, so a CI run with no .env (DEBUG defaults False at import)
-# would otherwise force a 301 redirect on every test request. Same class of bug as
-# registry_keys.py's DEBUG-gated ephemeral-key fallback (Phase 2.1) — TESTING is the
-# correct signal for "is this a local/test run" regardless of the DEBUG env var.
-SECURE_SSL_REDIRECT = not DEBUG and not TESTING
+# Real gap found and corrected live deploying behind Caddy (livetracker5.md's
+# client-presentation deployment, 2026-09-25): SECURE_SSL_REDIRECT was previously
+# `not DEBUG and not TESTING`, on the assumption a real deployment might be reached
+# directly over plain HTTP by an untrusted caller needing an app-level redirect to
+# HTTPS. That assumption doesn't hold for this app — Registry is "backend-only,
+# called by other backends... never by a browser" (see this section's own comment
+# above) — and in this deployment topology, the overwhelming majority of Registry's
+# real traffic is *internal*, container-to-container plain HTTP on port 8000, which
+# has no TLS listener at all (only Caddy, in front of the whole stack, terminates
+# real TLS, on separate public ports). SECURE_SSL_REDIRECT=True made every one of
+# those internal calls (BAP/BPP/Gateway's REGISTRY_BASE_URL=http://registry:8000)
+# get 301'd to an unreachable https://registry:8000 — confirmed live: every non-
+# /health endpoint hung for a full 30s gunicorn WORKER_TIMEOUT and was SIGKILLed,
+# reproduced identically via loopback, 127.0.0.1, and cross-container calls, with
+# the client-side symptom being an SSL handshake timeout against a plain-HTTP-only
+# port (the client dutifully following the 301 to an https:// URL nothing serves).
+# Real TLS enforcement for genuine external traffic is Caddy's job at the true edge,
+# not this app's — matching the other 3 apps in this codebase, none of which sets
+# SECURE_SSL_REDIRECT at all. SESSION_COOKIE_SECURE/CSRF_COOKIE_SECURE stay as they
+# were (harmless — this app issues neither to a browser per the comment above).
+SECURE_SSL_REDIRECT = False
 SESSION_COOKIE_SECURE = not DEBUG and not TESTING
 CSRF_COOKIE_SECURE = not DEBUG and not TESTING
-# Real gap found live deploying behind Caddy (livetracker5.md's client-presentation
-# deployment, 2026-09-25): a TLS-terminating reverse proxy forwards plain HTTP to
-# this container, so Django's own `request.is_secure()` is always False unless told
-# to trust the proxy's `X-Forwarded-Proto` header instead — without this, every
-# request satisfies SECURE_SSL_REDIRECT's condition and gets redirected to itself,
-# forever. Caddy's `reverse_proxy` directive sets this header by default; no other
-# app in this codebase has SECURE_SSL_REDIRECT at all, so only Registry needed this.
-SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # --- Observability (per OBSERVABILITY.md) ---
 OBSERVABILITY_READINESS_CHECKS = [

@@ -268,28 +268,6 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="border-t border-neutral-200 bg-neutral-900 px-4 py-16 text-center sm:px-6 lg:px-8">
-        <h2 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
-          Your next customer is already searching.
-        </h2>
-        <p className="mx-auto mt-3 max-w-md text-base leading-relaxed text-neutral-300">
-          List your business and start getting discovered today - free for your first 6 months.
-        </p>
-        <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-          <Link
-            href="/signup"
-            className="w-full rounded-full bg-white px-7 py-3 text-sm font-semibold text-neutral-900 transition-colors hover:bg-neutral-100 focus:outline-none focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-neutral-900 sm:w-auto sm:text-base"
-          >
-            List your business
-          </Link>
-          <Link
-            href="/login"
-            className="w-full rounded-md border border-neutral-700 px-7 py-3 text-sm font-semibold text-white transition-colors hover:border-neutral-500 hover:bg-neutral-800 focus:outline-none focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-neutral-900 sm:w-auto sm:text-base"
-          >
-            Sign into console
-          </Link>
-        </div>
-      </section>
     </div>
   );
 }

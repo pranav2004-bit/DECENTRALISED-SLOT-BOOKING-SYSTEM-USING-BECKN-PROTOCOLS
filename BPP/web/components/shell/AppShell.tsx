@@ -5,11 +5,15 @@ import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
 import { RealtimeStatus } from './RealtimeStatus';
 import { AccountStatus } from './AccountStatus';
-import { BRAND } from '@/lib/brand';
 
 export function AppShell({ appName, children }: { appName: string; children: ReactNode }) {
   const pathname = usePathname();
   const isLanding = pathname === '/';
+  // Login/signup pages show neither the landing nav+CTAs nor the authenticated
+  // AccountStatus/RealtimeStatus block — a "Log in" link is redundant on the login
+  // page itself (the form already has its own), and a live-order WebSocket status is
+  // meaningless before you're authenticated at all.
+  const isAuthPage = pathname === '/login' || pathname === '/signup';
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
@@ -20,23 +24,17 @@ export function AppShell({ appName, children }: { appName: string; children: Rea
         Skip to main content
       </a>
       <header className="sticky top-0 z-40 border-b border-neutral-200 bg-white">
-        <div className="flex items-center py-3 pl-10 pr-6 sm:pl-14 sm:pr-8 lg:pl-20 lg:pr-12">
+        <div className="relative flex items-center py-3 pl-10 pr-6 sm:pl-14 sm:pr-8 lg:pl-20 lg:pr-12">
           <Link
             href="/"
             className="flex items-center gap-2 rounded focus:outline-none focus:ring-2 focus:ring-neutral-900"
           >
-            <span
-              aria-hidden="true"
-              className="flex h-8 items-center rounded-md bg-[var(--brand-600)] px-2 text-xs font-extrabold tracking-tight text-white"
-            >
-              {BRAND.monogram}
-            </span>
             <span className="text-sm font-semibold tracking-tight text-neutral-900 sm:text-base">
               {appName}
             </span>
           </Link>
           {isLanding && (
-            <nav className="ml-10 hidden items-center gap-6 xl:flex">
+            <nav className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-6 xl:flex">
               <a
                 href="#customers"
                 className="text-sm font-medium text-neutral-700 transition-colors hover:text-neutral-900"
@@ -84,20 +82,17 @@ export function AppShell({ appName, children }: { appName: string; children: Rea
                 List your business
               </Link>
             </div>
-          ) : (
+          ) : !isAuthPage ? (
             <div className="ml-auto flex items-center gap-4">
               <AccountStatus />
               <RealtimeStatus />
             </div>
-          )}
+          ) : null}
         </div>
       </header>
       <main id="main-content" className="flex flex-1 flex-col">
         {children}
       </main>
-      <footer className="border-t border-neutral-200 px-4 py-4 text-center text-xs text-neutral-500 sm:px-6 lg:px-8">
-        Beckn Slot Booking
-      </footer>
       {isLanding && (
         <button
           type="button"

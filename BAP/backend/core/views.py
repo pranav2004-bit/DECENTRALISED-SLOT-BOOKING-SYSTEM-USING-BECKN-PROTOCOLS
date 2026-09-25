@@ -1,5 +1,6 @@
 import json
 
+import payment_gateway
 from django.contrib.auth import authenticate, get_user_model, login, logout, password_validation
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpResponse, JsonResponse
@@ -16,6 +17,7 @@ from . import (
     init_service,
     onboarding_service,
     pagination,
+    payment_service,
     rating_service,
     search_service,
     select_service,
@@ -494,6 +496,86 @@ def on_confirm_view(request):
     if status_code == 200:
         confirm_service.record_on_confirm_result(payload=payload)
     return JsonResponse(response_body, status=status_code)
+
+
+@require_http_methods(["POST"])
+@rate_limit(limit_per_minute=10, scope="payment")
+@idempotent_view()
+def payment_trigger_view(request):
+    """Customer-facing payment-initiation trigger (livetracker5.md Phase 1.2/1.3,
+    §3.1). Deliberately NOT `@csrf_exempt` — a genuine same-origin browser POST
+    that moves real money, following `signup_view`/`login_view`'s precedent
+    instead of the network-callback default every `on_X` view above correctly
+    uses (Phase 3.1's own audit-identified correction). Takes only
+    `transaction_id`: the charge amount is always read server-side from the
+    session's own confirmed quote, never accepted from the request body
+    (Design Principle 2).
+
+    `@idempotent_view()` (§3.1): a client sending a real `Idempotency-Key` header
+    gets the exact same recorded response replayed on a retry, instead of the
+    view logic running twice — the web-layer double-submit protection, distinct
+    from and complementary to Phase 1.3's own vendor-call-level idempotency key
+    (that one guards the outbound Razorpay call even on an internal retry; this
+    one guards the browser's own POST from ever reaching the view a second
+    time), same split `confirm_trigger_view` above already documents."""
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    transaction_id = (payload.get("transaction_id") or "").strip()
+    if not transaction_id:
+        return error_response("VALIDATION_ERROR", "transaction_id is required", 400)
+
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        result = payment_service.initiate_payment(transaction_id=transaction_id, customer=customer)
+    except payment_service.PaymentError as exc:
+        return error_response(exc.code, exc.message, exc.status_code)
+
+    return JsonResponse(result, status=202)
+
+
+@require_http_methods(["GET"])
+def payment_result_view(request, transaction_id):
+    """Customer-facing payment-status poll — real terminal results may only exist
+    once a webhook arrives (Phase 2.2), so a `PENDING` status here is a normal
+    in-progress state for a hosted-checkout charge, not an error."""
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        result = payment_service.get_payment_result(
+            transaction_id=transaction_id, customer=customer
+        )
+    except payment_service.PaymentError as exc:
+        return error_response(exc.code, exc.message, exc.status_code)
+    if result is None:
+        return error_response(
+            "NOT_FOUND", "no payment has been initiated for this transaction", 404
+        )
+    return JsonResponse(result, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def razorpay_webhook_view(request):
+    """Real vendor-to-server webhook receipt (livetracker5.md Phase 2.2) —
+    `@csrf_exempt` like every other `on_X` network-callback view above, since
+    Razorpay can't hold a Django CSRF cookie; trust here comes entirely from
+    signature verification instead (Design Principle 5), the same split already
+    documented in SECURITY.md's CSRF section for `payment_trigger_view`'s own
+    deliberate exception. Not rate-limited like the customer-facing triggers —
+    a legitimate vendor can retry webhook delivery repeatedly (Razorpay's own
+    documented exponential-backoff-over-24h policy), and `record_webhook_event`
+    already treats a repeat of the current status as a safe no-op."""
+    try:
+        payment_service.record_webhook_event(
+            vendor="razorpay", payload=request.body, headers=request.headers
+        )
+    except payment_gateway.WebhookVerificationError:
+        return JsonResponse({"error": "invalid signature"}, status=401)
+    except LookupError:
+        return JsonResponse({"error": "payment gateway not configured"}, status=503)
+    return JsonResponse({"status": "ok"}, status=200)
 
 
 @csrf_exempt

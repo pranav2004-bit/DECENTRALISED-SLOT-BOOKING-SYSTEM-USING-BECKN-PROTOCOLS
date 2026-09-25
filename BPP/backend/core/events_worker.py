@@ -13,7 +13,11 @@ from inventory_core.consumers import audit_log_consumer
 from inventory_core.events import BookingEvent, SlotEvent, process_event
 
 from .metrics import booking_lifecycle_consumer, hold_created_consumer
-from .realtime import broadcast_order_confirmed_consumer, broadcast_slot_update_consumer
+from .realtime import (
+    broadcast_order_confirmed_consumer,
+    broadcast_payment_status_consumer,
+    broadcast_slot_update_consumer,
+)
 from .vendor_notifications import notify_vendor_order_confirmed_consumer
 
 
@@ -46,4 +50,10 @@ DISPATCH: dict[str, callable] = {
     BookingEvent.CANCELLED: _combined(audit_log_consumer, booking_lifecycle_consumer),
     BookingEvent.COMPLETED: _combined(audit_log_consumer),
     BookingEvent.RESCHEDULED: _combined(audit_log_consumer),
+    BookingEvent.PAYMENT_SUCCEEDED: _combined(
+        audit_log_consumer, broadcast_payment_status_consumer
+    ),
+    BookingEvent.PAYMENT_REFUNDED: _combined(
+        audit_log_consumer, broadcast_payment_status_consumer
+    ),
 }

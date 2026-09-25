@@ -5,9 +5,11 @@ onboarding_service.py for why one Subscribe call per domain, not a combined arra
 """
 
 import uuid
+from decimal import Decimal
 
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -208,3 +210,128 @@ class SearchSession(models.Model):
 
     def __str__(self) -> str:
         return f"SearchSession({self.transaction_id})"
+
+
+class PaymentTransaction(models.Model):
+    """Real payment record (livetracker5.md Phase 0.4 design, Phase 1.5 implementation)
+    — the system of record for a charge/refund attempt, independent of whatever a
+    vendor's own dashboard shows. Lives in `BAP/backend` because BAP collects by
+    default (`livetracker5.md` §0.2) — BPP-side collection (Phase 4.3) gets its own
+    equivalent once a real domain needs it, not a shared cross-app table.
+
+    `session` (not `booking`): this app has no `Booking` model — `shared/inventory_core`'s
+    `Booking` lives in BPP's own database. BAP's own per-transaction record is
+    `SearchSession` (keyed by `transaction_id`), so that is the real FK target here,
+    not the tracker's own shorthand wording ("booking reference") taken literally.
+
+    `amount`/`currency` are immutable once set (Design Principle 2) — read verbatim
+    from `SearchSession.confirmed_order["quote"]["price"]` by the caller before this
+    row is created, never re-derived or accepted from a request body.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        SUCCEEDED = "SUCCEEDED", "Succeeded"
+        FAILED = "FAILED", "Failed"
+        REFUNDED = "REFUNDED", "Refunded"
+        PARTIALLY_REFUNDED = "PARTIALLY_REFUNDED", "Partially Refunded"
+
+    class CollectedBy(models.TextChoices):
+        BAP = "bap", "BAP"
+        BPP = "bpp", "BPP"
+
+    # Valid edges only, mirroring shared/inventory_core/models.py's Booking._STATUS_
+    # TRANSITIONS pattern exactly (livetracker5.md Phase 0.4). FAILED is terminal on
+    # this row by design — a retry after a decline creates a NEW PaymentTransaction
+    # with a new idempotency_key, it never reopens a FAILED row.
+    _TRANSITIONS = {
+        Status.PENDING: {Status.SUCCEEDED, Status.FAILED},
+        Status.SUCCEEDED: {Status.REFUNDED, Status.PARTIALLY_REFUNDED},
+        Status.PARTIALLY_REFUNDED: {Status.PARTIALLY_REFUNDED, Status.REFUNDED},
+        Status.FAILED: set(),
+        Status.REFUNDED: set(),
+    }
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(
+        SearchSession,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="payment_transactions",
+    )
+    transaction_id_text = models.CharField(
+        max_length=255, db_index=True
+    )  # kept even if session is deleted — same precedent as BookingAuditLogEntry/Rating
+
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    currency = models.CharField(max_length=10)
+
+    vendor = models.CharField(max_length=50)
+    vendor_txn_id = models.CharField(max_length=255, blank=True)
+    # Deterministic, not a random UUID (Phase 1.3): derived from (transaction_id,
+    # attempt_purpose) so a genuine retry produces the SAME key — a network-level
+    # retry of the same attempt hits this same row, while a new attempt after a
+    # decline gets a new key and a new row.
+    idempotency_key = models.CharField(max_length=255, unique=True)
+
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    # Cumulative amount refunded so far — required to make PARTIALLY_REFUNDED auditable
+    # (a status string alone can't answer "how much of this was actually returned").
+    refunded_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    collected_by = models.CharField(
+        max_length=10, choices=CollectedBy.choices, default=CollectedBy.BAP
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    # Full state-transition timestamps (Phase 0.4's explicit requirement) — a heavier
+    # audit trail than most models in this codebase carry, justified because this is
+    # a financial record.
+    succeeded_at = models.DateTimeField(null=True, blank=True)
+    failed_at = models.DateTimeField(null=True, blank=True)
+    refunded_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self) -> str:
+        return f"PaymentTransaction({self.transaction_id_text}, {self.status})"
+
+    def transition_status(self, new_status: str, *, refunded_amount: Decimal | None = None) -> None:
+        """Raises `ValidationError` on any edge not in `_TRANSITIONS` instead of
+        silently allowing it — same contract as `Booking.transition_status`
+        (`shared/inventory_core/models.py`), the precedent this mirrors.
+
+        `refunded_amount` (livetracker5.md Phase 4.2): required for a REFUNDED/
+        PARTIALLY_REFUNDED transition — the field exists precisely to make a
+        partial refund auditable (see its own docstring above), so a transition
+        into either state without a real amount is a caller bug, not a valid call."""
+        allowed = self._TRANSITIONS.get(self.status, set())
+        if new_status not in allowed:
+            raise ValidationError(
+                f"invalid PaymentTransaction status transition: {self.status!r} -> "
+                f"{new_status!r}. Allowed from {self.status!r}: "
+                f"{sorted(allowed) or 'none (terminal state)'}."
+            )
+        is_refund_transition = new_status in (self.Status.REFUNDED, self.Status.PARTIALLY_REFUNDED)
+        if is_refund_transition and refunded_amount is None:
+            raise ValueError(f"refunded_amount is required when transitioning to {new_status!r}")
+        if not is_refund_transition and refunded_amount is not None:
+            raise ValueError(
+                f"refunded_amount is only meaningful for a REFUNDED/PARTIALLY_REFUNDED "
+                f"transition, not {new_status!r}"
+            )
+
+        from django.utils import timezone
+
+        now = timezone.now()
+        update_fields = ["status"]
+        self.status = new_status
+        if new_status == self.Status.SUCCEEDED:
+            self.succeeded_at = now
+            update_fields.append("succeeded_at")
+        elif new_status == self.Status.FAILED:
+            self.failed_at = now
+            update_fields.append("failed_at")
+        elif is_refund_transition:
+            self.refunded_at = now
+            self.refunded_amount = refunded_amount
+            update_fields.extend(["refunded_at", "refunded_amount"])
+        self.save(update_fields=update_fields)

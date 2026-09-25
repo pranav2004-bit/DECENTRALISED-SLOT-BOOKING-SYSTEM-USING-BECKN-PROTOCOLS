@@ -63,6 +63,13 @@ urlpatterns = [
         name="confirm-result",
     ),
     path("on_confirm", core_views.on_confirm_view, name="on_confirm"),
+    path("api/v1/payment", core_views.payment_trigger_view, name="payment-trigger"),
+    path(
+        "api/v1/payment/<str:transaction_id>",
+        core_views.payment_result_view,
+        name="payment-result",
+    ),
+    path("on_payment/razorpay", core_views.razorpay_webhook_view, name="razorpay-webhook"),
     path("api/v1/status", core_views.status_trigger_view, name="status-trigger"),
     path(
         "api/v1/status/<str:transaction_id>",

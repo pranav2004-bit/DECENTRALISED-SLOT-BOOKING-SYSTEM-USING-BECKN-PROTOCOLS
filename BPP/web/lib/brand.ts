@@ -34,6 +34,12 @@ export interface Brand {
    * brand has a real domainLabel, and the landing page's "Industries" section /
    * "3+ service categories" claim is removed for all 3, not made conditional. */
   domainLabel: string;
+  /** The one real Beckn/ONDC domain code this brand's own backend actually serves
+   * (matches BUSINESS_DOMAINS in lib/constants.ts — kept as an explicit code here,
+   * not derived from domainLabel by string-matching, since 'Beauty' vs 'Beauty &
+   * Wellness' don't match verbatim). Used to lock signup's category picker to the
+   * only domain this instance's backend can actually accept. */
+  domainCode: string;
   heroHeadline: string;
   heroSubtext: string;
   heroBadge: string;
@@ -50,6 +56,7 @@ const BRANDS: Record<BrandId, Brand> = {
     monogram: 'S',
     tagline: 'Keep every chair glowing.',
     domainLabel: 'Beauty',
+    domainCode: 'ONDC:RET13',
     heroHeadline: 'Never let a chair sit empty.',
     heroSubtext:
       "List your salon on an open booking network and get discovered by real customers - no cost to start, you're covered for six months.",
@@ -65,6 +72,7 @@ const BRANDS: Record<BrandId, Brand> = {
     monogram: 'C',
     tagline: 'Run your practice, without the chaos.',
     domainLabel: 'Healthcare',
+    domainCode: 'ONDC:SRV13',
     heroHeadline: 'Never miss a patient booking again.',
     heroSubtext:
       "List your practice on an open booking network and get discovered by real patients - no cost to start, you're covered for six months.",
@@ -80,6 +88,7 @@ const BRANDS: Record<BrandId, Brand> = {
     monogram: 'A',
     tagline: 'Keep every bay booked.',
     domainLabel: 'Automotive',
+    domainCode: 'BECKN:AUTO01',
     heroHeadline: 'Never let a bay sit idle.',
     heroSubtext:
       "List your garage on an open booking network and get discovered by real customers - no cost to start, you're covered for six months.",

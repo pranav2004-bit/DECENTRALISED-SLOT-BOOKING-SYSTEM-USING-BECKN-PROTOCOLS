@@ -41,6 +41,7 @@ const ORDER_A: ordersApi.Order = {
   resource_name: 'Stylist A',
   slot_time: '2026-08-05T09:00:00+00:00',
   status: 'ACTIVE',
+  payment_status: '',
 };
 
 const ORDER_B: ordersApi.Order = {
@@ -49,6 +50,7 @@ const ORDER_B: ordersApi.Order = {
   resource_name: 'Stylist B',
   slot_time: '2026-08-05T10:00:00+00:00',
   status: 'ACTIVE',
+  payment_status: '',
 };
 
 describe('OrdersPage', () => {
@@ -142,6 +144,58 @@ describe('OrdersPage', () => {
     await waitFor(() => expect(screen.getByText('Stylist B')).toBeInTheDocument());
     expect(getOrders).toHaveBeenLastCalledWith('cursor-1');
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+  });
+
+  it('livetracker5.md Phase 4.1: shows a paid badge for an order with a known payment_status', async () => {
+    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
+    vi.spyOn(ordersApi, 'getOrders').mockResolvedValue({
+      orders: [{ ...ORDER_A, payment_status: 'SUCCEEDED' }],
+      next_cursor: null,
+    });
+    render(<OrdersPage />);
+
+    await waitFor(() => expect(screen.getByText('Stylist A')).toBeInTheDocument());
+    expect(screen.getByText('Paid')).toBeInTheDocument();
+  });
+
+  it('shows no payment badge for an order with no known payment_status', async () => {
+    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
+    vi.spyOn(ordersApi, 'getOrders').mockResolvedValue({ orders: [ORDER_A], next_cursor: null });
+    render(<OrdersPage />);
+
+    await waitFor(() => expect(screen.getByText('Stylist A')).toBeInTheDocument());
+    expect(screen.queryByText('Paid')).not.toBeInTheDocument();
+    expect(screen.queryByText('Refunded')).not.toBeInTheDocument();
+  });
+
+  it('livetracker5.md Phase 4.1: a live order.payment_status_changed broadcast updates the badge without a reload', async () => {
+    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
+    vi.spyOn(ordersApi, 'getOrders').mockResolvedValue({ orders: [ORDER_A], next_cursor: null });
+    render(<OrdersPage />);
+
+    await waitFor(() => expect(screen.getByText('Stylist A')).toBeInTheDocument());
+    expect(capturedOnMessage).toBeDefined();
+
+    capturedOnMessage?.({
+      type: 'order.payment_status_changed',
+      order: { transaction_id: 'tx-a', resource_id: 'resource-a', payment_status: 'SUCCEEDED' },
+    });
+
+    await waitFor(() => expect(screen.getByText('Paid')).toBeInTheDocument());
+  });
+
+  it('a payment_status broadcast for an order not on this page is a safe no-op', async () => {
+    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
+    vi.spyOn(ordersApi, 'getOrders').mockResolvedValue({ orders: [ORDER_A], next_cursor: null });
+    render(<OrdersPage />);
+
+    await waitFor(() => expect(screen.getByText('Stylist A')).toBeInTheDocument());
+    capturedOnMessage?.({
+      type: 'order.payment_status_changed',
+      order: { transaction_id: 'tx-unknown', resource_id: 'resource-z', payment_status: 'SUCCEEDED' },
+    });
+
+    expect(screen.queryByText('Paid')).not.toBeInTheDocument();
   });
 
   it('shows an error state with retry when loading orders fails', async () => {

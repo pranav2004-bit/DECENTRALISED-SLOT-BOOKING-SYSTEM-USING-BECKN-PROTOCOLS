@@ -1,27 +1,82 @@
-"""Payment Module placeholder (livetracker2.md §3.4). Both BAP_details_v1.1.md and
-BPP_details_v1.1.md list a Payment Module as a named peer of Select/Init/Confirm/Cancel
-in their Transaction Module breakdown — this exists so that module list isn't silently
-incomplete, without doing real payment-gateway work now (explicitly deferred to a future
-`livetracker5.md`, per `project_details.md`'s payment KPI being out of this tracker's scope).
+"""BPP-side payment awareness (livetracker5.md Phase 1.6 retirement of the old
+`PaymentNotYetImplementedError` placeholder). BPP does not collect payment itself at
+`[MVP]` — `livetracker5.md` §0.2 decided BAP collects by default for all 3 domains,
+with BPP-side collection (`collected_by="bpp"`) designed into the shared interface
+but not required to have a working call path until a real domain needs it.
 
-Not wired to any real HTTP endpoint — the real protocol has no dedicated `/pay` action;
-payment collection is out-of-band from a Beckn network's perspective. `initiate_payment()`
-exists only so a caller reaching for real payment functionality gets a real, standardized
-`NOT_YET_IMPLEMENTED` error instead of an `AttributeError`/`ImportError` from a module that
-simply doesn't exist.
+Phase 4.3 built that call path (`charge_via_bpp`) for real, proving Design Principle 1
+holds in this direction too — not just theoretically supported. No real domain calls
+it live yet, so it deliberately has no `PaymentTransaction`-equivalent persistence:
+the day a real domain needs BPP-initiated collection, that domain wraps this same
+call with its own record-keeping, exactly the way `BAP/backend/core/payment_service.py`
+wraps this identical interface with its own `PaymentTransaction`.
 """
 
+import payment_gateway
+from inventory_core.models import Booking
 
-class PaymentNotYetImplementedError(Exception):
+
+class BppInitiatedPaymentError(Exception):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class BppInitiatedPaymentNotConfiguredError(BppInitiatedPaymentError):
+    """No vendor adapter is registered for BPP-initiated collection yet — the
+    interface supports this direction (Phase 4.3), nothing has enabled it."""
+
     def __init__(self):
         super().__init__(
-            "Payment collection is not yet implemented — deferred to a future payment "
-            "gateway integration phase, out of this tracker's scope."
+            "NOT_YET_CONFIGURED",
+            "No payment vendor is registered for BPP-initiated collection.",
         )
-        self.code = "NOT_YET_IMPLEMENTED"
 
 
-def initiate_payment(*, booking_id: str, amount) -> None:
-    """Always raises `PaymentNotYetImplementedError` — the real, standardized-error-shaped
-    placeholder for a module that doesn't do real work yet, per livetracker2.md §3.4."""
-    raise PaymentNotYetImplementedError()
+def charge_via_bpp(*, booking_id: str, vendor: str) -> payment_gateway.PaymentResult:
+    """Real BPP-initiated charge call path (livetracker5.md Phase 4.3) — proves
+    Design Principle 1 holds in this direction too: the exact same
+    `shared/payment_gateway` interface, zero interface changes, zero BAP-specific
+    code involved.
+
+    Amount-of-record: `Booking.confirmed_total_value`/`confirmed_total_currency`
+    (Phase 0.4 option (a), written once at confirm time by
+    `confirm_service.dispatch_on_confirm`) — never `SearchSession.confirmed_order`,
+    which lives in BAP's own database and would make BPP depend on BAP being up,
+    breaking the "BPP doesn't need BAP up to operate" independence this project's
+    two-app split otherwise guarantees.
+
+    Idempotency key is deterministic (`bpp-charge:{booking_id}:1`, Design Principle
+    3) but not attempt-numbered like BAP's own `payment_service._get_or_create_
+    chargeable_transaction`: without a persistence layer to track prior attempts
+    (see module docstring — none exists yet, by design, since nothing calls this
+    live), a single well-defined key per booking is the honest scope of this proof;
+    a real caller adding retry-after-decline semantics adds its own attempt
+    tracking around this call, the same way BAP's does.
+    """
+    try:
+        booking = Booking.objects.get(pk=booking_id)
+    except (Booking.DoesNotExist, ValueError, TypeError) as exc:
+        raise BppInitiatedPaymentError(
+            "BOOKING_NOT_FOUND", f"No booking found for booking_id={booking_id!r}."
+        ) from exc
+
+    if booking.confirmed_total_value is None or not booking.confirmed_total_currency:
+        raise BppInitiatedPaymentError(
+            "PAYMENT_AMOUNT_UNAVAILABLE",
+            "This booking has no confirmed total value yet — it must be confirmed "
+            "before a BPP-initiated charge can be made.",
+        )
+
+    try:
+        adapter = payment_gateway.get_adapter(vendor)
+    except LookupError as exc:
+        raise BppInitiatedPaymentNotConfiguredError() from exc
+
+    return adapter.charge(
+        amount=booking.confirmed_total_value,
+        currency=booking.confirmed_total_currency,
+        idempotency_key=f"bpp-charge:{booking_id}:1",
+        metadata={"booking_id": str(booking_id)},
+    )

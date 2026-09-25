@@ -90,6 +90,37 @@ export async function getConfirmResult(transactionId: string): Promise<ConfirmRe
   return resp.json();
 }
 
+/** livetracker5.md Phase 3 — deliberately NOT a Beckn wire action, so this response
+ * shape doesn't follow the confirmed_order/confirmed_error pattern the other
+ * result endpoints above use (Payment Module has no real protocol counterpart
+ * beyond the Payment.yaml status/collected_by fields the confirm flow already
+ * populates). `status` is the honest source of truth: `PENDING` while a hosted
+ * checkout is in progress, not an error. */
+export interface PaymentResultResponse {
+  transaction_id: string;
+  status: 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'REFUNDED' | 'PARTIALLY_REFUNDED';
+  amount: string;
+  currency: string;
+  vendor_txn_id: string;
+}
+
+export async function triggerPayment(
+  transactionId: string,
+  idempotencyKey: string
+): Promise<PaymentResultResponse> {
+  const resp = await apiFetch('/api/v1/payment', {
+    method: 'POST',
+    headers: { ...JSON_HEADERS, 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify({ transaction_id: transactionId }),
+  });
+  return resp.json();
+}
+
+export async function getPaymentResult(transactionId: string): Promise<PaymentResultResponse> {
+  const resp = await apiFetch(`/api/v1/payment/${transactionId}`);
+  return resp.json();
+}
+
 export async function triggerStatus(transactionId: string): Promise<void> {
   await apiFetch('/api/v1/status', {
     method: 'POST',

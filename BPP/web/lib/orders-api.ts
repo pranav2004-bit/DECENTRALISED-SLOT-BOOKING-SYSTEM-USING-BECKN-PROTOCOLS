@@ -12,6 +12,8 @@ export interface Order {
   resource_name: string;
   slot_time: string;
   status: string;
+  /** livetracker5.md Phase 4.1 — '' means unknown/not paid yet, not "confirmed unpaid". */
+  payment_status: string;
 }
 
 export interface OrdersListResponse {

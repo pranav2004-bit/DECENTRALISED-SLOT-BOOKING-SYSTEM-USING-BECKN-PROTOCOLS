@@ -133,22 +133,24 @@ jobs:
     strategy:
       matrix:
         lib:
-          [beckn_crypto, beckn_transaction, event_bus, resilient_http, redis_safe, resilient_db, key_rotation]
-    # 5 of these 6 shared/ libraries are framework-free (no Django — confirmed directly in
+          [beckn_crypto, beckn_transaction, event_bus, resilient_http, redis_safe, resilient_db, key_rotation, payment_gateway]
+    # 7 of these 8 shared/ libraries are framework-free (no Django — confirmed directly in
     # each tests.py's own imports) but live outside every app's own working directory, so
     # none of the per-app test-python job's pytest runs above ever discover or execute them —
     # a real gap found live while adding new tests to resilient_http/tests.py (livetracker2.md's
     # Phase 3.11 follow-up fixes) and confirming they'd actually run anywhere in CI, not just
     # manually inside a container. event_bus and resilient_http need a real Redis for their
     # Redis-backed tests (TEST_REDIS_URL, the exact env var name both files' own fixtures
-    # already read); beckn_crypto, beckn_transaction, and redis_safe don't touch Redis at all
-    # (redis_safe is a generic hard-deadline primitive, confirmed by direct read to have no
-    # Redis import of its own — callers elsewhere wire it to real Redis clients).
+    # already read); beckn_crypto, beckn_transaction, redis_safe, key_rotation, and
+    # payment_gateway (added livetracker5.md Phase 1.1, confirmed framework-free — no Django
+    # import of its own) don't touch Redis at all (redis_safe is a generic hard-deadline
+    # primitive, confirmed by direct read to have no Redis import of its own — callers
+    # elsewhere wire it to real Redis clients).
     # resilient_db (added 2026-09-02) is the one exception to "framework-free" — it wraps
     # Django's own postgresql DB backend, so it genuinely needs django+psycopg2 installed to
-    # even import, unlike the other 5. Installed for every lib in this matrix regardless
-    # (harmless, unused extra deps for the other 5) rather than a per-lib install step, to
-    # keep this job's structure the same single shared step for all 6.
+    # even import, unlike the other 7. Installed for every lib in this matrix regardless
+    # (harmless, unused extra deps for the other 7) rather than a per-lib install step, to
+    # keep this job's structure the same single shared step for all 8.
     services:
       redis:
         image: redis:7-alpine
@@ -172,7 +174,14 @@ jobs:
         run: pip install pytest cryptography requests responses redis django psycopg2-binary
       - name: Run pytest
         working-directory: shared/${{ matrix.lib }}
-        run: pytest tests.py -v
+        # `tests.py` doesn't match pytest's default `python_files` glob (test_*.py/*_test.py)
+        # — a bare `pytest -v` silently collects ZERO tests for the 7 libraries whose only
+        # test file is named `tests.py` (confirmed live before shipping this: 9/9 tests.py
+        # tests vanish from collection with no error, no warning). The explicit override
+        # below collects both `tests.py` (7 libs) and `test_*.py` (payment_gateway's new
+        # `test_razorpay_adapter.py`, livetracker5.md Phase 2.1 — the first shared lib with
+        # more than one test file) without hardcoding any library-specific filename.
+        run: pytest -o python_files="tests.py test_*.py" -v
 
   test-node:
     name: Unit Tests (Node — ${{ matrix.app }})

@@ -21,11 +21,22 @@ django_asgi_app = get_asgi_application()
 
 from realtime.consumers import FoundationConsumer  # noqa: E402
 
+from core.consumers import PaymentStatusConsumer  # noqa: E402
+
 application = ProtocolTypeRouter(
     {
         "http": django_asgi_app,
         "websocket": AuthMiddlewareStack(
-            URLRouter([path("ws/", FoundationConsumer.as_asgi())])
+            URLRouter(
+                [
+                    path("ws/", FoundationConsumer.as_asgi()),
+                    # livetracker5.md Phase 3.3: real payment-status push.
+                    path(
+                        "ws/payment/<str:transaction_id>/",
+                        PaymentStatusConsumer.as_asgi(),
+                    ),
+                ]
+            )
         ),
     }
 )

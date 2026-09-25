@@ -45,6 +45,11 @@ def audit_log_consumer(event: dict) -> None:
             "old_slot_id": payload.get("old_slot_id"),
             "new_slot_id": payload.get("new_slot_id"),
         }
+    elif event_type in (BookingEvent.PAYMENT_SUCCEEDED, BookingEvent.PAYMENT_REFUNDED):
+        # livetracker5.md Phase 4.1: a financial state change is exactly the kind of
+        # thing this audit trail exists for — not recording it would be a real gap,
+        # not a deliberate scope boundary like the ones below.
+        detail = {"payment_status": payload.get("payment_status")}
     else:
         return  # a SlotEvent, or a BookingEvent this consumer doesn't record — not an error
 

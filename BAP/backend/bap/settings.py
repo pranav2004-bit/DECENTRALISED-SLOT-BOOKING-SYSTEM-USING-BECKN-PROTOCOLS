@@ -227,6 +227,17 @@ SESSION_CACHE_ALIAS = "default"
 SESSION_COOKIE_SECURE = not DEBUG
 SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_SECURE = not DEBUG
+# Real gap found live deploying the frontend (Vercel, *.vercel.app) and this backend
+# on genuinely different domains for the first time (livetracker5.md's client-
+# presentation deployment, 2026-09-25): Django's own SameSite default (Lax) does not
+# send session/CSRF cookies back on a cross-site POST — confirmed live as a real 403
+# on signup. SameSite=None is required for a genuinely cross-domain frontend/backend
+# split; it's only valid paired with Secure=True (already true above whenever
+# DEBUG=False). Local dev's frontend and backend both live on `localhost` regardless
+# of port — the same "site" for SameSite purposes — so Lax (Django's own default)
+# already worked there and stays unchanged.
+SESSION_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"
+CSRF_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"

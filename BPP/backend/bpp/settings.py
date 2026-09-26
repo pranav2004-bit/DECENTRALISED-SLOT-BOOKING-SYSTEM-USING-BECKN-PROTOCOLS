@@ -300,6 +300,11 @@ SESSION_CACHE_ALIAS = "default"
 SESSION_COOKIE_SECURE = not DEBUG
 SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_SECURE = not DEBUG
+# Real gap found live deploying the frontend (Vercel, *.vercel.app) and this backend
+# on genuinely different domains — same fix as BAP's settings.py, see its comment
+# for the full rationale (confirmed live here too, as a real 403 on business signup).
+SESSION_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"
+CSRF_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"

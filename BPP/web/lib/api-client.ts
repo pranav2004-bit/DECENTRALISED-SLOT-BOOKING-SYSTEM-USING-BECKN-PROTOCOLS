@@ -36,13 +36,17 @@ export async function apiFetch(path: string, options: RequestOptions = {}): Prom
     throw new Error('NEXT_PUBLIC_API_BASE_URL is not configured');
   }
   const { timeoutMs = DEFAULT_TIMEOUT_MS, maxRetries = DEFAULT_MAX_RETRIES, ...init } = options;
+  // In the browser, call this app's own origin so the Next.js rewrite (next.config.ts)
+  // proxies to the backend — keeping the session/CSRF cookie first-party. Server-side
+  // (RSC) calls have no inbound request to piggyback on, so they hit the backend directly.
+  const url = typeof window === 'undefined' ? `${baseUrl}${path}` : path;
 
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(`${baseUrl}${path}`, {
+      const response = await fetch(url, {
         credentials: 'include',
         ...init,
         signal: controller.signal,

@@ -40,7 +40,7 @@ describe('auth-api', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const [, signupCallArgs] = fetchMock.mock.calls;
     const [signupUrl, signupInit] = signupCallArgs;
-    expect(signupUrl).toBe('http://test-backend/api/v1/auth/signup');
+    expect(signupUrl).toBe('/api/v1/auth/signup');
     expect((signupInit.headers as Record<string, string>)['X-CSRFToken']).toBe('abc123');
   });
 

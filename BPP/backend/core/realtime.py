@@ -51,11 +51,30 @@ def broadcast_order_confirmed(booking) -> None:
         {
             "type": "order.confirmed",
             "order": {
+                "booking_id": str(booking.id),
                 "transaction_id": booking.holder_ref,
                 "resource_id": str(booking.slot.resource_id),
                 "resource_name": booking.slot.resource.name,
                 "slot_time": booking.slot.start_time.isoformat(),
+                "slot_end_time": booking.slot.end_time.isoformat(),
                 "status": booking.status,
+                "fulfillment_status": booking.fulfillment_status,
+                "payment_status": booking.payment_status,
+                "amount": (
+                    str(booking.confirmed_total_value)
+                    if booking.confirmed_total_value is not None
+                    else None
+                ),
+                "currency": booking.confirmed_total_currency,
+                # Project-defined customer fields (BAP/backend/core/select_service.py's
+                # own `stops[0].person`/`.contact`, stashed on Booking.domain_data at
+                # select time; customer_id minted at confirm time) — absent (not
+                # empty-string) when a BAP never sent them, same "honestly absent"
+                # discipline already established for Item.rating elsewhere.
+                "customer_id": booking.domain_data.get("customer_id", ""),
+                "customer_name": booking.domain_data.get("customer_name", ""),
+                "customer_email": booking.domain_data.get("customer_email", ""),
+                "customer_phone": booking.domain_data.get("customer_phone", ""),
             },
         },
     )

@@ -24,9 +24,11 @@ COPY shared/beckn_crypto ./shared/beckn_crypto
 COPY shared/beckn_transaction ./shared/beckn_transaction
 COPY shared/key_rotation ./shared/key_rotation
 COPY shared/realtime ./shared/realtime
+COPY shared/postal_directory ./shared/postal_directory
 COPY shared/redis_safe ./shared/redis_safe
 COPY shared/resilient_db ./shared/resilient_db
 COPY shared/payment_gateway ./shared/payment_gateway
+COPY shared/alerting ./shared/alerting
 COPY BAP/backend/ ./BAP/backend/
 # Phase 3 Exit fix (livetracker2.md, 2026-07-24): /app/data/secrets is now a named
 # Docker volume (persisted signing/encryption keys, see docker-compose.yml). A fresh

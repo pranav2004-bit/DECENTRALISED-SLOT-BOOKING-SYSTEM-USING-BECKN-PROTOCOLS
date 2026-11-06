@@ -27,8 +27,8 @@ duplicated here.
 
 import json
 import logging
-import threading
 
+from background_thread import run_in_background
 from beckn_transaction import (
     PayloadValidationError,
     build_ack_response,
@@ -196,5 +196,4 @@ def dispatch_on_track_in_background(*, payload: dict) -> None:
     """Fires dispatch_on_track on a daemon thread — the actual fire-and-forget
     entry point the view uses. Kept separate so tests can call dispatch_on_track
     directly and synchronously without racing a thread."""
-    thread = threading.Thread(target=dispatch_on_track, kwargs={"payload": payload}, daemon=True)
-    thread.start()
+    run_in_background(dispatch_on_track, {"payload": payload}, name="bpp-dispatch-on-track")

@@ -35,8 +35,8 @@ booking this transaction doesn't own.
 
 import json
 import logging
-import threading
 
+from background_thread import run_in_background
 from beckn_transaction import (
     PayloadValidationError,
     build_ack_response,
@@ -377,9 +377,8 @@ def dispatch_on_rating_in_background(*, payload: dict) -> None:
     spawning the background thread (§3.10) — same pattern as every other
     dispatch_on_X_in_background."""
     correlation_id = correlation_id_var.get()
-    thread = threading.Thread(
-        target=dispatch_on_rating,
-        kwargs={"payload": payload, "correlation_id": correlation_id},
-        daemon=True,
+    run_in_background(
+        dispatch_on_rating,
+        {"payload": payload, "correlation_id": correlation_id},
+        name="bpp-dispatch-on-rating",
     )
-    thread.start()

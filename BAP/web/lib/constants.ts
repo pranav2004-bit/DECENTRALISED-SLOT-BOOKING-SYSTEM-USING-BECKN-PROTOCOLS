@@ -15,7 +15,51 @@ export interface DomainOption {
 }
 
 export const SEARCH_DOMAINS: DomainOption[] = [
-  { code: 'ONDC:RET13', label: 'Beauty & Wellness' },
   { code: 'ONDC:SRV13', label: 'Healthcare' },
+  { code: 'ONDC:RET13', label: 'Wellness' },
   { code: 'BECKN:AUTO01', label: 'Automotive' },
+];
+
+/**
+ * Search page's State -> Division location picker. Mirrors BAP/backend/core/views.py's
+ * own ALL_INDIA_STATES tuple exactly — same duplicated-not-shared convention
+ * BPP/web/lib/constants.ts already uses for its own copy of this list (ADR-0004).
+ */
+export const ALL_INDIA_STATES = [
+  'Andaman and Nicobar Islands',
+  'Andhra Pradesh',
+  'Arunachal Pradesh',
+  'Assam',
+  'Bihar',
+  'Chandigarh',
+  'Chhattisgarh',
+  'Dadra and Nagar Haveli and Daman and Diu',
+  'Delhi',
+  'Goa',
+  'Gujarat',
+  'Haryana',
+  'Himachal Pradesh',
+  'Jammu and Kashmir',
+  'Jharkhand',
+  'Karnataka',
+  'Kerala',
+  'Ladakh',
+  'Lakshadweep',
+  'Madhya Pradesh',
+  'Maharashtra',
+  'Manipur',
+  'Meghalaya',
+  'Mizoram',
+  'Nagaland',
+  'Odisha',
+  'Puducherry',
+  'Punjab',
+  'Rajasthan',
+  'Sikkim',
+  'Tamil Nadu',
+  'Telangana',
+  'Tripura',
+  'Uttar Pradesh',
+  'Uttarakhand',
+  'West Bengal',
 ];

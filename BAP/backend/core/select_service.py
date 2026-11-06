@@ -10,6 +10,7 @@ item/fulfillment pair.
 
 import json
 import logging
+from datetime import timedelta
 
 from beckn_transaction import (
     PayloadValidationError,
@@ -25,8 +26,9 @@ from django.utils import timezone
 from . import registry_client, trust
 from .crypto import sign_outbound_request
 from .metrics import record_select_succeeded
-from .models import SearchSession
+from .models import PaymentTransaction, SearchSession
 from .participant_keys import get_signing_keys
+from .realtime import broadcast_slot_held
 from .session_authz import SessionAccessError, resolve_owned_session
 
 logger = logging.getLogger("bap")
@@ -55,31 +57,97 @@ def _find_item_provider(session: SearchSession, item_id: str) -> tuple[str, str,
 
 MAX_CONCURRENT_HOLDS = 3
 
+# Matches search/page.tsx's own HOLD_SECONDS constant exactly — this is what
+# the frontend actually requests on every tap-to-hold (BAP/backend/core/
+# views.py's select_trigger_view just forwards/clamps whatever it's sent, it
+# doesn't invent this number). Used to compute the `expires_at` broadcast to
+# every *other* browser watching this provider (see realtime.py's
+# `broadcast_slot_held` for why a real callback-based expiry isn't available
+# here) — kept as one named constant, not copy-pasted, so the two sides
+# can't silently drift apart.
+HOLD_SECONDS = 180
+
 
 def _count_in_flight_holds(*, session: SearchSession) -> int:
     """Reservation-hold abuse prevention (§3.7): counts this same actor's OTHER
     "in-flight" transactions — a real `selected_order` recorded, but not yet
     `confirmed_order`/`cancelled_order` — the honest proxy available at BAP for
-    "may currently be holding a slot" (BAP has no direct signal of a hold's Redis
-    TTL expiring at BPP, only that this transaction hasn't reached a terminal
-    state yet). Keyed by `customer` when authenticated, by the session's own
-    `client_ip` (captured at search time) when anonymous — a `SearchSession`
-    with no customer and no client_ip has no real actor identity to cap against,
-    so it's excluded rather than silently capped against an empty/wrong key."""
-    holders = SearchSession.objects.filter(
-        selected_order__isnull=False, confirmed_order__isnull=True, cancelled_order__isnull=True
-    ).exclude(transaction_id=session.transaction_id)
+    "may currently be holding a slot" (BAP has no direct signal of a hold
+    actually releasing early at BPP — a customer backing out without cancelling,
+    say — only that this transaction hasn't reached a terminal state yet).
+    Keyed by `customer` when authenticated, by the session's own `client_ip`
+    (captured at search time) when anonymous — a `SearchSession` with no
+    customer and no client_ip has no real actor identity to cap against, so
+    it's excluded rather than silently capped against an empty/wrong key.
+
+    Real gap found and closed live 2026-11-05: this had no time bound at all —
+    a `selected_order` counted forever, even long after the real BPP-side
+    hold's own TTL (`HOLD_SECONDS`) had elapsed, permanently using up a
+    customer's cap for slots that had long since been released back to
+    everyone else. `selected_order_at` (set once, at the exact moment a real
+    hold is recorded — see that field's own docstring) is what BAP actually
+    knows about a hold's age; a generous `+30s` margin over `HOLD_SECONDS`
+    absorbs the real callback/network latency between the customer's original
+    tap and this timestamp being recorded, so a genuinely still-active hold is
+    never undercounted, only a truly stale one excluded.
+
+    Real gap found and closed live 2026-11-05: a `selected_order` dropped out of
+    this count entirely the instant `/confirm` succeeded — but `/confirm` also
+    permanently books the slot (HELD -> BOOKED), before payment is ever
+    attempted (see `SearchSession.confirmed_order_at`'s own docstring for the
+    full finding). The net effect: once confirmed, a session no longer counted
+    as "in flight" at all, so a single actor could repeat select -> confirm
+    without limit, permanently locking unlimited slots without ever paying for
+    any of them. A confirmed session now counts the same as an ordinary hold
+    for exactly as long as `reconciliation.sweep_unpaid_confirmed_bookings`
+    gives it to actually pay (`PAYMENT_COMPLETION_DEADLINE_SECONDS`) — past
+    that window the sweep cancels it, which is also what naturally drops it out
+    of this count (`confirmed_order_at` ages out, same mechanism as a stale
+    hold above). A session with a genuinely `SUCCEEDED` payment is a real,
+    legitimate booking, not abuse — explicitly excluded regardless of age."""
+    now = timezone.now()
+    still_within_hold_window = now - timedelta(seconds=HOLD_SECONDS + 30)
+    still_within_payment_window = now - timedelta(
+        seconds=settings.PAYMENT_COMPLETION_DEADLINE_SECONDS
+    )
+    base = SearchSession.objects.exclude(transaction_id=session.transaction_id)
+
+    in_flight_holds = base.filter(
+        selected_order__isnull=False,
+        confirmed_order__isnull=True,
+        cancelled_order__isnull=True,
+        selected_order_at__gte=still_within_hold_window,
+    )
+    unpaid_confirmed = base.filter(
+        confirmed_order__isnull=False,
+        confirmed_order_at__isnull=False,
+        confirmed_order_at__gte=still_within_payment_window,
+        cancelled_order__isnull=True,
+    ).exclude(payment_transactions__status=PaymentTransaction.Status.SUCCEEDED)
+
     if session.customer_id is not None:
-        holders = holders.filter(customer_id=session.customer_id)
+        in_flight_holds = in_flight_holds.filter(customer_id=session.customer_id)
+        unpaid_confirmed = unpaid_confirmed.filter(customer_id=session.customer_id)
     elif session.client_ip:
-        holders = holders.filter(customer__isnull=True, client_ip=session.client_ip)
+        in_flight_holds = in_flight_holds.filter(customer__isnull=True, client_ip=session.client_ip)
+        unpaid_confirmed = unpaid_confirmed.filter(
+            customer__isnull=True, client_ip=session.client_ip
+        )
     else:
         return 0
-    return holders.count()
+    return in_flight_holds.count() + unpaid_confirmed.count()
 
 
 def trigger_select(
-    *, transaction_id: str, item_id: str, requested_timestamp: str, customer=None
+    *,
+    transaction_id: str,
+    item_id: str,
+    requested_timestamp: str,
+    customer=None,
+    customer_name: str | None = None,
+    customer_email: str | None = None,
+    customer_phone: str | None = None,
+    hold_seconds: int | None = None,
 ) -> None:
     """Customer-facing selection trigger — builds and sends the real signed Beckn
     /select to Gateway, targeting the one specific BPP that actually offered this item.
@@ -92,7 +160,15 @@ def trigger_select(
     `MAX_CONCURRENT_HOLDS` — a real, live-exploitable DoS otherwise: a malicious
     actor could mass-hold every available slot across many different
     `transaction_id`s without ever confirming, denying service to real customers
-    for up to a full hold-TTL window (§1.3)."""
+    for up to a full hold-TTL window (§1.3).
+
+    `customer_name`/`customer_email`/`customer_phone`: who this appointment is
+    actually for — carried on `fulfillments[0].stops[0].person`/`.contact`, the
+    real confirmed schema location for exactly this (protocol_compliance_notes_v1.1.md
+    §J.1's `Stop.yaml` confirmation: `person`/`contact` are real Stop fields, not
+    invented ones). Sent once, at select time, since /init and /confirm both resolve
+    the same already-created Booking by `fulfillments[0].id` rather than re-reading
+    the order body — there is no later point where re-sending this would do anything."""
     try:
         session = resolve_owned_session(transaction_id=transaction_id, requesting_customer=customer)
     except SessionAccessError as exc:
@@ -124,14 +200,25 @@ def trigger_select(
         location={"country": {"code": "IND"}},
         timestamp=timezone.now().isoformat(),
     )
+    stop = {"type": "start", "time": {"timestamp": requested_timestamp}}
+    if customer_name:
+        stop["person"] = {"name": customer_name}
+    if customer_email or customer_phone:
+        contact = {}
+        if customer_phone:
+            contact["phone"] = customer_phone
+        if customer_email:
+            contact["email"] = customer_email
+        stop["contact"] = contact
     order = {
         "provider": {"id": provider_id},
         "items": [{"id": item_id}],
-        "fulfillments": [
-            {"stops": [{"type": "start", "time": {"timestamp": requested_timestamp}}]}
-        ],
+        "fulfillments": [{"stops": [stop]}],
     }
-    payload = {"context": context, "message": {"order": order}}
+    message: dict = {"order": order}
+    if hold_seconds:
+        message["hold_seconds"] = hold_seconds
+    payload = {"context": context, "message": message}
     body = json.dumps(payload).encode()
 
     _, signing_priv = get_signing_keys()
@@ -254,16 +341,38 @@ def record_on_select_result(*, payload: dict) -> None:
     else:
         session.selected_order = payload["message"]["order"]
         session.selected_error = None
+        session.selected_order_at = timezone.now()
         # Recorded so a later /init (§3.3) can target the same BPP again without
         # re-deriving it from `selected_order.provider.id`, which isn't reliably
         # unique across different BPPs.
         session.selected_bpp_id = context.get("bpp_id", "")
         session.selected_bpp_uri = context.get("bpp_uri", "")
         record_select_succeeded()
+        try:
+            order = session.selected_order
+            start_stop = order["fulfillments"][0]["stops"][0]
+            broadcast_slot_held(
+                provider_id=order["provider"]["id"],
+                item_id=order["items"][0]["id"],
+                start_time=start_stop["time"]["timestamp"],
+                expires_at=(timezone.now() + timedelta(seconds=HOLD_SECONDS)).isoformat(),
+            )
+        except (KeyError, IndexError, TypeError):
+            # The real hold itself already succeeded above regardless — this
+            # push is a pure UX improvement for *other* browsers, never
+            # something this customer's own successful select depends on, so
+            # a malformed/unexpected order shape here is logged and dropped,
+            # not raised.
+            logger.warning(
+                "record_on_select_result: could not derive slot-held broadcast fields for "
+                "transaction_id=%r",
+                transaction_id,
+            )
     session.save(
         update_fields=[
             "selected_order",
             "selected_error",
+            "selected_order_at",
             "selected_bpp_id",
             "selected_bpp_uri",
             "updated_at",

@@ -311,7 +311,21 @@ def test_confirm_activates_every_booking_in_the_group(bpp_identity_settings, bus
             "message_id": "msg-1",
             "timestamp": "2026-07-20T00:00:00Z",
         },
-        "message": {"order": {"fulfillments": [{"id": str(primary.id)}]}},
+        "message": {
+            "order": {
+                "fulfillments": [
+                    {
+                        "id": str(primary.id),
+                        # confirm_service.dispatch_on_confirm now requires a real
+                        # customer name at confirm (customer-identity-at-confirm
+                        # change, earlier this session) — this test predates that
+                        # and was failing with a real VALIDATION_ERROR here until
+                        # updated to match the service's actual current contract.
+                        "stops": [{"person": {"name": "Test Customer"}}],
+                    }
+                ]
+            }
+        },
     }
 
     captured = []

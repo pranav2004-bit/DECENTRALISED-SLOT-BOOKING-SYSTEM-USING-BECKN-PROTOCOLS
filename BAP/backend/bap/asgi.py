@@ -21,7 +21,7 @@ django_asgi_app = get_asgi_application()
 
 from realtime.consumers import FoundationConsumer  # noqa: E402
 
-from core.consumers import PaymentStatusConsumer  # noqa: E402
+from core.consumers import AvailabilityConsumer, PaymentStatusConsumer  # noqa: E402
 
 application = ProtocolTypeRouter(
     {
@@ -34,6 +34,13 @@ application = ProtocolTypeRouter(
                     path(
                         "ws/payment/<str:transaction_id>/",
                         PaymentStatusConsumer.as_asgi(),
+                    ),
+                    # Real-time "slot just got held" push for the search-results
+                    # card's own availability view — see AvailabilityConsumer's
+                    # own docstring.
+                    path(
+                        "ws/availability/<str:provider_id>/",
+                        AvailabilityConsumer.as_asgi(),
                     ),
                 ]
             )

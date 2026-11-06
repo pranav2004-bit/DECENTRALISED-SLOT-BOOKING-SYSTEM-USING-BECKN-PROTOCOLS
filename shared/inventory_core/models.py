@@ -17,12 +17,25 @@ import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
 _WEEKDAY_TOKENS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
+
+# `AvailabilityCalendar.times` entries ("09:00", "17:30", ...) are always real
+# business wall-clock hours — "9am-5pm" is never meaningfully a UTC concept for any
+# scheduling system — so they're interpreted in this one fixed operating timezone, not
+# whatever tzinfo `range_start` happens to carry (UTC, since Django's own TIME_ZONE
+# setting is UTC and every caller sends range_start/range_end as already-converted UTC
+# instants). This platform has no per-business/per-region timezone concept anywhere
+# else in the codebase either — every real deployment so far is India-only (ONDC
+# domains, INR pricing, Indian business addresses) — so a single fixed zone here is a
+# deliberate, honest simplification, not an oversight; revisit if a non-India business
+# is ever onboarded.
+_OPERATING_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 
 class Resource(models.Model):
@@ -58,6 +71,13 @@ class Resource(models.Model):
     # `DomainAdapter` (`domain_adapter.py`) — never as bespoke columns bolted onto this model
     # per domain.
     domain_data = models.JSONField(default=dict, blank=True)
+
+    # Owner's own Active/Inactive toggle for this one resource (distinct from the
+    # business-level is_accepting_bookings on BusinessAccount) — an inactive resource
+    # is hidden from search/catalog just like an offline business, but the rest of the
+    # business's other resources stay unaffected. Generic across every domain (any
+    # resource — doctor, stylist, bay — can be paused without being deleted).
+    is_active = models.BooleanField(default=True)
 
     # livetracker3.md §2.1: the real rating aggregate, updated incrementally on write (not a
     # periodic sweep — rating submission volume is nowhere near a real scale problem, per that
@@ -550,12 +570,17 @@ class AvailabilityCalendar(models.Model):
             day_allowed = not day_tokens or weekday_token in day_tokens
             if day_allowed and current.date() not in holiday_dates:
                 for tod in times_of_day:
+                    # Real bug found live (2026-10-20): this used to reattach
+                    # `current`'s own tzinfo (UTC, since range_start/range_end always
+                    # arrive as already-converted UTC instants) straight onto the naive
+                    # time-of-day — e.g. "17:00" became 17:00 UTC (10:30pm IST) instead
+                    # of 17:00 IST (11:30am UTC), a visible 5:30-hour shift that could
+                    # even push slots across midnight into the wrong calendar day. The
+                    # time-of-day is always meant as IST wall-clock time regardless of
+                    # what tzinfo the cursor carries — see _OPERATING_TIMEZONE's own
+                    # comment.
                     naive_start = datetime.combine(current.date(), tod)
-                    start = (
-                        timezone.make_aware(naive_start, current.tzinfo)
-                        if timezone.is_naive(current)
-                        else naive_start.replace(tzinfo=current.tzinfo)
-                    )
+                    start = timezone.make_aware(naive_start, _OPERATING_TIMEZONE)
                     end = start + self.slot_duration
                     slots.append(
                         Slot(

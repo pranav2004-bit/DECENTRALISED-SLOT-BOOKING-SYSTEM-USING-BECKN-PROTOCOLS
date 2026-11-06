@@ -34,6 +34,7 @@ never a second charge/refund. The `max_retries=0` fallback Phase 2.3 names for v
 import hashlib
 import hmac
 import json
+import time
 from decimal import Decimal
 
 import requests
@@ -63,6 +64,16 @@ _REFUND_STATUS_MAP = {
     "processed": PaymentStatus.REFUNDED,
     "failed": PaymentStatus.FAILED,
 }
+
+# Audit finding closed live 2026-11-06: `verify_webhook` checked only the HMAC
+# signature, never the payload's own `created_at` — a genuinely valid, correctly-
+# signed webhook body captured once (from logs, a proxy, a compromised intermediary)
+# stays forever replayable, since HMAC alone has no concept of expiry. Razorpay's
+# own webhook payload always carries `created_at` (Unix epoch seconds) per the
+# documented shape (see module docstring) — 300s is generous for genuine
+# network/queueing delay (Razorpay's own delivery is normally sub-second) while
+# making a captured-and-replayed request useless shortly after.
+_MAX_WEBHOOK_AGE_SECONDS = 300
 
 
 def _to_paise(amount: Decimal) -> int:
@@ -209,11 +220,19 @@ class RazorpayAdapter(PaymentGatewayAdapter):
 
         try:
             body = json.loads(payload)
+            created_at = body["created_at"]
             entity = body["payload"]["payment"]["entity"]
             order_id = entity["order_id"]
             raw_status = entity["status"]
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             raise WebhookVerificationError(f"malformed webhook payload: {exc}") from exc
+
+        age_seconds = time.time() - created_at
+        if age_seconds > _MAX_WEBHOOK_AGE_SECONDS:
+            raise WebhookVerificationError(
+                f"webhook is {age_seconds:.0f}s old (max {_MAX_WEBHOOK_AGE_SECONDS}s) "
+                "— rejecting as a possible replay"
+            )
 
         return WebhookEvent(
             vendor_txn_id=order_id,

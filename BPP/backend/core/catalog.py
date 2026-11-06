@@ -35,15 +35,49 @@ _DOMAIN_DISPLAY_NAMES = {
 
 
 def visible_resources(domain_code: str):
-    """`Resource`s whose owning `BusinessAccount` is currently `ACTIVE` *and* serves
-    `domain_code` — the set any search/catalog surface for that domain should draw from.
-    A deactivated business's resources, or a different domain's resources, are excluded
-    here, at the query level, not filtered ad hoc per caller.
+    """`Resource`s whose owning `BusinessAccount` is currently `ACTIVE`, self-marked
+    `is_accepting_bookings`, *and* serves `domain_code` — the set any search/catalog
+    surface for that domain should draw from. A deactivated business's resources, a
+    business that's toggled itself offline, or a different domain's resources, are
+    excluded here, at the query level, not filtered ad hoc per caller. A resource the
+    owner has individually paused (`Resource.is_active=False`) is excluded too — one
+    doctor being unavailable shouldn't hide the rest of the same clinic's roster.
     """
     active_owner_refs = BusinessAccount.objects.filter(
-        is_active=True, domain_code=domain_code
+        is_active=True, is_accepting_bookings=True, domain_code=domain_code
     ).values_list("id", flat=True)
-    return Resource.objects.filter(owner_ref__in=[str(pk) for pk in active_owner_refs])
+    return Resource.objects.filter(
+        owner_ref__in=[str(pk) for pk in active_owner_refs], is_active=True
+    )
+
+
+def _resource_to_tags(resource: Resource) -> list[dict]:
+    """`tags` (array of `TagGroup.yaml`) is the real, confirmed `Item` schema field
+    for exactly this (protocol_compliance_notes_v1.1.md §F's `Item.yaml` confirmation
+    lists `tags` alongside `descriptor`/`price`) — the project-defined extension point
+    for resource-specific structured data with no dedicated Item field of its own, e.g.
+    a doctor's specialisation/education/years_of_experience/gender (BPP/web/app/
+    resources/page.tsx's own doctor dashboard form, the real source of this data — a
+    business genuinely entered it, nothing invented here). One group, one Tag per
+    `domain_data` entry; domain-agnostic on purpose so a future domain's own
+    `domain_data` shape is carried the same way without this file needing to know its
+    field names. Resources with no `domain_data` get no `tags` block at all — same
+    "honestly absent" discipline as `Item.rating` above."""
+    if not resource.domain_data:
+        return []
+    return [
+        {
+            "display": True,
+            "descriptor": {"code": "resource_info", "name": "Resource Information"},
+            "list": [
+                {
+                    "descriptor": {"code": key, "name": key.replace("_", " ").title()},
+                    "value": str(value),
+                }
+                for key, value in resource.domain_data.items()
+            ],
+        }
+    ]
 
 
 def _resource_to_item(resource: Resource) -> dict:
@@ -81,6 +115,9 @@ def _resource_to_item(resource: Resource) -> dict:
     if resource.average_rating is not None:
         item["rating"] = str(resource.average_rating)
         item["rating_count"] = resource.rating_count
+    tags = _resource_to_tags(resource)
+    if tags:
+        item["tags"] = tags
     return item
 
 
@@ -98,7 +135,9 @@ def _business_to_provider(business: BusinessAccount) -> dict:
     entirely when none of this business's resources have any aggregate-eligible rating
     yet, same "honestly absent, not fabricated" rule as `Item.rating`."""
     resources = list(
-        Resource.objects.filter(owner_ref=str(business.id)).order_by("name", "id")
+        Resource.objects.filter(owner_ref=str(business.id), is_active=True).order_by(
+            "name", "id"
+        )
     )
     items = [_resource_to_item(r) for r in resources]
     provider = {
@@ -162,6 +201,32 @@ def filter_catalog(catalog: dict, query_text: str | None) -> dict:
     return {"descriptor": catalog.get("descriptor", {}), "providers": filtered_providers}
 
 
+def filter_catalog_by_division(catalog: dict, division: str | None) -> dict:
+    """Narrows an already-built (and possibly already query-filtered) catalog down to
+    providers whose own `BusinessAccount.division` matches the customer's chosen
+    postal Division — the real filtering half of location-based search (the other
+    half is BAP's search page sending `division` at all). `provider["id"]` is always
+    a `BusinessAccount.id` (see `_business_to_provider`), so this is a single
+    membership check against the matching accounts, not a second catalog rebuild.
+
+    A missing/empty `division` returns `catalog` unchanged — same "browse everything"
+    default as `filter_catalog`'s own missing-query behavior, for a customer who
+    hasn't picked a location yet."""
+    if not division:
+        return catalog
+    provider_ids = {p.get("id") for p in catalog.get("providers", [])}
+    matching_ids = set(
+        BusinessAccount.objects.filter(id__in=provider_ids, division=division).values_list(
+            "id", flat=True
+        )
+    )
+    matching_ids = {str(pk) for pk in matching_ids}
+    filtered_providers = [
+        p for p in catalog.get("providers", []) if p.get("id") in matching_ids
+    ]
+    return {"descriptor": catalog.get("descriptor", {}), "providers": filtered_providers}
+
+
 def build_catalog(domain_code: str) -> dict:
     """BPP's catalog for one domain, represented internally using the confirmed real
     `Catalog`/`Provider`/`Item` schema shapes (protocol_compliance_notes_v1.1.md §F/§G) —
@@ -193,9 +258,9 @@ def build_catalog(domain_code: str) -> dict:
     providers = [
         _business_to_provider(business)
         for business in BusinessAccount.objects.filter(
-            is_active=True, domain_code=domain_code
+            is_active=True, is_accepting_bookings=True, domain_code=domain_code
         ).order_by("id")
-        if Resource.objects.filter(owner_ref=str(business.id)).exists()
+        if Resource.objects.filter(owner_ref=str(business.id), is_active=True).exists()
     ]
     return {
         "descriptor": {"name": _DOMAIN_DISPLAY_NAMES.get(domain_code, "Catalog")},

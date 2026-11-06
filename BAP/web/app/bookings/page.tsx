@@ -112,7 +112,7 @@ export default function BookingsPage() {
             <li key={booking.transaction_id}>
               <Link
                 href={`/bookings/${booking.transaction_id}`}
-                className="flex flex-col gap-1 rounded-lg border border-neutral-200 p-4 hover:border-neutral-400"
+                className="flex flex-col gap-1 rounded-xl border border-neutral-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md"
               >
                 <div className="flex items-center justify-between gap-4">
                   <p className="font-medium text-neutral-900">{itemName}</p>

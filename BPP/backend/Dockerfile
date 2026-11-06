@@ -24,11 +24,13 @@ COPY shared/beckn_crypto ./shared/beckn_crypto
 COPY shared/beckn_transaction ./shared/beckn_transaction
 COPY shared/key_rotation ./shared/key_rotation
 COPY shared/inventory_core ./shared/inventory_core
+COPY shared/postal_directory ./shared/postal_directory
 COPY shared/realtime ./shared/realtime
 COPY shared/testing/contract_schemas ./shared/testing/contract_schemas
 COPY shared/redis_safe ./shared/redis_safe
 COPY shared/resilient_db ./shared/resilient_db
 COPY shared/payment_gateway ./shared/payment_gateway
+COPY shared/background_thread ./shared/background_thread
 COPY BPP/backend/ ./BPP/backend/
 # Phase 3 Exit fix (livetracker2.md, 2026-07-24) — see BAP/backend/Dockerfile's
 # identical comment: /app/data/secrets must already exist, app-owned, in the image

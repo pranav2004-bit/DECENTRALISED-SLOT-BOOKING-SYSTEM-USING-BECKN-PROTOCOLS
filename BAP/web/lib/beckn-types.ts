@@ -17,6 +17,17 @@ export interface ItemDescriptor {
   long_desc?: string;
 }
 
+export interface Tag {
+  descriptor: { code: string; name: string };
+  value: string;
+}
+
+export interface TagGroup {
+  display: boolean;
+  descriptor: { code: string; name: string };
+  list: Tag[];
+}
+
 export interface CatalogItem {
   id: string;
   descriptor: ItemDescriptor;
@@ -24,6 +35,11 @@ export interface CatalogItem {
   /** livetracker3.md §2.2 — only present once a real aggregate-eligible rating exists. */
   rating?: string;
   rating_count?: number;
+  /** Real `Item.tags` (TagGroup[]) — resource-specific structured data a business
+   * entered on its own dashboard (e.g. a doctor's specialisation), carried through
+   * from BPP/backend/core/catalog.py's `_resource_to_tags()`. Absent when the
+   * resource has no domain_data. */
+  tags?: TagGroup[];
 }
 
 export interface Provider {
@@ -57,11 +73,16 @@ export interface BecknError {
 export interface OrderStop {
   type: string;
   time: { timestamp: string };
+  person?: { name: string };
+  contact?: { phone?: string; email?: string };
 }
 
 export interface OrderFulfillment {
   id?: string;
   stops?: OrderStop[];
+  /** Project-defined, not a real protocol field (same territory as Item.rating_count
+   * elsewhere) — generated once, at confirm time, by BPP/backend/core/confirm_service.py. */
+  customer_id?: string;
 }
 
 export interface QuoteBreakupLine {

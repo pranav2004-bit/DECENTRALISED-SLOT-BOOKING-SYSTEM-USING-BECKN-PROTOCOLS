@@ -41,7 +41,28 @@ urlpatterns = [
         core_views.search_results_view,
         name="search-results",
     ),
+    path(
+        "api/v1/search/<str:transaction_id>/availability",
+        core_views.check_availability_view,
+        name="check-availability",
+    ),
+    path(
+        "api/v1/search/<str:transaction_id>/slots",
+        core_views.list_available_slots_view,
+        name="list-available-slots",
+    ),
     path("on_search", core_views.on_search_view, name="on_search"),
+    path(
+        "api/v1/postal-directory/divisions",
+        core_views.postal_divisions_view,
+        name="postal-divisions",
+    ),
+    path(
+        "api/v1/postal-directory/lookup",
+        core_views.postal_lookup_by_pincode_view,
+        name="postal-lookup",
+    ),
+    path("api/v1/geo/reverse", core_views.geo_reverse_view, name="geo-reverse"),
     path("api/v1/select", core_views.select_trigger_view, name="select-trigger"),
     path(
         "api/v1/select/<str:transaction_id>",

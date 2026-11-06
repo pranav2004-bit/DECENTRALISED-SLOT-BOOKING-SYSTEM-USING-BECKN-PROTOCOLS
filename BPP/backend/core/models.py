@@ -95,8 +95,44 @@ class BusinessAccount(AbstractBaseUser, PermissionsMixin):
     # compatibility with every business created before this field existed.
     domain_code = models.CharField(max_length=100, default=settings.DOMAIN_BEAUTY)
 
+    # Profile page — public-facing business info, all optional (a business may not
+    # have filled these in yet), all owner-editable via business_profile_update_view.
+    description = models.TextField(max_length=1000, blank=True, default="")
+    public_phone = models.CharField(max_length=30, blank=True, default="")
+    public_email = models.EmailField(max_length=255, blank=True, default="")
+    address = models.CharField(max_length=500, blank=True, default="")
+    # Profile page's cascading State -> Division -> Pincode picker. Plain strings
+    # (not foreign keys into shared.postal_directory), same reasoning as the other
+    # free-text profile fields above: most states have no Division/Pincode data
+    # seeded yet (only Andhra Pradesh does — see shared/postal_directory), so a hard
+    # FK would make picking any other state impossible. `state` is validated against
+    # the fixed ALL_INDIA_STATES list; `division`/`pincode` are validated against
+    # shared.postal_directory's real rows when those exist for the chosen state.
+    state = models.CharField(max_length=100, blank=True, default="")
+    division = models.CharField(max_length=255, blank=True, default="")
+    pincode = models.CharField(max_length=10, blank=True, default="")
+
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
+    # A business's own self-service "Live"/"Offline" toggle (Profile page) — deliberately
+    # NOT the same flag as is_active above: is_active also gates authenticate() (Django's
+    # own login check), so a business flipping itself "offline" through this field must
+    # still be able to log back in and flip it back. Only catalog visibility reads this
+    # one; login/auth never does.
+    #
+    # Defaults False, not True: a brand-new signup has an empty profile (no description,
+    # phone, address, state/division/pincode — only business_name), and
+    # business_profile_update_view already refuses to let an incomplete profile go Live
+    # — a True default here would just contradict that gate the instant an account is
+    # created, before the owner has touched the Profile page at all.
+    is_accepting_bookings = models.BooleanField(default=False)
+
+    # Doctors tab — source of each owner's own "DOC-0001, DOC-0002, ..." sequence
+    # (resource_create_view). Lives on the account, not derived from a resource
+    # COUNT(*), so a deleted doctor never gets its number reissued to a later one.
+    # Incremented under `select_for_update()` so two concurrent "Add doctor"
+    # requests for the same business can never receive the same id.
+    next_doctor_sequence = models.PositiveIntegerField(default=1)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

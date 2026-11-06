@@ -38,8 +38,43 @@ logger = logging.getLogger("django_observability")
 _REDIS_UNAVAILABLE = (ConnectionInterrupted, redis.exceptions.RedisError, RedisHardTimeout)
 
 
-def _client_ip_key(request) -> str:
+def resolve_client_ip(request) -> str:
+    """Real gap found and closed live 2026-11-05: every customer-facing trigger view
+    (search/select/init/confirm/etc.) is only ever reached browser -> Next.js's
+    same-origin `/api/:path*` rewrite (added for BUG_TRACKER.md #3's cookie fix) ->
+    this backend — never called directly by a browser. `REMOTE_ADDR` is therefore
+    always the Next.js container's own hop, identical for every real visitor. That
+    broke two independent things keyed on it: this module's own per-client rate
+    limit (confirmed live: 21/21 recent requests across different browser sessions
+    all logged the same REMOTE_ADDR, collapsing every "/min" limit into one
+    global, site-wide bucket) and `SearchSession.client_ip`
+    (`core/views.py`'s `search_trigger_view`), the anonymous-actor key
+    `select_service.MAX_CONCURRENT_HOLDS` counts against — same collapse, different
+    symptom: every anonymous visitor's holds counted against one shared total,
+    confirmed live showing "Too many concurrent reservation holds" from a handful of
+    an entire evening's unrelated test sessions.
+
+    Fix: prefer `X-Forwarded-For`'s first (leftmost/original) entry — the standard
+    convention both Next.js's rewrite proxy and Caddy (the real prod edge,
+    BUG_TRACKER.md #1/#2) follow — falling back to `REMOTE_ADDR` when the header is
+    absent (e.g. a non-browser Beckn callback hitting this backend directly, or any
+    other caller that bypasses the proxy). Trusting this header is safe here because
+    this backend is never itself directly internet-exposed in production (only
+    Caddy's edge is); it's reachable un-proxied only on a local dev machine, where
+    evading a rate limit or hold cap isn't a real threat. Any other call site that
+    needs to identify "which real actor is this" (not just rate-limiting) should
+    use this instead of reading `REMOTE_ADDR` directly — see `core/views.py`'s
+    `search_trigger_view`.
+    """
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
+    first_hop = forwarded.split(",")[0].strip()
+    if first_hop:
+        return first_hop
     return request.META.get("REMOTE_ADDR", "unknown")
+
+
+def _client_ip_key(request) -> str:
+    return resolve_client_ip(request)
 
 
 def by_authenticated_account(request) -> str:

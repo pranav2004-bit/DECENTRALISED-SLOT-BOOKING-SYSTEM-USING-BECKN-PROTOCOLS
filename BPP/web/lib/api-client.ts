@@ -48,6 +48,12 @@ export async function apiFetch(path: string, options: RequestOptions = {}): Prom
     try {
       const response = await fetch(url, {
         credentials: 'include',
+        // Every call through here is live operational data (bookings,
+        // availability, dashboard stats, ...) — never correct for a browser,
+        // proxy, or CDN in front of this app to serve a cached response
+        // instead of hitting the real backend. `...init` still lets a caller
+        // override this if one ever genuinely needs to (none do today).
+        cache: 'no-store',
         ...init,
         signal: controller.signal,
       });

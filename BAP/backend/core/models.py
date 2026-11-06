@@ -172,6 +172,23 @@ class SearchSession(models.Model):
     # confirm. Only ever read by the reconciliation sweep; never surfaced to a
     # customer directly.
     confirm_triggered_at = models.DateTimeField(null=True, blank=True)
+    # Real gap found and closed live 2026-11-05: a confirmed booking's slot is
+    # permanently BOOKED the instant /confirm succeeds — before payment is ever
+    # attempted. Nothing released it back if payment was then declined,
+    # abandoned, or just never started, which both permanently lost that slot
+    # to everyone else AND let a single actor repeat select->confirm without
+    # limit, since `select_service._count_in_flight_holds` only ever counted
+    # *unconfirmed* holds (a confirmed session dropped out of that cap
+    # entirely). Set once, at the exact moment `confirm_service.
+    # record_on_confirm_result` records a real successful confirm — read by
+    # both `select_service._count_in_flight_holds` (so confirmed-but-unpaid
+    # bookings count against the same per-actor abuse cap as ordinary holds,
+    # closing the second half of this gap) and `reconciliation.
+    # sweep_unpaid_confirmed_bookings` (which cancels — and so releases — a
+    # booking still unpaid this long after confirmation, closing the first
+    # half). Same single-purpose-field pattern as `confirm_triggered_at`/
+    # `selected_order_at` above, not `updated_at`.
+    confirmed_order_at = models.DateTimeField(null=True, blank=True)
 
     # §3.5 Post-Booking — same mutually-exclusive success/error pattern, all
     # operating on the already-confirmed booking above. `status_order` holds
@@ -201,9 +218,25 @@ class SearchSession(models.Model):
     # §3.7 — reservation-hold abuse prevention needs a per-actor key to cap
     # concurrent in-flight holds against. A logged-in `customer` already provides
     # one; an anonymous session (search never required login) doesn't, so the
-    # client's IP is captured at search-trigger time as the fallback key —
-    # mirroring `rate_limit.py`'s own `REMOTE_ADDR`-keying, not a new convention.
+    # client's IP is captured at search-trigger time as the fallback key, via
+    # `rate_limit.py`'s own `resolve_client_ip()` (not raw `REMOTE_ADDR` — see
+    # that function's docstring for the real proxy-collapse bug this avoids).
     client_ip = models.GenericIPAddressField(null=True, blank=True)
+
+    # Real gap found and closed live 2026-11-05: `_count_in_flight_holds`
+    # (select_service.py) had no time bound at all — it counted every
+    # `SearchSession` with a `selected_order` ever recorded and never confirmed
+    # or cancelled, forever, even long after the real BPP-side hold's TTL
+    # (HOLD_SECONDS) had elapsed. Combined with `client_ip` now correctly
+    # identifying each real actor (rather than every visitor colliding on one
+    # shared proxy IP — see `client_ip`'s own docstring), a customer's own
+    # ordinary browsing (a few slots looked at, never confirmed) permanently
+    # used up their cap with no way to ever recover it. Set only once, at the
+    # exact moment `record_on_select_result` records a real successful hold —
+    # an explicit, single-purpose field read only by `_count_in_flight_holds`,
+    # the same pattern as `confirm_triggered_at` above, not `updated_at` (which
+    # later, unrelated saves on this same session would otherwise also bump).
+    selected_order_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -241,14 +274,28 @@ class PaymentTransaction(models.Model):
         BPP = "bpp", "BPP"
 
     # Valid edges only, mirroring shared/inventory_core/models.py's Booking._STATUS_
-    # TRANSITIONS pattern exactly (livetracker5.md Phase 0.4). FAILED is terminal on
-    # this row by design — a retry after a decline creates a NEW PaymentTransaction
-    # with a new idempotency_key, it never reopens a FAILED row.
+    # TRANSITIONS pattern exactly (livetracker5.md Phase 0.4).
+    #
+    # Real gap found and fixed live 2026-11-05: FAILED used to be terminal here —
+    # correct for a retry through *this app's own* "Proceed to payment" button
+    # (that always creates a new PaymentTransaction row with a fresh idempotency
+    # key, confirmed live), but wrong for a retry *inside Razorpay's own hosted
+    # checkout widget*: a customer whose card attempt fails and then genuinely
+    # pays via netbanking in the same widget session never left that widget, so
+    # there's no new row — Razorpay sends a separate webhook per attempt, both
+    # correlated to the same order (this row's own vendor_txn_id). Found live: a
+    # card decline's FAILED webhook arrived first, locking this row terminal,
+    # and the real payment.captured webhook for the successful netbanking retry
+    # was then silently discarded — the customer had genuinely paid (Razorpay's
+    # own widget confirmed "Payment Successful") while this app kept showing
+    # "declined" forever. FAILED -> SUCCEEDED is now a real edge; the reverse
+    # (SUCCEEDED -> FAILED) is deliberately still absent — a genuine capture
+    # must never be downgraded by a later, unrelated, or stray FAILED delivery.
     _TRANSITIONS = {
         Status.PENDING: {Status.SUCCEEDED, Status.FAILED},
         Status.SUCCEEDED: {Status.REFUNDED, Status.PARTIALLY_REFUNDED},
         Status.PARTIALLY_REFUNDED: {Status.PARTIALLY_REFUNDED, Status.REFUNDED},
-        Status.FAILED: set(),
+        Status.FAILED: {Status.SUCCEEDED},
         Status.REFUNDED: set(),
     }
 

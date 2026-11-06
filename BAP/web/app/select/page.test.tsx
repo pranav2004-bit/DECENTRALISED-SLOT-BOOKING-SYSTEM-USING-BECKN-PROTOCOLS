@@ -1,15 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-const { mockUseSearchParams, mockPush } = vi.hoisted(() => ({
+const { mockUseSearchParams, mockPush, mockBack } = vi.hoisted(() => ({
   mockUseSearchParams: vi.fn(),
   mockPush: vi.fn(),
+  mockBack: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
   useSearchParams: mockUseSearchParams,
-  useRouter: () => ({ push: mockPush }),
+  useRouter: () => ({ push: mockPush, back: mockBack }),
 }));
 
 import SelectPage from './page';
@@ -19,35 +20,31 @@ function setParams(entries: Record<string, string>) {
   mockUseSearchParams.mockReturnValue(new URLSearchParams(entries));
 }
 
-/**
- * Real bug found live in CI, not a flake: every test in this file used a
- * hardcoded '2026-08-01T10:00' as the value typed into the "Date and time"
- * input — safely in the future when this file was first written, but the
- * page's own `minDateTimeLocal()` (`app/select/page.tsx`) computes its
- * `min` attribute from the *real* `Date.now()`. Once real time passed that
- * hardcoded date, the browser's own native `<input type="datetime-local">`
- * constraint validation silently rejected the now-past value, blocking
- * form submission before `handleSubmit` ever ran — every test past the
- * first one failed identically, with the form still showing its untouched
- * initial state. A value computed from the real clock at test-run time
- * can never go stale the same way again.
- */
-function futureDateTimeLocal(): string {
-  const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${future.getFullYear()}-${pad(future.getMonth() + 1)}-${pad(future.getDate())}T${pad(
-    future.getHours()
-  )}:${pad(future.getMinutes())}`;
+/** The slot/hold is already placed by the time this page loads (search/page.tsx's
+ * own inline BookMyShow-style selector creates it) — this page's required params
+ * mirror exactly what that handoff carries forward, per app/select/page.tsx's own
+ * `!transactionId || !itemId || !providerId || !slotStart` guard. */
+const BASE_PARAMS = {
+  transaction_id: 'tx-1',
+  item_id: 'item-1',
+  provider_id: 'provider-1',
+  item_name: 'Haircut',
+  provider_name: 'Glow Salon',
+  slot_start: '2026-08-01T10:00:00+00:00',
+  price_value: '500.00',
+  price_currency: 'INR',
+};
+
+async function openDetailsForm(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: 'Next' }));
+  await user.type(screen.getByLabelText('Name'), 'Asha Rao');
+  await user.type(screen.getByLabelText('Email ID'), 'asha@example.com');
+  await user.type(screen.getByLabelText('Phone number'), '9876543210');
 }
 
 describe('SelectPage', () => {
   beforeEach(() => {
-    setParams({
-      transaction_id: 'tx-1',
-      item_id: 'item-1',
-      item_name: 'Haircut',
-      provider_name: 'Glow Salon',
-    });
+    setParams(BASE_PARAMS);
   });
 
   afterEach(() => {
@@ -60,92 +57,81 @@ describe('SelectPage', () => {
     expect(screen.getByText('Missing selection details')).toBeInTheDocument();
   });
 
-  it('reserves a slot and shows the confirmed time on success', async () => {
+  it('shows the booking summary from the handed-off params', () => {
+    render(<SelectPage />);
+    expect(screen.getByText('Glow Salon')).toBeInTheDocument();
+    expect(screen.getByText('Haircut')).toBeInTheDocument();
+    expect(screen.getByText('₹500')).toBeInTheDocument();
+  });
+
+  it('fills in customer details and proceeds to payment once init and confirm both succeed', async () => {
     const user = userEvent.setup({ delay: null });
-    vi.spyOn(bookingApi, 'triggerSelect').mockResolvedValue(undefined);
-    vi.spyOn(bookingApi, 'getSelectResult').mockResolvedValue({
+    vi.spyOn(bookingApi, 'triggerInit').mockResolvedValue(undefined);
+    vi.spyOn(bookingApi, 'getInitResult').mockResolvedValue({
       transaction_id: 'tx-1',
-      selected_error: null,
-      selected_order: {
-        provider: { id: 'provider-1' },
-        items: [{ id: 'item-1' }],
-        fulfillments: [{ id: 'booking-1', stops: [{ type: 'start', time: { timestamp: '2026-08-01T10:00:00+00:00' } }] }],
-      },
+      init_error: null,
+      init_order: { quote: { price: { currency: 'INR', value: '500.00' } } },
+    });
+    vi.spyOn(bookingApi, 'triggerConfirm').mockResolvedValue(undefined);
+    vi.spyOn(bookingApi, 'getConfirmResult').mockResolvedValue({
+      transaction_id: 'tx-1',
+      confirmed_error: null,
+      confirmed_order: { id: 'booking-1' },
     });
     render(<SelectPage />);
 
-    const input = screen.getByLabelText('Date and time');
-    fireEvent.change(input, { target: { value: futureDateTimeLocal() } });
-    await user.click(screen.getByRole('button', { name: 'Reserve this slot' }));
+    await openDetailsForm(user);
+    await user.click(screen.getByRole('button', { name: 'Proceed to payment' }));
 
-    expect(await screen.findByRole('status')).toHaveTextContent('Checking availability');
-    await waitFor(() => expect(screen.getByText(/Reserved:/)).toBeInTheDocument());
-    expect(screen.getByRole('link', { name: 'Review order' })).toHaveAttribute(
-      'href',
-      expect.stringContaining('transaction_id=tx-1')
+    await waitFor(() =>
+      expect(bookingApi.triggerConfirm).toHaveBeenCalledWith(
+        'tx-1',
+        expect.any(String),
+        { name: 'Asha Rao', email: 'asha@example.com', phone: '9876543210' }
+      )
+    );
+    await waitFor(() =>
+      expect(mockPush).toHaveBeenCalledWith(
+        expect.stringMatching(/^\/payment\?.*transaction_id=tx-1/)
+      )
     );
   });
 
-  it('shows SlotUnavailableError with a choose-another-time retry path', async () => {
+  it('shows a clear message and does not proceed when the slot was just booked by someone else', async () => {
     const user = userEvent.setup({ delay: null });
-    vi.spyOn(bookingApi, 'triggerSelect').mockResolvedValue(undefined);
-    vi.spyOn(bookingApi, 'getSelectResult').mockResolvedValue({
+    vi.spyOn(bookingApi, 'triggerInit').mockResolvedValue(undefined);
+    vi.spyOn(bookingApi, 'getInitResult').mockResolvedValue({
       transaction_id: 'tx-1',
-      selected_order: null,
-      selected_error: { code: 'SLOT_UNAVAILABLE', message: 'This slot was just booked' },
+      init_order: null,
+      init_error: { code: 'SLOT_UNAVAILABLE', message: 'This slot was just booked' },
     });
     render(<SelectPage />);
 
-    const input = screen.getByLabelText('Date and time');
-    fireEvent.change(input, { target: { value: futureDateTimeLocal() } });
-    await user.click(screen.getByRole('button', { name: 'Reserve this slot' }));
+    await openDetailsForm(user);
+    await user.click(screen.getByRole('button', { name: 'Proceed to payment' }));
 
-    expect(await screen.findByText('Slot no longer available')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Choose another slot' }));
-    expect(screen.getByLabelText('Date and time')).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        'Someone else just booked this exact time. Please go back and pick another slot.'
+      )
+    ).toBeInTheDocument();
+    expect(mockPush).not.toHaveBeenCalled();
   });
 
-  it('livetracker3.md §6.1: shows both resources for a real Automotive multi-resource (bay+mechanic) reservation', async () => {
-    const user = userEvent.setup({ delay: null });
-    vi.spyOn(bookingApi, 'triggerSelect').mockResolvedValue(undefined);
-    vi.spyOn(bookingApi, 'getSelectResult').mockResolvedValue({
-      transaction_id: 'tx-1',
-      selected_error: null,
-      selected_order: {
-        provider: { id: 'provider-1' },
-        items: [{ id: 'bay-1' }, { id: 'mechanic-1' }],
-        fulfillments: [
-          { id: 'booking-1', stops: [{ type: 'start', time: { timestamp: '2026-08-01T10:00:00+00:00' } }] },
-          { id: 'booking-2', stops: [{ type: 'start', time: { timestamp: '2026-08-01T10:00:00+00:00' } }] },
-        ],
-        quote: {
-          price: { currency: 'INR', value: '1200.00' },
-          breakup: [
-            { item: { id: 'bay-1' }, title: 'Bay 1', price: { currency: 'INR', value: '800.00' } },
-            { item: { id: 'mechanic-1' }, title: 'Mechanic John', price: { currency: 'INR', value: '400.00' } },
-          ],
-        },
-      },
-    });
+  it('shows a multi-resource (bay + mechanic) booking summary using the already-joined item name', () => {
+    setParams({ ...BASE_PARAMS, item_name: 'Bay 1 + Mechanic John' });
     render(<SelectPage />);
-
-    const input = screen.getByLabelText('Date and time');
-    fireEvent.change(input, { target: { value: futureDateTimeLocal() } });
-    await user.click(screen.getByRole('button', { name: 'Reserve this slot' }));
-
-    await waitFor(() => expect(screen.getByText(/Includes:/)).toBeInTheDocument());
     expect(screen.getByText('Bay 1 + Mechanic John')).toBeInTheDocument();
   });
 
   it('shows a submit error when the trigger itself fails', async () => {
     const user = userEvent.setup({ delay: null });
     const { ApiError } = await import('@/lib/api-client');
-    vi.spyOn(bookingApi, 'triggerSelect').mockRejectedValue(new ApiError('too many holds', 429, null));
+    vi.spyOn(bookingApi, 'triggerInit').mockRejectedValue(new ApiError('too many holds', 429, null));
     render(<SelectPage />);
 
-    const input = screen.getByLabelText('Date and time');
-    fireEvent.change(input, { target: { value: futureDateTimeLocal() } });
-    await user.click(screen.getByRole('button', { name: 'Reserve this slot' }));
+    await openDetailsForm(user);
+    await user.click(screen.getByRole('button', { name: 'Proceed to payment' }));
 
     expect(await screen.findByText('too many holds')).toBeInTheDocument();
   });

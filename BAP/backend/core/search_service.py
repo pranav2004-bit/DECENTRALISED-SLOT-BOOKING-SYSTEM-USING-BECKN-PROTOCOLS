@@ -38,7 +38,14 @@ class SearchError(Exception):
         self.status_code = status_code
 
 
-def trigger_search(*, query: str, domain: str, customer=None, client_ip: str | None = None) -> str:
+def trigger_search(
+    *,
+    query: str,
+    domain: str,
+    division: str | None = None,
+    customer=None,
+    client_ip: str | None = None,
+) -> str:
     """Customer-facing entry point: builds a real Beckn Intent + context, signs it,
     and sends it to Gateway's /search — synchronously, but only waiting for Gateway's
     immediate ACK (a fast local call), never for the actual catalog data, which arrives
@@ -49,7 +56,19 @@ def trigger_search(*, query: str, domain: str, customer=None, client_ip: str | N
     `client_ip` (§3.7): recorded on the session so an anonymous customer's later
     `/select` can be checked against `select_service`'s reservation-hold abuse cap
     — a logged-in `customer` already provides a per-actor key, an anonymous one
-    doesn't otherwise have one."""
+    doesn't otherwise have one.
+
+    `division` is the customer's chosen postal Division (search page's location
+    picker) — a real, standard Beckn Intent field (`intent.fulfillment.end.location`),
+    previously never populated. Omitted entirely when not given (a customer who
+    hasn't picked a location browses everything, same "honest absence" rule already
+    used elsewhere in this project) rather than sent as an empty/guessed value —
+    BPP's `dispatch_on_search` only filters by it when it's actually present.
+
+    `query` may also be empty (the location-picker flow: pick a division, see its
+    providers, no typed query needed) — `item.descriptor.name` is likewise omitted
+    entirely rather than sent as `""`, same discipline. BPP's `filter_catalog`
+    already treats a missing query as "browse everything", unchanged."""
     transaction_id = new_transaction_id()
     context = build_context(
         domain=domain,
@@ -62,7 +81,12 @@ def trigger_search(*, query: str, domain: str, customer=None, client_ip: str | N
         location={"country": {"code": "IND"}},
         timestamp=timezone.now().isoformat(),
     )
-    payload = {"context": context, "message": {"intent": {"item": {"descriptor": {"name": query}}}}}
+    intent = {}
+    if query:
+        intent["item"] = {"descriptor": {"name": query}}
+    if division:
+        intent["fulfillment"] = {"end": {"location": {"city": {"name": division}}}}
+    payload = {"context": context, "message": {"intent": intent}}
     body = json.dumps(payload).encode()
 
     _, signing_priv = get_signing_keys()

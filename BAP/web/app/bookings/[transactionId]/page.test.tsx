@@ -56,7 +56,7 @@ describe('BookingStatusPage', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Loading your booking');
     await waitFor(() => expect(screen.getByText('Haircut')).toBeInTheDocument());
     expect(screen.getByText('Glow Salon')).toBeInTheDocument();
-    expect(screen.getByText('₹500.00')).toBeInTheDocument();
+    expect(screen.getByText('₹500')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cancel booking' })).toBeInTheDocument();
   });
 
@@ -80,7 +80,7 @@ describe('BookingStatusPage', () => {
     render(<BookingStatusPage />);
 
     await waitFor(() => expect(screen.getByText('Bay 1 + Mechanic John')).toBeInTheDocument());
-    expect(screen.getByText('₹1,200.00')).toBeInTheDocument();
+    expect(screen.getByText('₹1,200')).toBeInTheDocument();
   });
 
   it('shows an empty state when there is no confirmed booking for this reference', async () => {

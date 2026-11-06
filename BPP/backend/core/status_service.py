@@ -17,8 +17,8 @@ different concept.
 
 import json
 import logging
-import threading
 
+from background_thread import run_in_background
 from beckn_transaction import (
     PayloadValidationError,
     build_ack_response,
@@ -204,7 +204,4 @@ def dispatch_on_status_in_background(*, payload: dict) -> None:
     """Fires dispatch_on_status on a daemon thread — the actual fire-and-forget
     entry point the view uses. Kept separate so tests can call dispatch_on_status
     directly and synchronously without racing a thread."""
-    thread = threading.Thread(
-        target=dispatch_on_status, kwargs={"payload": payload}, daemon=True
-    )
-    thread.start()
+    run_in_background(dispatch_on_status, {"payload": payload}, name="bpp-dispatch-on-status")

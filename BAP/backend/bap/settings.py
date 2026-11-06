@@ -44,8 +44,21 @@ CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 CORS_ALLOW_HEADERS = [*CORS_DEFAULT_HEADERS, "idempotency-key"]
 LOG_LEVEL = env("LOG_LEVEL", default="INFO")
 
+# Audit finding closed live 2026-11-06: payment-critical failures (a refund that
+# raised, a webhook NACK) only ever reached stdout — nobody was paged. Optional,
+# same "no invented infra ahead of real need" discipline as GEOCODING_BASE_URL
+# above — unset (the default) makes shared/alerting.send_alert() a silent no-op.
+ALERT_WEBHOOK_URL = env("ALERT_WEBHOOK_URL", default="")
+
 REGISTRY_BASE_URL = env("REGISTRY_BASE_URL")
 GATEWAY_BASE_URL = env("GATEWAY_BASE_URL")
+# Search page's "Detect my location" — reverse-geocodes GPS coordinates to a pincode
+# server-side (keeps the third-party call and its required User-Agent identification
+# out of the browser). OpenStreetMap's free Nominatim service — no API key, matching
+# this project's "no invented infra ahead of real need" discipline (same reasoning
+# EMAIL_BACKEND's file-based dev default already uses).
+GEOCODING_BASE_URL = env("GEOCODING_BASE_URL", default="https://nominatim.openstreetmap.org")
+GEOCODING_USER_AGENT = env("GEOCODING_USER_AGENT", default="OnSlot-BAP/1.0 (location picker)")
 SUBSCRIBER_ID = env("SUBSCRIBER_ID", default="")
 UNIQUE_KEY_ID = env("UNIQUE_KEY_ID", default="")
 SUBSCRIBER_URL = env("SUBSCRIBER_URL", default="")
@@ -93,6 +106,21 @@ RECONCILIATION_INTERVAL_SECONDS = env.int("RECONCILIATION_INTERVAL_SECONDS", def
 RECONCILIATION_STALE_CONFIRM_SECONDS = env.int(
     "RECONCILIATION_STALE_CONFIRM_SECONDS", default=300
 )
+# Real gap found and closed live 2026-11-05: `/confirm` moves a slot from HELD to
+# permanently BOOKED before payment is ever attempted (the real Beckn booking
+# semantics this project follows — see confirm_service.py's own docstring), so a
+# declined, abandoned, or simply never-started payment left that slot taken
+# forever, with no automatic path back to availability. This is how long a
+# confirmed-but-never-paid booking is given before the sweep cancels it and
+# releases the slot — generous enough that a real customer going through 3DS/OTP
+# bank verification (which can genuinely take a few minutes) is never caught by
+# it, but bounded so an abandoned or declined checkout doesn't lock out real,
+# paying customers indefinitely. A deliberately conservative starting point, not
+# derived from real production data (none exists yet, pre-launch) — same honest
+# framing as this file's other reconciliation thresholds.
+PAYMENT_COMPLETION_DEADLINE_SECONDS = env.int(
+    "PAYMENT_COMPLETION_DEADLINE_SECONDS", default=900
+)
 
 SERVICE_NAME = "bap-backend"
 
@@ -108,6 +136,7 @@ INSTALLED_APPS = [
     "channels",
     "corsheaders",
     "django_observability",
+    "postal_directory",
     "core",
 ]
 

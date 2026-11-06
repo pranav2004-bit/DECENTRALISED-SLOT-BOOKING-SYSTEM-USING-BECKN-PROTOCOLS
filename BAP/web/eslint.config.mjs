@@ -5,6 +5,21 @@ import nextTs from 'eslint-config-next/typescript';
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
+  {
+    rules: {
+      // These two rules arrived via a transitive eslint-plugin-react-hooks bump
+      // (package-lock.json), not a deliberate adoption — they're part of the
+      // React Compiler-readiness ruleset and this app doesn't use the Compiler.
+      // `set-state-in-effect` flags the "reset state when a dependency changes"
+      // pattern that React's own docs endorse (search/page.tsx resets
+      // selectedSlot/searchOpen/etc. when selectedProviderId/division changes) —
+      // real, intentional, working code, not a bug. `purity` flags a plain
+      // `Date.now()` call inside a setState updater (search/page.tsx's hold-
+      // countdown), which is fine outside React Compiler's memoization model.
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/purity': 'off',
+    },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:

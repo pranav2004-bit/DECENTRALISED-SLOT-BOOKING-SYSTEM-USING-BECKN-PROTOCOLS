@@ -34,3 +34,48 @@ export const RESOURCE_TYPES_BY_DOMAIN: Record<string, { value: string; label: st
     { value: 'mechanic', label: 'Mechanic' },
   ],
 };
+
+/**
+ * Mirrors BPP/backend/core/views.py's own ALL_INDIA_STATES tuple exactly — the
+ * Profile page's State dropdown (step 1 of the State -> Division -> Pincode
+ * cascade), same duplicated-not-shared convention as SPECIALISATIONS/
+ * RESOURCE_TYPES_BY_DOMAIN above (ADR-0004).
+ */
+export const ALL_INDIA_STATES = [
+  'Andaman and Nicobar Islands',
+  'Andhra Pradesh',
+  'Arunachal Pradesh',
+  'Assam',
+  'Bihar',
+  'Chandigarh',
+  'Chhattisgarh',
+  'Dadra and Nagar Haveli and Daman and Diu',
+  'Delhi',
+  'Goa',
+  'Gujarat',
+  'Haryana',
+  'Himachal Pradesh',
+  'Jammu and Kashmir',
+  'Jharkhand',
+  'Karnataka',
+  'Kerala',
+  'Ladakh',
+  'Lakshadweep',
+  'Madhya Pradesh',
+  'Maharashtra',
+  'Manipur',
+  'Meghalaya',
+  'Mizoram',
+  'Nagaland',
+  'Odisha',
+  'Puducherry',
+  'Punjab',
+  'Rajasthan',
+  'Sikkim',
+  'Tamil Nadu',
+  'Telangana',
+  'Tripura',
+  'Uttar Pradesh',
+  'Uttarakhand',
+  'West Bengal',
+];

@@ -229,6 +229,29 @@ def test_trigger_cancel_view_rejects_a_transaction_with_no_confirmed_booking(
 
 
 @pytest.mark.django_db
+def test_trigger_cancel_view_rejects_a_request_with_no_csrf_token(bap_identity_settings):
+    """Real gap found and closed live 2026-11-05: this view cancels a victim's
+    own real, paid-for booking — deliberately NOT `@csrf_exempt` anymore, same
+    real-consequence reasoning `confirm_trigger_view`'s own test already covers
+    for itself. A request with no CSRF token at all must be rejected by
+    Django's own CsrfViewMiddleware, not silently accepted (the project's own
+    `client` fixture above doesn't enforce CSRF, so this test builds one that
+    genuinely does)."""
+    _session_with_confirmed_order(transaction_id="txn-1")
+    enforcing_client = Client(enforce_csrf_checks=True)
+
+    resp = enforcing_client.post(
+        reverse("cancel-trigger"),
+        data=json.dumps({"transaction_id": "txn-1"}),
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 403
+    session = SearchSession.objects.get(transaction_id="txn-1")
+    assert session.cancelled_order is None
+
+
+@pytest.mark.django_db
 def test_cancel_result_view_returns_404_for_an_unknown_transaction(client):
     resp = client.get(reverse("cancel-result", args=["nonexistent-txn"]))
     assert resp.status_code == 404

@@ -9,6 +9,7 @@ construction and response parsing are correct against the real documented API sh
 import hashlib
 import hmac
 import json
+import time
 from decimal import Decimal
 
 import responses
@@ -137,6 +138,7 @@ def test_verify_webhook_accepts_a_correctly_signed_payment_captured_event():
     payload = json.dumps(
         {
             "event": "payment.captured",
+            "created_at": int(time.time()),
             "payload": {
                 "payment": {"entity": {"id": "pay_1", "order_id": "order_abc123", "status": "captured"}}
             },
@@ -151,6 +153,7 @@ def test_verify_webhook_accepts_a_correctly_signed_payment_failed_event():
     payload = json.dumps(
         {
             "event": "payment.failed",
+            "created_at": int(time.time()),
             "payload": {
                 "payment": {"entity": {"id": "pay_1", "order_id": "order_abc123", "status": "failed"}}
             },
@@ -158,6 +161,25 @@ def test_verify_webhook_accepts_a_correctly_signed_payment_failed_event():
     ).encode()
     event = _adapter().verify_webhook(payload=payload, headers=_signed_headers(payload))
     assert event.status == PaymentStatus.FAILED
+
+
+def test_verify_webhook_rejects_a_correctly_signed_but_stale_event():
+    """Audit finding closed live 2026-11-06: a genuinely valid signature over a
+    captured, replayed webhook body must still be rejected once it's too old —
+    HMAC alone has no concept of expiry."""
+    payload = json.dumps(
+        {
+            "event": "payment.captured",
+            "created_at": int(time.time()) - 3600,  # 1 hour old, well past the 300s window
+            "payload": {
+                "payment": {"entity": {"id": "pay_1", "order_id": "order_abc123", "status": "captured"}}
+            },
+        }
+    ).encode()
+    import pytest
+
+    with pytest.raises(WebhookVerificationError):
+        _adapter().verify_webhook(payload=payload, headers=_signed_headers(payload))
 
 
 def test_verify_webhook_rejects_a_missing_signature():

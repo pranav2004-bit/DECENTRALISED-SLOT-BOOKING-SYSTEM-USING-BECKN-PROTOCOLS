@@ -41,8 +41,12 @@ def bpp_identity_settings(settings, tmp_path):
     yield settings
 
 
-def _build_search_payload(*, bap_id="bap.example.com", query=None, domain="ONDC:RET13"):
+def _build_search_payload(
+    *, bap_id="bap.example.com", query=None, domain="ONDC:RET13", division=None
+):
     intent = {"item": {"descriptor": {"name": query}}} if query else {}
+    if division:
+        intent["fulfillment"] = {"end": {"location": {"city": {"name": division}}}}
     return {
         "context": {
             "domain": domain,
@@ -197,7 +201,10 @@ def test_dispatch_on_search_sends_the_real_catalog_to_gateway(bpp_identity_setti
     avoid racing it), and the exact catalog data (real business/resource names) is
     confirmed present in the payload actually sent to Gateway's /on_search."""
     business = BusinessAccount.objects.create_user(
-        contact="salon@example.com", business_name="Glow Salon", password=TEST_PASSWORD
+        contact="salon@example.com",
+        business_name="Glow Salon",
+        password=TEST_PASSWORD,
+        is_accepting_bookings=True,
     )
     Resource.objects.create(
         owner_ref=str(business.id), name="Stylist A", code="STY-A", category_id="ONDC:RET13"
@@ -239,7 +246,10 @@ def test_dispatch_on_search_filters_the_real_catalog_by_the_real_query_text(
     `message.intent.item.descriptor.name` from the real inbound payload, not just
     `context["domain"]` as before this fix."""
     business = BusinessAccount.objects.create_user(
-        contact="salon@example.com", business_name="Glow Salon", password=TEST_PASSWORD
+        contact="salon@example.com",
+        business_name="Glow Salon",
+        password=TEST_PASSWORD,
+        is_accepting_bookings=True,
     )
     Resource.objects.create(owner_ref=str(business.id), name="Senior Stylist - Priya")
     Resource.objects.create(owner_ref=str(business.id), name="Junior Stylist - Anjali")
@@ -261,6 +271,47 @@ def test_dispatch_on_search_filters_the_real_catalog_by_the_real_query_text(
     provider = forwarded["message"]["catalog"]["providers"][0]
     items = provider["items"]
     assert [item["descriptor"]["name"] for item in items] == ["Senior Stylist - Priya"]
+
+
+@pytest.mark.django_db
+def test_dispatch_on_search_filters_the_real_catalog_by_division(bpp_identity_settings):
+    """Proves dispatch_on_search reads a real
+    `message.intent.fulfillment.end.location.city.name` from the inbound payload
+    (the search page's location picker) and only sends Gateway the providers whose
+    own BusinessAccount.division matches — a business in a different division is
+    excluded, not just deprioritized."""
+    vizag_salon = BusinessAccount.objects.create_user(
+        contact="vizag@example.com", business_name="Vizag Salon", password=TEST_PASSWORD
+    )
+    BusinessAccount.objects.filter(id=vizag_salon.id).update(
+        is_accepting_bookings=True, division="Visakhapatnam Division"
+    )
+    Resource.objects.create(owner_ref=str(vizag_salon.id), name="Stylist A")
+
+    vijayawada_salon = BusinessAccount.objects.create_user(
+        contact="vijayawada@example.com", business_name="Vijayawada Salon", password=TEST_PASSWORD
+    )
+    BusinessAccount.objects.filter(id=vijayawada_salon.id).update(
+        is_accepting_bookings=True, division="Vijayawada Division"
+    )
+    Resource.objects.create(owner_ref=str(vijayawada_salon.id), name="Stylist B")
+
+    payload = _build_search_payload(division="Visakhapatnam Division")
+    captured_requests = []
+
+    def gateway_on_search_callback(request):
+        captured_requests.append(request)
+        return (200, {}, json.dumps({"message": {"ack": {"status": "ACK"}}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://gateway:8000/on_search", callback=gateway_on_search_callback
+        )
+        search_service.dispatch_on_search(payload=payload)
+
+    forwarded = json.loads(captured_requests[0].body)
+    providers = forwarded["message"]["catalog"]["providers"]
+    assert [p["descriptor"]["name"] for p in providers] == ["Vizag Salon"]
 
 
 @pytest.mark.django_db
@@ -390,6 +441,7 @@ def test_dispatch_on_search_returns_real_results_for_an_in_scope_healthcare_sear
     business = BusinessAccount.objects.create_user(
         contact="clinic@example.com", business_name="Demo Health Clinic",
         password=TEST_PASSWORD, domain_code="ONDC:SRV13",
+        is_accepting_bookings=True,
     )
     Resource.objects.create(
         owner_ref=str(business.id), name="Demo Doctor", category_id="ONDC:SRV13"

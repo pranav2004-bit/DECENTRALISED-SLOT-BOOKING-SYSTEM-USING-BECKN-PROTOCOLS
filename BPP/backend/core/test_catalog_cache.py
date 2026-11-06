@@ -54,7 +54,16 @@ def client():
 
 def _business_with_resource(*, business_name="Glow Salon", contact="owner@example.com"):
     business = BusinessAccount.objects.create_user(
-        contact=contact, business_name=business_name, password=TEST_PASSWORD, domain_code=DOMAIN
+        contact=contact,
+        business_name=business_name,
+        password=TEST_PASSWORD,
+        domain_code=DOMAIN,
+        # A real, intentional gate (is_accepting_bookings defaults False on
+        # signup) that this shared helper predates — every one of its 14
+        # callers was invisible to build_catalog()/get_cached_catalog() until
+        # this was added (same pattern already fixed in test_catalog.py and
+        # test_search.py this session).
+        is_accepting_bookings=True,
     )
     Resource.objects.create(
         owner_ref=str(business.id),

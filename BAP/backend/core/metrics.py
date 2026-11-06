@@ -26,6 +26,24 @@ _ALL_COUNTERS = {
     "confirm_succeeded": _CONFIRM_SUCCEEDED,
 }
 
+# Separate metric family, not a funnel stage — a check_availability call (does
+# this doctor have a slot today?) has no booking-lifecycle outcome of its own.
+_AVAILABILITY_CHECK_SUCCEEDED = "bap:metrics:availability_check_succeeded"
+_AVAILABILITY_CHECK_FAILED = "bap:metrics:availability_check_failed"
+
+_AVAILABILITY_COUNTERS = {
+    "succeeded": _AVAILABILITY_CHECK_SUCCEEDED,
+    "failed": _AVAILABILITY_CHECK_FAILED,
+}
+
+
+def record_availability_check_succeeded() -> None:
+    increment_counter(_AVAILABILITY_CHECK_SUCCEEDED)
+
+
+def record_availability_check_failed() -> None:
+    increment_counter(_AVAILABILITY_CHECK_FAILED)
+
 
 def record_search_triggered() -> None:
     increment_counter(_SEARCH_TRIGGERED)
@@ -46,9 +64,17 @@ def record_confirm_succeeded() -> None:
 def render_metrics() -> list[str]:
     """Called by shared.django_observability.views.metrics_view via
     settings.EXTRA_METRICS_PROVIDERS."""
-    return render_counter_family(
-        metric_name="bap_booking_funnel_total",
-        help_text="Real search-to-confirm conversion funnel counts, Redis-backed (§3.10)",
-        label_name="stage",
-        counters=_ALL_COUNTERS,
-    )
+    return [
+        *render_counter_family(
+            metric_name="bap_booking_funnel_total",
+            help_text="Real search-to-confirm conversion funnel counts, Redis-backed (§3.10)",
+            label_name="stage",
+            counters=_ALL_COUNTERS,
+        ),
+        *render_counter_family(
+            metric_name="bap_availability_check_total",
+            help_text="Real check_availability call outcomes, Redis-backed",
+            label_name="outcome",
+            counters=_AVAILABILITY_COUNTERS,
+        ),
+    ]

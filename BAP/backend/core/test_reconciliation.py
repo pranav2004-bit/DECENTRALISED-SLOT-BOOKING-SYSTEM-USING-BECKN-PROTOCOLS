@@ -10,6 +10,7 @@ never be auto-confirmed.
 
 import datetime as dt
 import json
+from unittest.mock import patch
 
 import pytest
 import responses
@@ -19,7 +20,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from core import reconciliation
-from core.models import SearchSession
+from core.models import PaymentTransaction, SearchSession
 
 Customer = get_user_model()
 
@@ -67,6 +68,42 @@ def _session_with_init(
     session.confirm_triggered_at = confirm_triggered_at
     session.save()
     return session
+
+
+def _session_confirmed_unpaid(
+    *, transaction_id="txn-1", bpp_id="bpp.example.com", customer=None, confirmed_order_at=None
+):
+    """A session past /confirm — the real, permanently-booked state
+    `sweep_unpaid_confirmed_bookings` operates on, distinct from `_session_with_init`
+    above (which only reaches `/init`, never confirms)."""
+    session = SearchSession.objects.create(
+        transaction_id=transaction_id, query="haircut", domain="ONDC:RET13", customer=customer
+    )
+    session.selected_bpp_id = bpp_id
+    session.selected_bpp_uri = f"https://{bpp_id}"
+    session.confirmed_order = {
+        "id": "booking-1",
+        "status": "ACTIVE",
+        "provider": {"id": "biz-1"},
+        "items": [{"id": "item-1"}],
+        "fulfillments": [{"id": "booking-1", "stops": [{"type": "start"}]}],
+    }
+    session.confirmed_order_at = confirmed_order_at
+    session.save()
+    return session
+
+
+def _bpp_cancel_ack_callback(captured_requests):
+    def callback(request):
+        captured_requests.append(request)
+        body = json.loads(request.body)
+        return (
+            200,
+            {},
+            json.dumps({"context": body["context"], "message": {"ack": {"status": "ACK"}}}),
+        )
+
+    return callback
 
 
 def _mock_bpp_registry_lookup(rsps, *, bpp_id="bpp.example.com", url="https://bpp.example.com"):
@@ -204,7 +241,19 @@ def test_full_dropped_callback_scenario_end_to_end_via_the_real_http_trigger(
         )
         resp = client.post(
             reverse("confirm-trigger"),
-            data=json.dumps({"transaction_id": "txn-1"}),
+            # customer_name/email/phone: required by confirm_trigger_view since
+            # this phase's real-identity-at-confirm change (views.py) — this
+            # test predates that and was failing with a real 400 here (caught
+            # live, 2026-11-04) until updated to match the view's actual
+            # current contract.
+            data=json.dumps(
+                {
+                    "transaction_id": "txn-1",
+                    "customer_name": "Test Customer",
+                    "customer_email": "test.customer@example.com",
+                    "customer_phone": "9876543210",
+                }
+            ),
             content_type="application/json",
         )
     assert resp.status_code == 202
@@ -231,3 +280,146 @@ def test_full_dropped_callback_scenario_end_to_end_via_the_real_http_trigger(
 
     assert resynced == 1
     assert len(captured_requests) == 1  # the real self-healing re-dispatch
+
+
+@pytest.mark.django_db
+def test_sweep_releases_a_confirmed_booking_whose_payment_never_completed(bap_identity_settings):
+    """The real §5 Test Gate (this fix's own scope): /confirm permanently books
+    a slot before payment is ever attempted (confirm_service.py's own
+    docstring) — a booking confirmed well past the payment deadline with no
+    SUCCEEDED payment must be cancelled through the real /cancel wire path,
+    which is what actually releases the slot back to availability."""
+    stale_time = timezone.now() - dt.timedelta(seconds=1000)
+    session = _session_confirmed_unpaid(confirmed_order_at=stale_time)
+    captured_requests = []
+
+    with responses.RequestsMock() as rsps:
+        _mock_bpp_registry_lookup(rsps)
+        rsps.add_callback(
+            responses.POST,
+            "https://bpp.example.com/cancel",
+            callback=_bpp_cancel_ack_callback(captured_requests),
+        )
+        released = reconciliation.sweep_unpaid_confirmed_bookings(deadline_seconds=900)
+
+    assert released == 1
+    assert len(captured_requests) == 1
+    forwarded = json.loads(captured_requests[0].body)
+    assert forwarded["context"]["action"] == "cancel"
+    assert forwarded["context"]["transaction_id"] == session.transaction_id
+    assert forwarded["message"]["order_id"] == "booking-1"
+
+
+@pytest.mark.django_db
+def test_sweep_does_not_touch_a_confirmed_booking_with_a_succeeded_payment(bap_identity_settings):
+    """A real, legitimately-paid booking must never be auto-cancelled, no
+    matter how old — a SUCCEEDED PaymentTransaction is the one signal that
+    genuinely distinguishes "paid" from "abandoned."."""
+    stale_time = timezone.now() - dt.timedelta(seconds=1000)
+    session = _session_confirmed_unpaid(confirmed_order_at=stale_time)
+    PaymentTransaction.objects.create(
+        session=session,
+        transaction_id_text=session.transaction_id,
+        amount="500.00",
+        currency="INR",
+        vendor="razorpay",
+        vendor_txn_id="order_real123",
+        idempotency_key=f"charge:{session.transaction_id}:1",
+        status=PaymentTransaction.Status.SUCCEEDED,
+    )
+
+    with responses.RequestsMock(assert_all_requests_are_fired=False):
+        released = reconciliation.sweep_unpaid_confirmed_bookings(deadline_seconds=900)
+
+    assert released == 0
+    session.refresh_from_db()
+    assert session.cancelled_order is None
+
+
+@pytest.mark.django_db
+def test_sweep_still_releases_a_booking_whose_only_payment_attempt_failed(bap_identity_settings):
+    """A FAILED (or PENDING, abandoned-mid-checkout) payment is not a real
+    sale — only SUCCEEDED exempts a booking from this sweep."""
+    stale_time = timezone.now() - dt.timedelta(seconds=1000)
+    session = _session_confirmed_unpaid(confirmed_order_at=stale_time)
+    PaymentTransaction.objects.create(
+        session=session,
+        transaction_id_text=session.transaction_id,
+        amount="500.00",
+        currency="INR",
+        vendor="razorpay",
+        idempotency_key=f"charge:{session.transaction_id}:1",
+        status=PaymentTransaction.Status.FAILED,
+    )
+
+    with responses.RequestsMock() as rsps:
+        _mock_bpp_registry_lookup(rsps)
+        rsps.add_callback(
+            responses.POST,
+            "https://bpp.example.com/cancel",
+            callback=_bpp_cancel_ack_callback([]),
+        )
+        released = reconciliation.sweep_unpaid_confirmed_bookings(deadline_seconds=900)
+
+    assert released == 1
+
+
+@pytest.mark.django_db
+def test_sweep_does_not_touch_a_confirmed_booking_still_within_the_payment_deadline(
+    bap_identity_settings,
+):
+    """confirmed_order_at only moments ago — the customer may genuinely still
+    be mid-checkout (3DS/OTP can take a few minutes); must not be cancelled
+    out from under them."""
+    recent = timezone.now() - dt.timedelta(seconds=5)
+    _session_confirmed_unpaid(confirmed_order_at=recent)
+
+    with responses.RequestsMock(assert_all_requests_are_fired=False):
+        released = reconciliation.sweep_unpaid_confirmed_bookings(deadline_seconds=900)
+
+    assert released == 0
+
+
+@pytest.mark.django_db
+def test_sweep_does_not_re_cancel_an_already_cancelled_booking(bap_identity_settings):
+    """cancelled_order already set — a prior sweep tick (or the customer
+    themselves) already released this one; must not be dispatched again."""
+    stale_time = timezone.now() - dt.timedelta(seconds=1000)
+    session = _session_confirmed_unpaid(confirmed_order_at=stale_time)
+    session.cancelled_order = {"id": "booking-1", "status": "CANCELLED"}
+    session.save()
+
+    with responses.RequestsMock(assert_all_requests_are_fired=False):
+        released = reconciliation.sweep_unpaid_confirmed_bookings(deadline_seconds=900)
+
+    assert released == 0
+
+
+@pytest.mark.django_db
+def test_run_once_closes_stale_connections_before_sweeping(bap_identity_settings):
+    """Regression test for a real, live-found bug (2026-11-04): this loop runs
+    on its own background daemon thread, outside Django's request/response
+    cycle — the `request_started`/`request_finished` signals that normally
+    call `close_old_connections()` around every ordinary view never fire
+    here. When the database (Neon, this project's real Postgres host) closes
+    this thread's one long-held connection from its side, every subsequent
+    query on this thread used to fail forever with "connection already
+    closed" — confirmed happening on *every* tick in live production logs
+    before this fix, not a rare edge case. Asserts the real fix:
+    `close_old_connections()` is called, and called *before* the sweep ever
+    touches the database — calling it after would be too late for this
+    tick's own query."""
+    call_order = []
+    with (
+        patch(
+            "core.reconciliation.close_old_connections",
+            side_effect=lambda: call_order.append("close"),
+        ),
+        patch(
+            "core.reconciliation.sweep_stale_confirmations",
+            side_effect=lambda **kwargs: call_order.append("sweep") or 0,
+        ),
+    ):
+        reconciliation._run_once()
+
+    assert call_order == ["close", "sweep"]

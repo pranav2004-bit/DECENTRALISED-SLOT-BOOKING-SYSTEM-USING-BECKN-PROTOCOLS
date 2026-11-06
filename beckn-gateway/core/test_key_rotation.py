@@ -64,15 +64,21 @@ def test_backup_and_restore_round_trips_both_keys(rotation_settings):
 def test_command_skips_when_not_due_without_force(rotation_settings):
     original_pub, _ = participant_keys.get_signing_keys()
     out = StringIO()
-    call_command("onboarding_rotate_keys", "ONDC:RET13", stdout=out)
+    call_command("onboarding_rotate_keys", stdout=out)
     assert "not due" in out.getvalue()
     assert participant_keys.get_signing_keys()[0] == original_pub  # unchanged
 
 
+def test_command_raises_when_no_domain_is_subscribed_yet(rotation_settings):
+    with pytest.raises(CommandError, match="No SUBSCRIBED domains"):
+        call_command("onboarding_rotate_keys", "--force")
+
+
 def test_command_rotates_and_resubscribes_successfully_when_forced(rotation_settings):
-    from core import onboarding_service
+    from core import onboarding_service, onboarding_state
 
     onboarding_service.approve("ONDC:RET13")
+    onboarding_state.set_status("ONDC:RET13", "SUBSCRIBED")
     original_pub, _ = participant_keys.get_signing_keys()
     participant_keys.get_encryption_keys()  # provision it too — backup_current_keys() needs both
 
@@ -84,11 +90,76 @@ def test_command_rotates_and_resubscribes_successfully_when_forced(rotation_sett
             status=200,
         )
         out = StringIO()
-        call_command("onboarding_rotate_keys", "ONDC:RET13", "--force", stdout=out)
+        call_command("onboarding_rotate_keys", "--force", stdout=out)
 
     assert "Rotated" in out.getvalue()
     assert "Re-Subscribed" in out.getvalue()
     assert participant_keys.get_signing_keys()[0] != original_pub  # genuinely rotated
+
+
+def test_command_reconfirms_every_subscribed_domain_with_the_same_rotated_key(rotation_settings):
+    """The actual regression test for the 2026-09-30 bug: Gateway subscribed to TWO
+    domains (mirroring the real ONDC:RET13 + ONDC:SRV13 situation that surfaced this)
+    must have BOTH re-Subscribed with the one new key from a single rotation run — not
+    just whichever domain used to be hardcoded into the command/cron label."""
+    from core import onboarding_service, onboarding_state
+
+    for domain in ("ONDC:RET13", "ONDC:SRV13"):
+        onboarding_service.approve(domain)
+        onboarding_state.set_status(domain, "SUBSCRIBED")
+    participant_keys.get_encryption_keys()
+
+    seen_domains = []
+    seen_keys = []
+
+    def subscribe_callback(request):
+        body = json.loads(request.body)
+        seen_domains.append(body["message"]["network_participant"][0]["domain"])
+        seen_keys.append(body["message"]["entity"]["key_pair"]["signing_public_key"])
+        return (200, {}, json.dumps({"status": "UNDER_SUBSCRIPTION"}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/subscribe", callback=subscribe_callback
+        )
+        out = StringIO()
+        call_command("onboarding_rotate_keys", "--force", stdout=out)
+
+    assert sorted(seen_domains) == ["ONDC:RET13", "ONDC:SRV13"]
+    assert seen_keys[0] == seen_keys[1]  # both domains confirmed with the identical new key
+    assert "Re-Subscribed ONDC:RET13" in out.getvalue()
+    assert "Re-Subscribed ONDC:SRV13" in out.getvalue()
+
+
+def test_command_persists_nothing_if_one_of_several_domains_fails(rotation_settings):
+    """The documented, accepted edge case: if domain 1 of 2 succeeds and domain 2
+    fails, disk must stay on the OLD key (never a half-applied rotation) — even though
+    Registry itself now disagrees for the domain that did succeed. That residual
+    mismatch is recovered by hand (RUNBOOK.md), not by this command."""
+    from core import onboarding_service, onboarding_state
+
+    for domain in ("ONDC:RET13", "ONDC:SRV13"):
+        onboarding_service.approve(domain)
+        onboarding_state.set_status(domain, "SUBSCRIBED")
+    original_signing_pub, _ = participant_keys.get_signing_keys()
+    participant_keys.get_encryption_keys()
+
+    def subscribe_callback(request):
+        body = json.loads(request.body)
+        if body["message"]["network_participant"][0]["domain"] == "ONDC:RET13":
+            return (200, {}, json.dumps({"status": "UNDER_SUBSCRIPTION"}))
+        return (422, {}, json.dumps({"error": {"code": "X", "message": "rejected"}}))
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://registry:8000/subscribe", callback=subscribe_callback
+        )
+        with pytest.raises(CommandError, match="1 of 2"):
+            call_command("onboarding_rotate_keys", "--force")
+
+    # Disk untouched — Gateway keeps signing with the old key network-wide, even though
+    # ONDC:RET13 alone actually succeeded against Registry above.
+    assert participant_keys.get_signing_keys()[0] == original_signing_pub
 
 
 def test_command_never_touches_disk_when_resubscribe_fails(rotation_settings):
@@ -97,9 +168,10 @@ def test_command_never_touches_disk_when_resubscribe_fails(rotation_settings):
     the corrected design (livetracker8.md §2.2, 2026-09-04) — disk is simply never
     written to until *after* Registry confirms the new identity, so there is nothing to
     undo on failure."""
-    from core import onboarding_service
+    from core import onboarding_service, onboarding_state
 
     onboarding_service.approve("ONDC:RET13")
+    onboarding_state.set_status("ONDC:RET13", "SUBSCRIBED")
     original_signing_pub, _ = participant_keys.get_signing_keys()
     original_encryption_pub, _ = participant_keys.get_encryption_keys()
 
@@ -111,7 +183,7 @@ def test_command_never_touches_disk_when_resubscribe_fails(rotation_settings):
             status=422,
         )
         with pytest.raises(CommandError, match="failed"):
-            call_command("onboarding_rotate_keys", "ONDC:RET13", "--force")
+            call_command("onboarding_rotate_keys", "--force")
 
     assert participant_keys.get_signing_keys()[0] == original_signing_pub
     assert participant_keys.get_encryption_keys()[0] == original_encryption_pub
@@ -129,9 +201,10 @@ def test_command_signs_the_subscribe_request_with_the_old_key_not_the_new_one(ro
     one, not the new one the payload declares."""
     from beckn_crypto import verify_request_signature
 
-    from core import onboarding_service
+    from core import onboarding_service, onboarding_state
 
     onboarding_service.approve("ONDC:RET13")
+    onboarding_state.set_status("ONDC:RET13", "SUBSCRIBED")
     old_signing_pub, _ = participant_keys.get_signing_keys()
     participant_keys.get_encryption_keys()  # provision it too — the post-success write needs it
 
@@ -153,7 +226,7 @@ def test_command_signs_the_subscribe_request_with_the_old_key_not_the_new_one(ro
         rsps.add_callback(
             responses.POST, "http://registry:8000/subscribe", callback=subscribe_callback
         )
-        call_command("onboarding_rotate_keys", "ONDC:RET13", "--force")
+        call_command("onboarding_rotate_keys", "--force")
 
     # And now, after a confirmed success, the new key really is what's live.
     assert participant_keys.get_signing_keys()[0] != old_signing_pub
@@ -265,9 +338,10 @@ def test_verification_file_is_signed_with_the_pending_new_key_during_rotation(ro
     Authorization header on the initiating request used the old one."""
     from beckn_crypto import verify_domain_ownership_file
 
-    from core import onboarding_service
+    from core import onboarding_service, onboarding_state
 
     onboarding_service.approve("ONDC:RET13")
+    onboarding_state.set_status("ONDC:RET13", "SUBSCRIBED")
     participant_keys.get_encryption_keys()  # provision it too — the post-success write needs it
 
     with responses.RequestsMock() as rsps:
@@ -292,7 +366,7 @@ def test_verification_file_is_signed_with_the_pending_new_key_during_rotation(ro
         rsps.add_callback(
             responses.POST, "http://registry:8000/subscribe", callback=subscribe_callback
         )
-        call_command("onboarding_rotate_keys", "ONDC:RET13", "--force")
+        call_command("onboarding_rotate_keys", "--force")
 
 
 def test_key_age_and_due_check_wired_to_gateways_own_setting(rotation_settings):

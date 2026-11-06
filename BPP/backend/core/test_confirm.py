@@ -109,7 +109,18 @@ def _build_confirm_payload(
             "order": {
                 "provider": {"id": provider_id},
                 "items": [{"id": "item-1"}],
-                "fulfillments": [{"id": str(booking_id)}],
+                "fulfillments": [
+                    {
+                        "id": str(booking_id),
+                        # confirm_service.dispatch_on_confirm now requires a real
+                        # customer name at confirm (customer-identity-at-confirm
+                        # change, earlier this session) — this shared helper
+                        # predates that, so every one of its 12 callers was
+                        # failing with a real VALIDATION_ERROR (booking stuck at
+                        # HELD, never reaching ACTIVE) until this was added.
+                        "stops": [{"person": {"name": "Test Customer"}}],
+                    }
+                ],
             }
         },
     }

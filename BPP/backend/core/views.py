@@ -3,10 +3,20 @@ import json
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
-from django.contrib.auth import authenticate, get_user_model, login, logout, password_validation
+from django.contrib.auth import (
+    authenticate,
+    get_user_model,
+    login,
+    logout,
+    password_validation,
+    update_session_auth_hash,
+)
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import validate_email
 from django.db import models, transaction
+from django.db.models.functions import TruncDate
 from django.http import HttpResponse, JsonResponse
+from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
@@ -14,8 +24,10 @@ from django_observability.errors import error_response
 from django_observability.rate_limit import by_authenticated_account, rate_limit
 from inventory_core.domain_adapter import get_adapter
 from inventory_core.models import AvailabilityCalendar, Booking, Resource, Slot
+from postal_directory.models import Circle, Division, Pincode
 
 from . import (
+    availability_service,
     cancel_service,
     confirm_service,
     init_service,
@@ -39,6 +51,66 @@ from .realtime import broadcast_slot_update
 # materialize — an honest, deliberately-generous ceiling (just over a year), not a
 # number derived from real production capacity data (none exists yet).
 MAX_AVAILABILITY_RANGE_DAYS = 366
+
+# Profile page's Status toggle — a business can't go "Live" with a half-filled
+# listing, so every one of these BusinessAccount fields must be non-empty before
+# is_accepting_bookings can be set True (business_profile_update_view). Mirrored
+# in BPP/web/app/profile/page.tsx's own REQUIRED_BUSINESS_INFO_FIELDS.
+REQUIRED_FOR_LIVE_PROFILE_FIELDS = (
+    "business_name",
+    "description",
+    "public_phone",
+    "public_email",
+    "address",
+    "state",
+    "division",
+    "pincode",
+)
+
+# Profile page's State dropdown — the full list of India's states/UTs, shown
+# regardless of whether shared.postal_directory has any Circle/Division/Pincode
+# data for that state yet (currently only Andhra Pradesh does). Mirrored in
+# BPP/web/lib/constants.ts's own ALL_INDIA_STATES — duplicated, not shared across
+# the frontend/backend language boundary, same convention as SPECIALISATIONS
+# (ADR-0004, see core/healthcare_adapter.py's own comment on that).
+ALL_INDIA_STATES = (
+    "Andaman and Nicobar Islands",
+    "Andhra Pradesh",
+    "Arunachal Pradesh",
+    "Assam",
+    "Bihar",
+    "Chandigarh",
+    "Chhattisgarh",
+    "Dadra and Nagar Haveli and Daman and Diu",
+    "Delhi",
+    "Goa",
+    "Gujarat",
+    "Haryana",
+    "Himachal Pradesh",
+    "Jammu and Kashmir",
+    "Jharkhand",
+    "Karnataka",
+    "Kerala",
+    "Ladakh",
+    "Lakshadweep",
+    "Madhya Pradesh",
+    "Maharashtra",
+    "Manipur",
+    "Meghalaya",
+    "Mizoram",
+    "Nagaland",
+    "Odisha",
+    "Puducherry",
+    "Punjab",
+    "Rajasthan",
+    "Sikkim",
+    "Tamil Nadu",
+    "Telangana",
+    "Tripura",
+    "Uttar Pradesh",
+    "Uttarakhand",
+    "West Bengal",
+)
 
 
 @require_http_methods(["GET"])
@@ -77,6 +149,17 @@ def _business_account_json(account) -> dict:
         "domain_code": account.domain_code,
         "role": account.role,
         "managed_by": str(account.managed_by_id) if account.managed_by_id else None,
+        "is_accepting_bookings": account.is_accepting_bookings,
+        "description": account.description,
+        "public_phone": account.public_phone,
+        "public_email": account.public_email,
+        "address": account.address,
+        "state": account.state,
+        "division": account.division,
+        "pincode": account.pincode,
+        # "Date of joining" — bounds how far back the Orders page's history
+        # browser (year → month → date) goes.
+        "created_at": account.created_at.isoformat(),
     }
     # §4.3: a staff account's own dashboard needs to know which Resource(s) it's
     # actually allowed to self-manage — cheaper to include here than a second round trip.
@@ -99,6 +182,222 @@ def _business_account_json(account) -> dict:
             )
         ]
     return data
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+@rate_limit(limit_per_minute=30, scope="business-profile-update", key_func=by_authenticated_account)
+def business_profile_update_view(request):
+    """Profile page (business name edit + Live/Offline toggle) — owner-only, partial
+    update: only the fields actually present in the payload are changed. Toggling
+    `is_accepting_bookings` off must take effect in search immediately, same as any
+    other real catalog content change, so this invalidates the cache exactly like
+    `resource_create_view` does — not left to the TTL safety net."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+    if request.user.role != get_user_model().Role.OWNER:
+        return error_response(
+            "FORBIDDEN", "only a business owner account can update the business profile", 403
+        )
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    changed = False
+
+    if "business_name" in payload:
+        business_name = (payload.get("business_name") or "").strip()
+        if not business_name:
+            return error_response(
+                "VALIDATION_ERROR", "business_name is required", 400, field="business_name"
+            )
+        if len(business_name) > 255:
+            return error_response(
+                "VALIDATION_ERROR", "business_name is too long (max 255)", 400,
+                field="business_name",
+            )
+        request.user.business_name = business_name
+        changed = True
+
+    if "is_accepting_bookings" in payload:
+        is_accepting_bookings = payload.get("is_accepting_bookings")
+        if not isinstance(is_accepting_bookings, bool):
+            return error_response(
+                "VALIDATION_ERROR", "is_accepting_bookings must be a boolean", 400,
+                field="is_accepting_bookings",
+            )
+        request.user.is_accepting_bookings = is_accepting_bookings
+        changed = True
+
+    # Public profile fields — all optional (an empty string clears the field, same as
+    # never having set it), so no "is required" check like business_name gets above.
+    if "description" in payload:
+        description = (payload.get("description") or "").strip()
+        if len(description) > 1000:
+            return error_response(
+                "VALIDATION_ERROR", "description is too long (max 1000)", 400,
+                field="description",
+            )
+        request.user.description = description
+        changed = True
+
+    if "public_phone" in payload:
+        public_phone = (payload.get("public_phone") or "").strip()
+        if len(public_phone) > 30:
+            return error_response(
+                "VALIDATION_ERROR", "public_phone is too long (max 30)", 400,
+                field="public_phone",
+            )
+        request.user.public_phone = public_phone
+        changed = True
+
+    if "public_email" in payload:
+        public_email = (payload.get("public_email") or "").strip()
+        if public_email:
+            try:
+                validate_email(public_email)
+            except DjangoValidationError:
+                return error_response(
+                    "VALIDATION_ERROR", "public_email is not a valid email address", 400,
+                    field="public_email",
+                )
+        request.user.public_email = public_email
+        changed = True
+
+    if "address" in payload:
+        address = (payload.get("address") or "").strip()
+        if len(address) > 500:
+            return error_response(
+                "VALIDATION_ERROR", "address is too long (max 500)", 400, field="address"
+            )
+        request.user.address = address
+        changed = True
+
+    # State -> Division -> Pincode cascade: each is validated against the fixed
+    # list/real DB rows it was picked from, same "must be real, not free text"
+    # reasoning as pincode below. Cleared together when state changes on the
+    # frontend, but this view doesn't assume that — each field is only checked
+    # against what's actually present in this same payload.
+    if "state" in payload:
+        state = (payload.get("state") or "").strip()
+        if state and state not in ALL_INDIA_STATES:
+            return error_response(
+                "VALIDATION_ERROR", "not a recognised state", 400, field="state"
+            )
+        request.user.state = state
+        changed = True
+
+    if "division" in payload:
+        division = (payload.get("division") or "").strip()
+        if division and not Division.objects.filter(name=division).exists():
+            return error_response(
+                "VALIDATION_ERROR", "not a recognised division", 400, field="division"
+            )
+        request.user.division = division
+        changed = True
+
+    if "pincode" in payload:
+        pincode = (payload.get("pincode") or "").strip()
+        # Must be a real code from the fixed reference list, not free text — an
+        # empty string still clears the field, same as every other optional
+        # profile field above.
+        if pincode and not Pincode.objects.filter(code=pincode).exists():
+            return error_response(
+                "VALIDATION_ERROR", "not a recognised pincode", 400, field="pincode"
+            )
+        request.user.pincode = pincode
+        changed = True
+
+    # Enforces "Live" only ever means a complete listing, not just "toggled on" —
+    # evaluated against the fully-updated in-memory account (every field block
+    # above has already run), so this also catches turning is_accepting_bookings
+    # on and clearing a required field in the very same request, not just the
+    # simple case of toggling on with everything already filled in. Runs on any
+    # change that leaves the account live, not only when is_accepting_bookings
+    # itself was in this payload — an already-live account can't be edited into
+    # an incomplete state either, so the invariant holds at every save, not just
+    # the moment of turning on.
+    if changed and request.user.is_accepting_bookings:
+        missing = [
+            field
+            for field in REQUIRED_FOR_LIVE_PROFILE_FIELDS
+            if not getattr(request.user, field).strip()
+        ]
+        if missing:
+            return error_response(
+                "VALIDATION_ERROR",
+                "complete every business info field before going live",
+                400,
+                field="is_accepting_bookings",
+            )
+
+    if changed:
+        request.user.save()
+        invalidate_catalog_cache(request.user.domain_code)
+
+    return JsonResponse(_business_account_json(request.user), status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+@rate_limit(limit_per_minute=5, scope="business-password-change", key_func=by_authenticated_account)
+def business_password_change_view(request):
+    """Profile page's Password section — any authenticated account (owner or staff)
+    may change its own password; unlike business_profile_update_view this is NOT
+    owner-only, since a password belongs to the individual login, not the business
+    identity.
+
+    `update_session_auth_hash()` after `set_password()` is the one easy-to-miss piece:
+    Django ties a session's validity to a hash derived from the password, so without
+    this call the user would be silently logged out of their own current session the
+    instant they changed their own password — the current tab included. Calling it
+    keeps this exact session (and therefore every other open tab/request using the
+    same session cookie) authenticated against the new password immediately, with no
+    re-login required anywhere."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    current_password = payload.get("current_password") or ""
+    new_password = payload.get("new_password") or ""
+
+    if not current_password:
+        return error_response(
+            "VALIDATION_ERROR", "current_password is required", 400, field="current_password"
+        )
+    if not new_password:
+        return error_response(
+            "VALIDATION_ERROR", "new_password is required", 400, field="new_password"
+        )
+    if not request.user.check_password(current_password):
+        return error_response(
+            "VALIDATION_ERROR", "current password is incorrect", 400, field="current_password"
+        )
+    if new_password == current_password:
+        return error_response(
+            "VALIDATION_ERROR",
+            "new password must be different from your current password",
+            400,
+            field="new_password",
+        )
+    try:
+        password_validation.validate_password(new_password, user=request.user)
+    except DjangoValidationError as exc:
+        return error_response(
+            "VALIDATION_ERROR", " ".join(exc.messages), 400, field="new_password"
+        )
+
+    request.user.set_password(new_password)
+    request.user.save()
+    update_session_auth_hash(request, request.user)
+
+    return JsonResponse({"status": "ok"}, status=200)
 
 
 @require_http_methods(["GET"])
@@ -279,6 +578,19 @@ def resource_create_view(request):
             )
         domain_data = {**domain_data, "location_id": str(location_id)}
 
+    # Doctors tab: every doctor gets a server-generated, owner-scoped, immutable
+    # "DOC-0001"-style id — never client-supplied (mirrors owner_ref above), and
+    # never editable afterwards (resource_update_view rejects it outright). The
+    # increment happens under a row lock on the owning account so two concurrent
+    # creates can't race to the same number.
+    if domain_data.get("resource_type") == "doctor":
+        with transaction.atomic():
+            account = get_user_model().objects.select_for_update().get(pk=request.user.pk)
+            sequence = account.next_doctor_sequence
+            account.next_doctor_sequence = sequence + 1
+            account.save(update_fields=["next_doctor_sequence"])
+        domain_data = {**domain_data, "doctor_id": f"DOC-{sequence:04d}"}
+
     resource = Resource.objects.create(
         owner_ref=str(request.user.id),
         name=name,
@@ -293,25 +605,237 @@ def resource_create_view(request):
     # cached search catalog so it doesn't stay stale until the TTL safety net.
     # §4.1: only this business's own domain's cache, not every domain's.
     invalidate_catalog_cache(request.user.domain_code)
-    return JsonResponse({"id": str(resource.id), "name": resource.name}, status=201)
+    return JsonResponse(
+        {
+            "id": str(resource.id),
+            "name": resource.name,
+            "domain_data": resource.domain_data,
+            "is_active": resource.is_active,
+            "price_currency": resource.price_currency,
+            "price_value": str(resource.price_value),
+            "created_at": resource.created_at.isoformat(),
+        },
+        status=201,
+    )
 
 
 @csrf_exempt
-@require_http_methods(["GET", "POST"])
+@require_http_methods(["POST"])
+@rate_limit(limit_per_minute=30, scope="resource-update", key_func=by_authenticated_account)
+def resource_update_view(request, resource_id):
+    """Edit action for the Resources/Doctors table — owner-only, partial update of
+    `name` and/or `domain_data`. `domain_data` is merged, not replaced wholesale: it
+    also carries `resource_type`/`assigned_staff_id`/`location_id`, set by other
+    flows (creation, staff assignment) — overwriting the whole dict here would
+    silently unassign staff or lose the resource's own type. The merged result is
+    re-validated through this business's own domain adapter, so an edit that clears
+    a Healthcare doctor's required `specialisation` is rejected the same way
+    creating one without it already is."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+    if request.user.role != get_user_model().Role.OWNER:
+        return error_response(
+            "FORBIDDEN", "only a business owner account can edit resources", 403
+        )
+
+    try:
+        resource = Resource.objects.get(id=resource_id, owner_ref=str(request.user.id))
+    except (Resource.DoesNotExist, DjangoValidationError, ValueError):
+        return error_response("NOT_FOUND", "no such resource for this business account", 404)
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    changed = False
+
+    if "name" in payload:
+        name = (payload.get("name") or "").strip()
+        if not name:
+            return error_response("VALIDATION_ERROR", "name is required", 400, field="name")
+        if len(name) > 255:
+            return error_response(
+                "VALIDATION_ERROR", "name is too long (max 255)", 400, field="name"
+            )
+        resource.name = name
+        changed = True
+
+    if "domain_data" in payload:
+        incoming = payload.get("domain_data") or {}
+        if not isinstance(incoming, dict):
+            return error_response(
+                "VALIDATION_ERROR", "domain_data must be an object", 400, field="domain_data"
+            )
+        # Doctors tab: doctor_id is server-generated at creation and permanent —
+        # never accepted from a client here, regardless of what the frontend form
+        # sends, so a direct API call can't reassign it either.
+        if "doctor_id" in incoming and incoming["doctor_id"] != resource.domain_data.get(
+            "doctor_id"
+        ):
+            return error_response(
+                "VALIDATION_ERROR", "doctor_id cannot be changed", 400, field="doctor_id"
+            )
+        merged_domain_data = {**resource.domain_data, **incoming}
+        adapter = get_adapter(request.user.domain_code)
+        try:
+            adapter.validate_resource_domain_data(merged_domain_data)
+        except DjangoValidationError as exc:
+            return error_response(
+                "VALIDATION_ERROR", " ".join(exc.messages), 400, field="domain_data"
+            )
+        resource.domain_data = merged_domain_data
+        changed = True
+
+    if "price_value" in payload:
+        try:
+            price_value = Decimal(str(payload["price_value"]))
+        except InvalidOperation:
+            return error_response(
+                "VALIDATION_ERROR", "price_value must be a valid decimal", 400, field="price_value"
+            )
+        if price_value < 0:
+            return error_response(
+                "VALIDATION_ERROR", "price_value must not be negative", 400, field="price_value"
+            )
+        resource.price_value = price_value
+        changed = True
+
+    if "price_currency" in payload:
+        resource.price_currency = payload.get("price_currency") or "INR"
+        changed = True
+
+    if changed:
+        resource.save()
+        invalidate_catalog_cache(request.user.domain_code)
+
+    return JsonResponse(
+        {
+            "id": str(resource.id),
+            "name": resource.name,
+            "domain_data": resource.domain_data,
+            "is_active": resource.is_active,
+            "price_currency": resource.price_currency,
+            "price_value": str(resource.price_value),
+        },
+        status=200,
+    )
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+@rate_limit(limit_per_minute=30, scope="resource-status", key_func=by_authenticated_account)
+def resource_status_view(request, resource_id):
+    """Active/Inactive toggle for the Resources/Doctors table — owner-only. Unlike
+    the business-level Profile Status toggle, this pauses just this one resource;
+    the rest of the business's roster is unaffected. Takes effect in search
+    immediately (cache invalidated here), same as every other real catalog change."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+    if request.user.role != get_user_model().Role.OWNER:
+        return error_response(
+            "FORBIDDEN", "only a business owner account can change a resource's status", 403
+        )
+
+    try:
+        resource = Resource.objects.get(id=resource_id, owner_ref=str(request.user.id))
+    except (Resource.DoesNotExist, DjangoValidationError, ValueError):
+        return error_response("NOT_FOUND", "no such resource for this business account", 404)
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    is_active = payload.get("is_active")
+    if not isinstance(is_active, bool):
+        return error_response(
+            "VALIDATION_ERROR", "is_active must be a boolean", 400, field="is_active"
+        )
+
+    resource.is_active = is_active
+    resource.save(update_fields=["is_active", "updated_at"])
+    invalidate_catalog_cache(request.user.domain_code)
+
+    return JsonResponse({"id": str(resource.id), "is_active": resource.is_active}, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+@rate_limit(limit_per_minute=30, scope="resource-delete", key_func=by_authenticated_account)
+def resource_delete_view(request, resource_id):
+    """Delete action for the Resources/Doctors table — owner-only, and deliberately
+    refuses when real booking history exists: `Slot.resource` is `on_delete=CASCADE`
+    and `Booking.slot` chains off that, so a hard delete here would silently destroy
+    a customer's real booking record, not just an inventory listing. A resource
+    that's ever had a booking (any status — even a cancelled one is still real
+    history) must be paused via the Active/Inactive toggle instead; only a genuinely
+    never-booked resource (added by mistake, or with zero slots) can be hard-deleted."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+    if request.user.role != get_user_model().Role.OWNER:
+        return error_response(
+            "FORBIDDEN", "only a business owner account can delete resources", 403
+        )
+
+    try:
+        resource = Resource.objects.get(id=resource_id, owner_ref=str(request.user.id))
+    except (Resource.DoesNotExist, DjangoValidationError, ValueError):
+        return error_response("NOT_FOUND", "no such resource for this business account", 404)
+
+    if Booking.objects.filter(slot__resource=resource).exists():
+        return error_response(
+            "VALIDATION_ERROR",
+            "this resource has real booking history and can't be deleted — "
+            "use the Active/Inactive toggle to hide it from search instead",
+            409,
+        )
+
+    resource.delete()
+    invalidate_catalog_cache(request.user.domain_code)
+    return JsonResponse({"status": "ok"}, status=200)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
 @rate_limit(
-    limit_per_minute=30, scope="resource-availability-create", key_func=by_authenticated_account
+    limit_per_minute=30, scope="resource-availability-delete", key_func=by_authenticated_account
 )
-def resource_availability_create_view(request, resource_id):
-    """Creates a real `AvailabilityCalendar` for one of the logged-in business's own
-    `Resource`s and generates real `Slot` rows from it (§2.2's own Test Gate wording).
+def resource_availability_delete_view(request, resource_id):
+    """Delete action for the Doctors table's "Recent" slots view — owner-only, and
+    only ever deletes `Slot`s still in AVAILABLE status. A HELD/BOOKED slot has a
+    real (in-progress or confirmed) booking on the other side, and `Booking.slot`
+    chains off `Slot` via CASCADE, so hard-deleting those would silently destroy
+    real booking history — same reasoning as `resource_delete_view` above. A
+    CANCELLED slot is also left alone, since it's already real history, not a live
+    offer to clear."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+    if request.user.role != get_user_model().Role.OWNER:
+        return error_response(
+            "FORBIDDEN", "only a business owner account can delete availability", 403
+        )
 
-    §4.3: `POST` (create) is owner-only, same reasoning as `resource_create_view` —
-    bulk calendar generation is inventory *creation*, distinct from a staff account
-    merely blocking off already-generated slots (`resource_availability_block_view`).
+    try:
+        resource = Resource.objects.get(id=resource_id, owner_ref=str(request.user.id))
+    except (Resource.DoesNotExist, DjangoValidationError, ValueError):
+        return error_response("NOT_FOUND", "no such resource for this business account", 404)
 
-    §4.4: `GET` lists the resource's current slots — owner or assigned staff, the
+    deletable = Slot.objects.filter(resource=resource, status=Slot.Status.AVAILABLE)
+    deleted_count = deletable.count()
+    deletable.delete()
+    kept_count = (
+        Slot.objects.filter(resource=resource).exclude(status=Slot.Status.AVAILABLE).count()
+    )
+
+    return JsonResponse({"deleted_count": deleted_count, "kept_count": kept_count}, status=200)
+
+
+def _resource_availability_get(request, resource_id):
+    """§4.4: `GET` lists the resource's current slots — owner or assigned staff, the
     same access model as the block view — feeding a live availability dashboard's
-    initial render before its WebSocket connection takes over.
+    initial render before its WebSocket connection takes over, and the Doctors
+    table's "Recent" view.
 
     livetracker3.md §2.2: also returns the resource's own real rating aggregate
     (`average_rating`/`rating_count`) alongside the slot list — one wire call, not a
@@ -319,49 +843,60 @@ def resource_availability_create_view(request, resource_id):
     `average_rating` is `None` (not a fabricated `0`) when no aggregate-eligible
     rating exists yet — the business side seeing its own honest, real rating is the
     whole point of this addition (§2.2 bullet 2's own reasoning)."""
-    if not request.user.is_authenticated:
-        return error_response("UNAUTHORIZED", "not logged in", 401)
-
-    if request.method == "GET":
-        try:
-            resource = Resource.objects.get(id=resource_id)
-        except (Resource.DoesNotExist, DjangoValidationError, ValueError):
-            return error_response("NOT_FOUND", "no such resource for this account", 404)
-        if not _resource_accessible_to(request.user, resource):
-            return error_response("NOT_FOUND", "no such resource for this account", 404)
-        slots = Slot.objects.filter(resource=resource).order_by("start_time")
-        return JsonResponse(
-            {
-                "resource": {
-                    "id": str(resource.id),
-                    "name": resource.name,
-                    "average_rating": (
-                        str(resource.average_rating)
-                        if resource.average_rating is not None
-                        else None
-                    ),
-                    "rating_count": resource.rating_count,
-                    # livetracker3.md §8.1: lets the owner-side resource list show
-                    # each resource's current staff assignment (or lack of one)
-                    # without a second endpoint — same resource this dashboard
-                    # already fetches via `getSlots()`.
-                    "assigned_staff_id": resource.domain_data.get("assigned_staff_id"),
-                },
-                "slots": [
-                    {
-                        "id": str(s.id),
-                        "start_time": s.start_time.isoformat(),
-                        "end_time": s.end_time.isoformat(),
-                        "status": s.status,
-                        "capacity_remaining": s.capacity_remaining,
-                        "capacity_total": s.capacity_total,
-                    }
-                    for s in slots
-                ]
+    try:
+        resource = Resource.objects.get(id=resource_id)
+    except (Resource.DoesNotExist, DjangoValidationError, ValueError):
+        return error_response("NOT_FOUND", "no such resource for this account", 404)
+    if not _resource_accessible_to(request.user, resource):
+        return error_response("NOT_FOUND", "no such resource for this account", 404)
+    slots = Slot.objects.filter(resource=resource).order_by("start_time")
+    return JsonResponse(
+        {
+            "resource": {
+                "id": str(resource.id),
+                "name": resource.name,
+                "average_rating": (
+                    str(resource.average_rating) if resource.average_rating is not None else None
+                ),
+                "rating_count": resource.rating_count,
+                # livetracker3.md §8.1: lets the owner-side resource list show
+                # each resource's current staff assignment (or lack of one)
+                # without a second endpoint — same resource this dashboard
+                # already fetches via `getSlots()`.
+                "assigned_staff_id": resource.domain_data.get("assigned_staff_id"),
+                "domain_data": resource.domain_data,
+                "is_active": resource.is_active,
+                "price_currency": resource.price_currency,
+                "price_value": str(resource.price_value),
+                # The doctor's own "joining date" — bounds how far back the
+                # Doctors table's slot-history browser goes.
+                "created_at": resource.created_at.isoformat(),
             },
-            status=200,
-        )
+            "slots": [
+                {
+                    "id": str(s.id),
+                    "start_time": s.start_time.isoformat(),
+                    "end_time": s.end_time.isoformat(),
+                    "status": s.status,
+                    "capacity_remaining": s.capacity_remaining,
+                    "capacity_total": s.capacity_total,
+                }
+                for s in slots
+            ],
+        },
+        status=200,
+    )
 
+
+@rate_limit(
+    limit_per_minute=30, scope="resource-availability-create", key_func=by_authenticated_account
+)
+def _resource_availability_post(request, resource_id):
+    """§4.3: `POST` (create) is owner-only, same reasoning as `resource_create_view` —
+    bulk calendar generation is inventory *creation*, distinct from a staff account
+    merely blocking off already-generated slots (`resource_availability_block_view`).
+    Creates a real `AvailabilityCalendar` for one of the logged-in business's own
+    `Resource`s and generates real `Slot` rows from it (§2.2's own Test Gate wording)."""
     if request.user.role != get_user_model().Role.OWNER:
         return error_response(
             "FORBIDDEN", "only a business owner account can create availability", 403
@@ -433,6 +968,21 @@ def resource_availability_create_view(request, resource_id):
     return JsonResponse(
         {"calendar_id": str(calendar.id), "slots_created": len(slots)}, status=201
     )
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def resource_availability_create_view(request, resource_id):
+    """Dispatches to `_resource_availability_get`/`_resource_availability_post` —
+    kept as one URL (unchanged for every existing caller) but each method now
+    carries its own rate-limit scope, so heavy read traffic (the "Recent" view,
+    the live dashboard) can't exhaust the write-side budget bulk calendar
+    generation uses, or vice versa."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+    if request.method == "GET":
+        return _resource_availability_get(request, resource_id)
+    return _resource_availability_post(request, resource_id)
 
 
 @require_http_methods(["GET"])
@@ -515,17 +1065,400 @@ def orders_list_view(request):
         {
             "orders": [
                 {
+                    "booking_id": str(booking.id),
                     "transaction_id": booking.holder_ref,
                     "resource_id": str(booking.slot.resource_id),
                     "resource_name": booking.slot.resource.name,
                     "slot_time": booking.slot.start_time.isoformat(),
+                    "slot_end_time": booking.slot.end_time.isoformat(),
                     "status": booking.status,
+                    "fulfillment_status": booking.fulfillment_status,
                     "payment_status": booking.payment_status,
+                    "amount": str(booking.confirmed_total_value)
+                    if booking.confirmed_total_value is not None
+                    else None,
+                    "currency": booking.confirmed_total_currency,
+                    # Same project-defined customer fields as realtime.py's
+                    # broadcast_order_confirmed — one shape, not two drifting ones.
+                    "customer_id": booking.domain_data.get("customer_id", ""),
+                    "customer_name": booking.domain_data.get("customer_name", ""),
+                    "customer_email": booking.domain_data.get("customer_email", ""),
+                    "customer_phone": booking.domain_data.get("customer_phone", ""),
                 }
                 for booking in page
             ],
             "next_cursor": _cursor_for(page[-1]) if has_more and page else None,
         },
+        status=200,
+    )
+
+
+@require_http_methods(["GET"])
+def dashboard_stats_view(request):
+    """The business owner's/staff's own Dashboard home — aggregate counts and
+    revenue totals, scoped to exactly the same resource set as
+    `orders_list_view`/`BusinessOrdersConsumer` (one scoping rule, not three
+    independently-written ones).
+
+    "Today"/"this month" are computed in the *caller's own local timezone*,
+    not the server's (`TIME_ZONE = "UTC"`, `bpp/settings.py`) — a hospital
+    admin's "today" is their own wall-clock day, and the server's UTC day
+    boundary can be off by hours for an IST browser. `tz_offset_minutes` is
+    the exact value `Date.prototype.getTimezoneOffset()` already returns in
+    the browser (IST: -330) — reusing a value JS hands us for free instead of
+    guessing the business's timezone or adding a new per-account setting for
+    it. An absent/malformed value falls back to UTC (`0`), the same as
+    treating the caller as the server's own timezone — a safe, non-crashing
+    default, not a wrong-but-silent one (the boundary is simply UTC instead
+    of local, same as before this endpoint existed).
+
+    Revenue/booking-count figures are scoped to a booking's own *appointment*
+    date (`Slot.start_time`), not when the row was created or paid — "today's
+    earnings" means "revenue from today's appointments", the same meaning a
+    clinic's own front-desk staff would use, and the one every comparable
+    booking-platform business dashboard (Zocdoc/Practo for Business) reports.
+    `payment_status == "SUCCEEDED"` is required for every revenue figure (not
+    just `status == ACTIVE`/`COMPLETE`) — an appointment that happened but was
+    never actually paid for is real activity, not real revenue; see
+    `Booking.payment_status`'s own docstring for why this field is a
+    best-effort mirror, not authoritative, which is why it's never the sole
+    signal for "is this booking real" (`status` already is) — only for "was
+    it paid"."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+
+    try:
+        tz_offset_minutes = int(request.GET.get("tz_offset_minutes", "0"))
+    except (TypeError, ValueError):
+        tz_offset_minutes = 0
+    local_tz = dt.timezone(dt.timedelta(minutes=-tz_offset_minutes))
+
+    now_local = timezone.now().astimezone(local_tz)
+    today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = today_start + dt.timedelta(days=1)
+    month_start = today_start.replace(day=1)
+    next_month_start = (month_start + dt.timedelta(days=32)).replace(day=1)
+    trend_start = today_start - dt.timedelta(days=6)  # 7-day window, inclusive of today
+
+    resource_ids = list(_accessible_order_resource_ids(request.user))
+
+    resources = Resource.objects.filter(id__in=resource_ids)
+    total_doctors = resources.count()
+    doctors_available_today = (
+        resources.filter(
+            is_active=True,
+            slots__status=Slot.Status.AVAILABLE,
+            slots__capacity_remaining__gt=0,
+            slots__start_time__gte=today_start,
+            slots__start_time__lt=today_end,
+        )
+        .distinct()
+        .count()
+    )
+    # Deliberately the simple complement, not a second independently-filtered
+    # query: an inactive doctor and an active-but-fully-booked one are both
+    # genuinely "not available today" from the same front-desk perspective,
+    # and a doctor is always in exactly one of these two buckets.
+    doctors_unavailable_today = total_doctors - doctors_available_today
+
+    # Overall rating (every real booking-platform business dashboard — Practo,
+    # Zocdoc, Urban Company — leads with this): a review-weighted average
+    # across every owned doctor's own `average_rating`, not a plain mean of
+    # each doctor's average — a doctor with 200 reviews should move this
+    # number more than one with 2, same reasoning a 5-star product listing
+    # with one review doesn't outrank one with a thousand.
+    rating_totals = resources.filter(rating_count__gt=0).aggregate(
+        weighted_sum=models.Sum(models.F("average_rating") * models.F("rating_count")),
+        total_count=models.Sum("rating_count"),
+    )
+    total_rating_count = rating_totals["total_count"] or 0
+    overall_rating = (
+        str((rating_totals["weighted_sum"] / total_rating_count).quantize(Decimal("0.1")))
+        if total_rating_count > 0
+        else None
+    )
+
+    yesterday_start = today_start - dt.timedelta(days=1)
+    # Last-month-to-date: the same number of calendar days into last month as
+    # "today" is into this month, so a still-incomplete current month is
+    # compared against an equally-incomplete prior one — comparing it against
+    # a *full* prior month would always read as a decline, a biased
+    # comparison every real dashboard (Stripe, Razorpay) avoids the same way.
+    prev_month_start = (month_start - dt.timedelta(days=1)).replace(day=1)
+    # Capped at `month_start`: if today is e.g. the 31st and the previous
+    # month only had 28/29/30 days, `prev_month_start + timedelta(days=31)`
+    # would spill past the end of that month and into the first few days of
+    # the *current* one — silently double-counting this month's own early
+    # bookings as "last month's" and corrupting the % change. Capping means
+    # the comparison simply covers the whole prior month instead on those
+    # dates, never bleeds forward.
+    prev_month_mtd_end = min(prev_month_start + dt.timedelta(days=now_local.day), month_start)
+
+    def _pct_change(current: Decimal, previous: Decimal) -> float | None:
+        """`None` (not 0, not an undefined/inflated value) when there's no
+        real prior-period baseline — a brand-new business's first day has
+        nothing honest to compare against yet."""
+        if previous == 0:
+            return None
+        return float(((current - previous) / previous * 100).quantize(Decimal("0.1")))
+
+    confirmed_bookings = Booking.objects.filter(
+        slot__resource_id__in=resource_ids,
+        status__in=[Booking.Status.ACTIVE, Booking.Status.COMPLETE],
+    )
+    paid_bookings = confirmed_bookings.filter(payment_status="SUCCEEDED")
+
+    def _sum_revenue(queryset) -> Decimal:
+        return queryset.aggregate(total=models.Sum("confirmed_total_value"))["total"] or Decimal(
+            "0.00"
+        )
+
+    earnings_today = _sum_revenue(
+        paid_bookings.filter(slot__start_time__gte=today_start, slot__start_time__lt=today_end)
+    )
+    earnings_yesterday = _sum_revenue(
+        paid_bookings.filter(
+            slot__start_time__gte=yesterday_start, slot__start_time__lt=today_start
+        )
+    )
+    earnings_this_month = _sum_revenue(
+        paid_bookings.filter(
+            slot__start_time__gte=month_start, slot__start_time__lt=next_month_start
+        )
+    )
+    earnings_last_month_mtd = _sum_revenue(
+        paid_bookings.filter(
+            slot__start_time__gte=prev_month_start, slot__start_time__lt=prev_month_mtd_end
+        )
+    )
+
+    total_bookings = confirmed_bookings.count()
+    bookings_today = confirmed_bookings.filter(
+        slot__start_time__gte=today_start, slot__start_time__lt=today_end
+    ).count()
+    bookings_yesterday = confirmed_bookings.filter(
+        slot__start_time__gte=yesterday_start, slot__start_time__lt=today_start
+    ).count()
+    bookings_this_month = confirmed_bookings.filter(
+        slot__start_time__gte=month_start, slot__start_time__lt=next_month_start
+    ).count()
+
+    # A confirmed appointment nobody has actually paid for yet is real
+    # follow-up work, not just a number — see `Booking.payment_status`'s own
+    # "best-effort mirror, not authoritative" contract above. Never date-
+    # scoped: this is a worklist, not a daily metric.
+    pending_payment_count = confirmed_bookings.filter(payment_status="").count()
+
+    avg_booking_value = (
+        str((earnings_this_month / bookings_this_month).quantize(Decimal("0.01")))
+        if bookings_this_month > 0
+        else None
+    )
+
+    # Cancellation/no-show rate (this month) — HELD rows are excluded from
+    # both sides of the ratio (never a real customer commitment to begin
+    # with, see select_service.py's own module docstring), so the
+    # denominator is only bookings a customer actually confirmed.
+    month_bookings_all = Booking.objects.filter(
+        slot__resource_id__in=resource_ids,
+        slot__start_time__gte=month_start,
+        slot__start_time__lt=next_month_start,
+    ).exclude(status=Booking.Status.HELD)
+    month_bookings_total = month_bookings_all.count()
+    month_bookings_lost = month_bookings_all.filter(
+        models.Q(status=Booking.Status.CANCELLED)
+        | models.Q(fulfillment_status=Booking.FulfillmentStatus.NO_SHOW)
+    ).count()
+    cancellation_rate = (
+        str((Decimal(month_bookings_lost) / month_bookings_total * 100).quantize(Decimal("0.1")))
+        if month_bookings_total > 0
+        else None
+    )
+
+    # Per-doctor performance this month — every owned doctor, not just the
+    # ones with bookings (a doctor with zero bookings this month is exactly
+    # the kind of roster gap this panel should surface, not silently omit).
+    # Sorted by real paid revenue, not booking count — a tie-break on volume
+    # would reward activity over money actually brought in, the wrong
+    # incentive for a "performance" ranking on a revenue dashboard.
+    doctor_stats_by_resource = {
+        row["slot__resource_id"]: row
+        for row in (
+            confirmed_bookings.filter(
+                slot__start_time__gte=month_start, slot__start_time__lt=next_month_start
+            )
+            .values("slot__resource_id")
+            .annotate(
+                bookings=models.Count("id"),
+                revenue=models.Sum(
+                    "confirmed_total_value", filter=models.Q(payment_status="SUCCEEDED")
+                ),
+            )
+        )
+    }
+    doctor_performance = sorted(
+        (
+            {
+                "name": resource.name,
+                "specialisation": resource.domain_data.get("specialisation", ""),
+                "fee": str(resource.price_value),
+                "bookings": doctor_stats_by_resource.get(resource.id, {}).get("bookings", 0),
+                "revenue": str(
+                    doctor_stats_by_resource.get(resource.id, {}).get("revenue") or Decimal("0.00")
+                ),
+            }
+            for resource in resources
+        ),
+        key=lambda row: Decimal(row["revenue"]),
+        reverse=True,
+    )
+    top_doctor = (
+        doctor_performance[0]
+        if doctor_performance and Decimal(doctor_performance[0]["revenue"]) > 0
+        else None
+    )
+
+    trend_rows = {
+        row["day"].isoformat(): row
+        for row in (
+            confirmed_bookings.filter(
+                slot__start_time__gte=trend_start, slot__start_time__lt=today_end
+            )
+            .annotate(day=TruncDate("slot__start_time", tzinfo=local_tz))
+            .values("day")
+            .annotate(
+                bookings=models.Count("id"),
+                revenue=models.Sum(
+                    "confirmed_total_value", filter=models.Q(payment_status="SUCCEEDED")
+                ),
+            )
+        )
+    }
+    trend = []
+    for offset in range(7):
+        day_key = (trend_start.date() + dt.timedelta(days=offset)).isoformat()
+        row = trend_rows.get(day_key)
+        trend.append(
+            {
+                "date": day_key,
+                "bookings": row["bookings"] if row else 0,
+                "revenue": str(row["revenue"] or Decimal("0.00")) if row else "0.00",
+            }
+        )
+
+    response = JsonResponse(
+        {
+            "total_doctors": total_doctors,
+            "doctors_available_today": doctors_available_today,
+            "doctors_unavailable_today": doctors_unavailable_today,
+            "overall_rating": overall_rating,
+            "rating_count": total_rating_count,
+            "earnings_today": str(earnings_today),
+            "earnings_today_change_pct": _pct_change(earnings_today, earnings_yesterday),
+            "earnings_this_month": str(earnings_this_month),
+            "earnings_this_month_change_pct": _pct_change(
+                earnings_this_month, earnings_last_month_mtd
+            ),
+            "total_bookings": total_bookings,
+            "bookings_today": bookings_today,
+            "bookings_today_change_pct": _pct_change(
+                Decimal(bookings_today), Decimal(bookings_yesterday)
+            ),
+            "pending_payment_count": pending_payment_count,
+            "avg_booking_value": avg_booking_value,
+            "cancellation_rate": cancellation_rate,
+            "top_doctor": top_doctor,
+            "doctor_performance": doctor_performance,
+            "currency": "INR",
+            "trend": trend,
+        },
+        status=200,
+    )
+    # Defense in depth alongside the frontend's own `cache: 'no-store'`
+    # (api-client.ts) — every figure here is live operational data computed
+    # fresh on every request; nothing between the browser and this view
+    # (a corporate proxy, a CDN, the browser's own heuristic cache) should
+    # ever be allowed to serve a stale copy instead of hitting this view.
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+@rate_limit(
+    limit_per_minute=30, scope="order-fulfillment-status", key_func=by_authenticated_account
+)
+def order_fulfillment_status_update_view(request, booking_id):
+    """Persists the Orders table's own Pending/Completed dropdown (BPP/web/app/
+    orders/page.tsx) against the real `Booking.fulfillment_status` state machine —
+    previously local-only UI state that reverted on refresh.
+
+    The table's own two-value model (`PENDING`/`COMPLETED`) is a deliberate
+    simplification of the real four-state machine (`SCHEDULED`/`IN_PROGRESS`/
+    `COMPLETED`/`NO_SHOW`, `inventory_core.models.Booking._FULFILLMENT_TRANSITIONS`)
+    for exactly the one action an owner/staff genuinely takes from this table:
+    mark an appointment done. Requesting `COMPLETED` drives the two-step real
+    transition (`SCHEDULED` -> `IN_PROGRESS` -> `COMPLETED`) when starting from
+    `SCHEDULED`, or the single real step when already `IN_PROGRESS`; already
+    `COMPLETED` is accepted idempotently (a second click/retry must not error).
+    Requesting `PENDING` is **not** a real reverse transition the state machine
+    allows (`COMPLETED`/`NO_SHOW` are terminal) and is rejected with a clear
+    message rather than silently faking a state the backend doesn't actually
+    hold — this table never offers it as a target from a terminal booking in
+    the first place, so this path is a defensive rejection of a replayed/
+    forged request, not a real user-facing flow to support."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    target = payload.get("fulfillment_status")
+    if target not in ("PENDING", "COMPLETED"):
+        return error_response(
+            "VALIDATION_ERROR", "fulfillment_status must be PENDING or COMPLETED", 400
+        )
+
+    accessible_ids = set(str(rid) for rid in _accessible_order_resource_ids(request.user))
+    try:
+        booking = Booking.objects.select_related("slot__resource").get(pk=booking_id)
+    except (Booking.DoesNotExist, ValueError):
+        return error_response("NOT_FOUND", "No such booking", 404)
+    # Same IDOR posture as every other owner/staff-scoped view in this file:
+    # "not found" for a real booking outside this account's own resources,
+    # never a distinguishable "forbidden" that would confirm its existence.
+    if str(booking.slot.resource_id) not in accessible_ids:
+        return error_response("NOT_FOUND", "No such booking", 404)
+
+    if target == "PENDING":
+        if booking.fulfillment_status == Booking.FulfillmentStatus.SCHEDULED:
+            pass  # already the state PENDING maps to — idempotent no-op
+        else:
+            return error_response(
+                "INVALID_TRANSITION",
+                f"Cannot revert a {booking.fulfillment_status.lower()} booking back to pending",
+                409,
+            )
+    else:  # COMPLETED
+        try:
+            if booking.fulfillment_status == Booking.FulfillmentStatus.SCHEDULED:
+                booking.transition_fulfillment_status(Booking.FulfillmentStatus.IN_PROGRESS)
+                booking.transition_fulfillment_status(Booking.FulfillmentStatus.COMPLETED)
+            elif booking.fulfillment_status == Booking.FulfillmentStatus.IN_PROGRESS:
+                booking.transition_fulfillment_status(Booking.FulfillmentStatus.COMPLETED)
+            elif booking.fulfillment_status == Booking.FulfillmentStatus.COMPLETED:
+                pass  # idempotent — a retried/duplicate request must not error
+            else:
+                return error_response(
+                    "INVALID_TRANSITION", "Cannot mark a no-show booking as completed", 409
+                )
+        except DjangoValidationError as exc:
+            return error_response("INVALID_TRANSITION", str(exc), 409)
+
+    return JsonResponse(
+        {"booking_id": str(booking.id), "fulfillment_status": booking.fulfillment_status},
         status=200,
     )
 
@@ -891,6 +1824,52 @@ def resource_availability_block_view(request, resource_id):
     return JsonResponse({"blocked": blocked, "skipped": skipped}, status=200)
 
 
+def _circle_for_state(state: str) -> Circle | None:
+    """shared.postal_directory names its Circle rows "<State> Circle" — see that
+    app's own seed_postal_directory docstring. Not every state has a Circle seeded
+    yet (only Andhra Pradesh does), so this is expected to return None often."""
+    return Circle.objects.filter(name=f"{state} Circle").first()
+
+
+@require_http_methods(["GET"])
+@rate_limit(limit_per_minute=30, scope="postal-directory-read", key_func=by_authenticated_account)
+def postal_divisions_view(request):
+    """Step 2 of the Profile page's State -> Division -> Pincode picker: the real
+    Divisions under the chosen state's Circle, or an empty list when that state has
+    no postal_directory data yet — the frontend shows "Coming soon" for an empty
+    list rather than treating it as an error, since most states are genuinely
+    unseeded right now, not a real failure."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+    state = (request.GET.get("state") or "").strip()
+    if state not in ALL_INDIA_STATES:
+        return error_response("VALIDATION_ERROR", "not a recognised state", 400, field="state")
+    circle = _circle_for_state(state)
+    divisions = (
+        [{"id": d.id, "name": d.name} for d in circle.divisions.order_by("name")]
+        if circle
+        else []
+    )
+    return JsonResponse({"divisions": divisions}, status=200)
+
+
+@require_http_methods(["GET"])
+@rate_limit(limit_per_minute=30, scope="postal-directory-read", key_func=by_authenticated_account)
+def postal_pincodes_view(request):
+    """Step 3 — the real Pincodes under one specific Division, identified by id
+    (not name: division names aren't guaranteed unique once more than one state's
+    data is seeded, so a name-only lookup would be ambiguous the moment a second
+    circle is added)."""
+    if not request.user.is_authenticated:
+        return error_response("UNAUTHORIZED", "not logged in", 401)
+    try:
+        division = Division.objects.get(id=request.GET.get("division_id"))
+    except (Division.DoesNotExist, ValueError, TypeError):
+        return error_response("NOT_FOUND", "no such division", 404)
+    codes = list(division.pincodes.order_by("code").values_list("code", flat=True))
+    return JsonResponse({"pincodes": codes}, status=200)
+
+
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
 @rate_limit(limit_per_minute=20, scope="locations", key_func=by_authenticated_account)
@@ -981,6 +1960,52 @@ def select_view(request):
     )
     if status_code == 200:
         select_service.dispatch_on_select_in_background(payload=payload)
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+@rate_limit(limit_per_minute=60, scope="bpp-check-availability")
+def check_availability_view(request):
+    """Direct, signed BAP->BPP call (not a real Beckn action — see
+    core/availability_service.py's module docstring) answering, per `resource_id`,
+    whether it has a real open slot on a given date. IP-keyed defense-in-depth
+    ceiling, matching `rating_view`'s/`support_view`'s own tier reasoning — a bit
+    more generous here since picking a date is a natural single-tap gesture a real
+    browsing customer can do several times a minute, not a one-off action."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = availability_service.check_availability(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
+    return JsonResponse(response_body, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+@rate_limit(limit_per_minute=60, scope="bpp-list-available-slots")
+def list_available_slots_view(request):
+    """Direct, signed BAP->BPP call — the real bookable time windows for one
+    resource on one date (see core/availability_service.py's own
+    list_available_slots docstring). Same tier/reasoning as
+    check_availability_view above."""
+    try:
+        payload = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Request body is not valid JSON"}, status=400)
+
+    response_body, status_code = availability_service.list_available_slots(
+        payload=payload,
+        authorization_header=request.headers.get("Authorization", ""),
+        gateway_authorization_header=request.headers.get("X-Gateway-Authorization", ""),
+        body=request.body,
+    )
     return JsonResponse(response_body, status=status_code)
 
 

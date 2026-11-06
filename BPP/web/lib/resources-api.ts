@@ -12,23 +12,88 @@ import { getSlots, type ResourceInfo } from './availability-api';
 export interface CreatedResource {
   id: string;
   name: string;
+  domain_data: Record<string, unknown>;
+  is_active: boolean;
+  price_currency: string;
+  price_value: string;
+  created_at: string;
 }
 
 export async function createResource(
   name: string,
-  resourceType: string
+  resourceType: string,
+  extraDomainData: Record<string, unknown> = {}
 ): Promise<CreatedResource> {
   const resp = await apiFetch('/api/v1/resources', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await csrfHeader()) },
-    body: JSON.stringify({ name, domain_data: { resource_type: resourceType } }),
+    body: JSON.stringify({
+      name,
+      domain_data: { resource_type: resourceType, ...extraDomainData },
+    }),
   });
   return resp.json();
+}
+
+/** Edit action — partial update, merges into the existing domain_data rather than
+ * replacing it (see the backend view's own docstring for why that matters). */
+export async function updateResource(
+  resourceId: string,
+  changes: {
+    name?: string;
+    domain_data?: Record<string, unknown>;
+    price_value?: number;
+    price_currency?: string;
+  }
+): Promise<CreatedResource> {
+  const resp = await apiFetch(`/api/v1/resources/${resourceId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeader()) },
+    body: JSON.stringify(changes),
+  });
+  return resp.json();
+}
+
+export async function setResourceStatus(
+  resourceId: string,
+  isActive: boolean
+): Promise<{ id: string; is_active: boolean }> {
+  const resp = await apiFetch(`/api/v1/resources/${resourceId}/status`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeader()) },
+    body: JSON.stringify({ is_active: isActive }),
+  });
+  return resp.json();
+}
+
+/** Refuses (409) when the resource has real booking history — see the backend
+ * view's own docstring for why a hard delete isn't safe in that case. */
+export async function deleteResource(resourceId: string): Promise<void> {
+  await apiFetch(`/api/v1/resources/${resourceId}/delete`, {
+    method: 'POST',
+    headers: await csrfHeader(),
+  });
 }
 
 export interface CreatedAvailability {
   calendar_id: string;
   slots_created: number;
+}
+
+export interface DeletedAvailability {
+  deleted_count: number;
+  kept_count: number;
+}
+
+/** Removes every still-open (AVAILABLE) slot for a resource — leaves any
+ * HELD/BOOKED/CANCELLED slot untouched, since those carry real booking
+ * history the backend refuses to destroy (see the view's own docstring). */
+export async function deleteAvailability(resourceId: string): Promise<DeletedAvailability> {
+  const resp = await apiFetch(`/api/v1/resources/${resourceId}/availability/delete`, {
+    method: 'POST',
+    headers: await csrfHeader(),
+  });
+  return resp.json();
 }
 
 export async function createAvailability(
@@ -38,6 +103,9 @@ export async function createAvailability(
     rangeEnd: string;
     times: string[];
     frequencyDays: number;
+    /** Comma-separated weekday tokens (MON..SUN), matching AvailabilityCalendar.days
+     * exactly — omitted/blank means every day. */
+    days?: string;
     slotDurationMinutes: number;
     slotCapacity: number;
   }
@@ -50,6 +118,7 @@ export async function createAvailability(
       range_end: params.rangeEnd,
       times: params.times,
       frequency_days: params.frequencyDays,
+      days: params.days ?? '',
       slot_duration_minutes: params.slotDurationMinutes,
       slot_capacity: params.slotCapacity,
     }),

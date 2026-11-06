@@ -17,9 +17,9 @@ instance across select -> init -> confirm.
 
 import json
 import logging
-import threading
 
 import redis
+from background_thread import run_in_background
 from beckn_transaction import (
     PayloadValidationError,
     build_ack_response,
@@ -30,8 +30,9 @@ from beckn_transaction import (
 from django.conf import settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from django_observability.context import correlation_id_var
 from inventory_core.domain_adapter import get_adapter
-from inventory_core.models import Resource, Slot
+from inventory_core.models import Booking, Resource, Slot
 from inventory_core.reservation import hold_multi_resource_booking, hold_slot, release_hold_now
 
 from . import registry_client, trust
@@ -49,8 +50,12 @@ def _redis_client() -> redis.Redis:
     return redis.Redis.from_url(settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5)
 
 
-def _extract_selection(order: dict) -> tuple[str, str]:
+def _extract_selection(order: dict) -> tuple[str, str, dict]:
     """Pulls the item id + the customer's requested start time out of the order draft.
+    Also returns the full 'start' stop dict itself (not just the two fields above) so
+    callers can read its real, optional `person`/`contact` sub-fields (who this
+    appointment is actually for — protocol_compliance_notes_v1.1.md §J.1's confirmed
+    `Stop.yaml` fields) without this function needing its own opinion about them.
     Raises ValueError with a human-readable message on any missing/malformed piece —
     the caller turns that into a real NACK, never a raw 500."""
     try:
@@ -67,7 +72,7 @@ def _extract_selection(order: dict) -> tuple[str, str]:
             "message.order.fulfillments[0].stops[] must include a 'start' stop with time.timestamp"
         ) from exc
 
-    return item_id, requested_timestamp
+    return item_id, requested_timestamp, start_stop
 
 
 def validate_and_ack_select(
@@ -132,6 +137,25 @@ def validate_and_ack_select(
     return build_ack_response(context=context), 200
 
 
+def _customer_domain_data(start_stop: dict) -> dict:
+    """The real, optional `person`/`contact` a BAP may send on the 'start' stop,
+    reshaped into the `Booking.domain_data` entries this project's own BPP orders
+    dashboard (BPP/web/app/orders/page.tsx) and the customer-facing invoice both
+    read from. Absent entirely (not empty strings) when the BAP sent neither —
+    an old/different BAP that never sends this must not silently appear to have
+    an empty-but-present customer record."""
+    data: dict = {}
+    person = start_stop.get("person") or {}
+    if person.get("name"):
+        data["customer_name"] = person["name"]
+    contact = start_stop.get("contact") or {}
+    if contact.get("phone"):
+        data["customer_phone"] = contact["phone"]
+    if contact.get("email"):
+        data["customer_email"] = contact["email"]
+    return data
+
+
 def _on_select_context(*, request_context: dict) -> dict:
     return build_context(
         domain=request_context["domain"],
@@ -149,7 +173,14 @@ def _on_select_context(*, request_context: dict) -> dict:
 
 
 def _hold_multi_resource_selection(
-    *, resource: Resource, slot: Slot, requested_time, requested_timestamp: str, transaction_id: str
+    *,
+    resource: Resource,
+    slot: Slot,
+    requested_time,
+    requested_timestamp: str,
+    transaction_id: str,
+    customer_domain_data: dict,
+    hold_ttl_seconds: float,
 ) -> tuple[dict | None, dict | None]:
     """§4.2's multi-resource selection path — Automotive's own case, and the reason
     `required_resource_count()` (Phase 1.5's own hook, unused until this phase) now
@@ -173,7 +204,7 @@ def _hold_multi_resource_selection(
         [slot.id, paired_slot.id],
         holder_ref=transaction_id,
         redis_client=_redis_client(),
-        ttl_seconds=settings.RESERVATION_HOLD_TTL_SECONDS,
+        ttl_seconds=hold_ttl_seconds,
         event_bus=get_event_bus(),
     )
     if bookings is None:
@@ -181,6 +212,11 @@ def _hold_multi_resource_selection(
             {"code": "SLOT_UNAVAILABLE", "message": "Slot no longer available"},
             None,
         )
+
+    if customer_domain_data:
+        for booking in bookings:
+            booking.domain_data = {**booking.domain_data, **customer_domain_data}
+        Booking.objects.bulk_update(bookings, ["domain_data"])
 
     # livetracker4.md §2.1 cutover (2026-08-02): hold-created metrics and the live
     # dashboard broadcast used to fire inline, right here. Both are now driven by the
@@ -218,17 +254,36 @@ def _hold_multi_resource_selection(
     return None, resolved_order
 
 
-def dispatch_on_select(*, payload: dict) -> None:
+def dispatch_on_select(*, payload: dict, correlation_id: str | None = None) -> None:
     """Resolves the requested item + time against **live** availability (Source-of-
     Truth rule, §3.2's own Test Gate) and attempts the real, already-proven atomic hold
     (`hold_slot`, §1.2/§1.3) — the exact mechanism that makes "selected by someone else
     microseconds earlier is correctly rejected" true, not a new concurrency primitive.
     Sends the resulting /on_select (success or a real, specific error) to Gateway.
     Fire-and-forget: failures are logged, not raised, same discipline as
-    dispatch_on_search."""
+    dispatch_on_search.
+
+    `correlation_id` (§3.10, audit fix 2026-11-06): the real `X-Correlation-Id` of
+    the request that triggered this dispatch, captured by the caller in the
+    request-handling thread — a `ContextVar` doesn't cross the background thread
+    `dispatch_on_select_in_background` spawns, so it's threaded through explicitly,
+    same pattern as `confirm_service.dispatch_on_confirm`."""
     context = payload["context"]
     order = payload["message"]["order"]
-    item_id, requested_timestamp = _extract_selection(order)
+    item_id, requested_timestamp, start_stop = _extract_selection(order)
+    customer_domain_data = _customer_domain_data(start_stop)
+    # Project-defined (no real Select field for it) — a BAP-requested shorter
+    # hold for the tap-to-reserve UX, already clamped not to exceed the
+    # platform's own default on BAP's side (BAP/backend/core/views.py's
+    # select_trigger_view); clamped again here regardless, since this value
+    # arrived over the wire and this service never trusts a caller's own
+    # claim about its own validation.
+    requested_hold_seconds = payload["message"].get("hold_seconds")
+    hold_ttl_seconds = settings.RESERVATION_HOLD_TTL_SECONDS
+    if isinstance(requested_hold_seconds, (int, float)) and requested_hold_seconds > 0:
+        hold_ttl_seconds = max(
+            10, min(requested_hold_seconds, settings.RESERVATION_HOLD_TTL_SECONDS)
+        )
 
     error = None
     resolved_order = None
@@ -259,7 +314,9 @@ def dispatch_on_select(*, payload: dict) -> None:
                 # before attempting the new one. Already generalizes correctly to a
                 # prior *multi*-resource hold (§4.2) too: it releases every still-HELD
                 # booking under this transaction_id, not just one.
-                release_prior_hold_for_transaction(transaction_id=context["transaction_id"])
+                release_prior_hold_for_transaction(
+                    transaction_id=context["transaction_id"], correlation_id=correlation_id
+                )
 
                 # §4.2: how many resources this domain's own adapter says a booking
                 # genuinely needs (Automotive's bay+mechanic pair = 2; every domain
@@ -276,6 +333,8 @@ def dispatch_on_select(*, payload: dict) -> None:
                         requested_time=requested_time,
                         requested_timestamp=requested_timestamp,
                         transaction_id=context["transaction_id"],
+                        customer_domain_data=customer_domain_data,
+                        hold_ttl_seconds=hold_ttl_seconds,
                     )
                 else:
                     booking = hold_slot(
@@ -288,7 +347,7 @@ def dispatch_on_select(*, payload: dict) -> None:
                         # per individual customer's shopping session.
                         holder_ref=context["transaction_id"],
                         redis_client=_redis_client(),
-                        ttl_seconds=settings.RESERVATION_HOLD_TTL_SECONDS,
+                        ttl_seconds=hold_ttl_seconds,
                         event_bus=get_event_bus(),
                     )
                     if booking is None:
@@ -297,6 +356,9 @@ def dispatch_on_select(*, payload: dict) -> None:
                             "message": "Slot no longer available",
                         }
                     else:
+                        if customer_domain_data:
+                            booking.domain_data = {**booking.domain_data, **customer_domain_data}
+                            booking.save(update_fields=["domain_data", "updated_at"])
                         # livetracker4.md §2.1 cutover: see the multi-resource branch's
                         # own comment above — hold-created metrics and the availability
                         # broadcast are now driven by the real event worker consuming
@@ -364,12 +426,22 @@ def dispatch_on_select(*, payload: dict) -> None:
 def dispatch_on_select_in_background(*, payload: dict) -> None:
     """Fires dispatch_on_select on a daemon thread — the actual fire-and-forget entry
     point the view uses. Kept separate so tests can call dispatch_on_select directly
-    and synchronously without racing a thread."""
-    thread = threading.Thread(target=dispatch_on_select, kwargs={"payload": payload}, daemon=True)
-    thread.start()
+    and synchronously without racing a thread.
+
+    Captures `correlation_id_var` here, in the real request-handling thread, before
+    spawning the background thread (§3.10, audit fix 2026-11-06) — same pattern as
+    `confirm_service.dispatch_on_confirm_in_background`."""
+    correlation_id = correlation_id_var.get()
+    run_in_background(
+        dispatch_on_select,
+        {"payload": payload, "correlation_id": correlation_id},
+        name="bpp-dispatch-on-select",
+    )
 
 
-def release_prior_hold_for_transaction(*, transaction_id: str) -> None:
+def release_prior_hold_for_transaction(
+    *, transaction_id: str, correlation_id: str | None = None
+) -> None:
     """§3.2's re-selection case: a customer selecting a different slot after already
     holding one from an earlier /select in the same transaction must not leak the first
     hold until its TTL eventually expires on its own. Finds any other still-HELD
@@ -387,4 +459,9 @@ def release_prior_hold_for_transaction(*, transaction_id: str) -> None:
         # before, so a re-selection's own release was never audit-logged either — it now
         # is, via the worker's `audit_log_consumer` on the `BookingEvent.CANCELLED`
         # (`reason="superseded_by_reselect"`) `release_hold_now` also publishes.
-        release_hold_now(booking.id, redis_client=_redis_client(), event_bus=get_event_bus())
+        release_hold_now(
+            booking.id,
+            redis_client=_redis_client(),
+            event_bus=get_event_bus(),
+            correlation_id=correlation_id,
+        )

@@ -1,9 +1,19 @@
 import type { CSSProperties } from 'react';
 import type { Metadata, Viewport } from 'next';
+import { Plus_Jakarta_Sans } from 'next/font/google';
 import './globals.css';
 import { AppShell } from '@/components/shell/AppShell';
 import { PWARegister } from '@/components/shell/PWARegister';
 import { BRAND, BRAND_ID } from '@/lib/brand';
+
+// A distinct display face for the home screen's greeting, section headers and
+// nav — never body copy — the same scoped-use pattern BPP/web's own
+// `--font-title` already established, not a wholesale typeface swap.
+const titleFont = Plus_Jakarta_Sans({
+  subsets: ['latin'],
+  weight: ['600', '700', '800'],
+  variable: '--font-title',
+});
 
 // livetracker7.md Phase 4.2: real, designer-delivered per-brand icon set. No app/
 // favicon.ico static-convention file anymore (can't vary per brand) — the
@@ -11,7 +21,7 @@ import { BRAND, BRAND_ID } from '@/lib/brand';
 const ICON_DIR = `/icons/${BRAND_ID}`;
 
 export const metadata: Metadata = {
-  title: `${BRAND.name} — Buyer App`,
+  title: BRAND.name,
   description: 'Decentralized slot booking — Buyer App Platform',
   icons: {
     icon: [
@@ -47,8 +57,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="h-full antialiased" style={brandStyle}>
-      <body className="min-h-full flex flex-col bg-white text-neutral-900">
+    <html lang="en" className={`h-full antialiased ${titleFont.variable}`} style={brandStyle}>
+      <body className="min-h-full flex flex-col bg-neutral-50 text-neutral-900">
         <PWARegister />
         <AppShell appName={BRAND.name}>{children}</AppShell>
       </body>

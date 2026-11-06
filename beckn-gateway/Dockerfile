@@ -28,6 +28,7 @@ COPY beckn-gateway/ ./beckn-gateway/
 # before it's first mounted as a named volume, or the non-root runtime user can't
 # write its own key file into the daemon-created, root-owned empty volume.
 RUN mkdir -p /app/data/secrets && chown -R app:app /app
+RUN chmod +x /app/beckn-gateway/entrypoint.sh
 USER app
 WORKDIR /app/beckn-gateway
 
@@ -39,4 +40,11 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()" || exit 1
 
+# Real incident found live (2026-10-21, see check_identity_consistency's own
+# docstring): nothing ever verified at startup that this container's on-disk signing
+# key still matches what Registry has on file — a recreated/empty secrets volume
+# silently manufactured a new, orphaned identity, and every outbound signed call
+# failed with a cryptic 401 until a human traced it back by hand. entrypoint.sh now
+# runs that check (non-fatal) before the real process starts.
+ENTRYPOINT ["./entrypoint.sh"]
 CMD ["gunicorn", "gateway.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2"]

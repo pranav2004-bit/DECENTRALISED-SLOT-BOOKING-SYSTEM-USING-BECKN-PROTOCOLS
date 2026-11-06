@@ -14,6 +14,7 @@ vi.mock('next/navigation', () => ({
 import LoginPage from './page';
 import * as authApi from '@/lib/auth-api';
 import { ApiError } from '@/lib/api-client';
+import { ToastProvider } from '@/components/ui/Toast';
 
 describe('LoginPage', () => {
   beforeEach(() => {
@@ -34,22 +35,39 @@ describe('LoginPage', () => {
       role: 'OWNER',
       managed_by: null,
       owned_resource_ids: [],
+      is_accepting_bookings: true,
+      description: '',
+      public_phone: '',
+      public_email: '',
+      address: '',
+      state: '',
+      division: '',
+      pincode: '',
+      created_at: '2026-01-01T00:00:00Z',
     });
-    render(<LoginPage />);
+    render(
+      <ToastProvider>
+        <LoginPage />
+      </ToastProvider>
+    );
 
     await userEvent.type(screen.getByLabelText('Email'), 'owner@example.com');
     await userEvent.type(screen.getByLabelText('Password'), 'Passw0rd!23');
     await userEvent.click(screen.getByRole('button', { name: 'Log in' }));
 
     expect(loginSpy).toHaveBeenCalledWith('owner@example.com', 'Passw0rd!23');
-    expect(mockPush).toHaveBeenCalledWith('/dashboard');
+    expect(mockPush).toHaveBeenCalledWith('/resources');
   });
 
   it('shows the real API error and does not navigate on failure', async () => {
     vi.spyOn(authApi, 'login').mockRejectedValue(
       new ApiError('invalid contact or password', 401, null)
     );
-    render(<LoginPage />);
+    render(
+      <ToastProvider>
+        <LoginPage />
+      </ToastProvider>
+    );
 
     await userEvent.type(screen.getByLabelText('Email'), 'owner@example.com');
     await userEvent.type(screen.getByLabelText('Password'), 'wrong');

@@ -25,6 +25,15 @@ export interface ResourceInfo {
   rating_count: number;
   /** livetracker3.md §8.1 — the staff account id currently assigned to self-manage this resource, or `null`. */
   assigned_staff_id: string | null;
+  /** The domain-specific extension point (resource_type, and — for Healthcare —
+   * specialisation/education/years_of_experience/gender). Shape varies by brand. */
+  domain_data: Record<string, unknown>;
+  is_active: boolean;
+  price_currency: string;
+  price_value: string;
+  /** When this resource was created — the slot-history browser doesn't go back
+   * further than this ("date of joining"). */
+  created_at: string;
 }
 
 export interface BlockResult {

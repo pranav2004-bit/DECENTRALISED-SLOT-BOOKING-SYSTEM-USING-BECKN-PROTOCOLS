@@ -18,9 +18,15 @@ ARG NEXT_PUBLIC_WS_BASE_URL
 # livetracker7.md Phase 4: selects which brand (lib/brand.ts) this build renders as —
 # same codebase for OnSlot/GoFetch, differentiated only by this build arg.
 ARG NEXT_PUBLIC_BRAND_ID=x
+# Razorpay's key_id is a public identifier, not a secret (app/payment/page.tsx's own
+# comment) — safe as a build arg, same as the other NEXT_PUBLIC_* values above. Empty
+# by default: payment/page.tsx already shows a clean "not configured" error rather
+# than crash when this is unset (livetracker5.md Phase 1.6).
+ARG NEXT_PUBLIC_RAZORPAY_KEY_ID=
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 ENV NEXT_PUBLIC_WS_BASE_URL=$NEXT_PUBLIC_WS_BASE_URL
 ENV NEXT_PUBLIC_BRAND_ID=$NEXT_PUBLIC_BRAND_ID
+ENV NEXT_PUBLIC_RAZORPAY_KEY_ID=$NEXT_PUBLIC_RAZORPAY_KEY_ID
 RUN npm run build
 
 FROM node:20-alpine AS runtime

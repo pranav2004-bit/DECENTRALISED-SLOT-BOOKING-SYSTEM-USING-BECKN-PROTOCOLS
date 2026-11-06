@@ -21,9 +21,9 @@ only reports its real remaining time — extending it would let a customer call
 
 import json
 import logging
-import threading
 
 import redis
+from background_thread import run_in_background
 from beckn_transaction import (
     PayloadValidationError,
     build_ack_response,
@@ -248,5 +248,4 @@ def dispatch_on_init_in_background(*, payload: dict) -> None:
     """Fires dispatch_on_init on a daemon thread — the actual fire-and-forget entry
     point the view uses. Kept separate so tests can call dispatch_on_init directly
     and synchronously without racing a thread."""
-    thread = threading.Thread(target=dispatch_on_init, kwargs={"payload": payload}, daemon=True)
-    thread.start()
+    run_in_background(dispatch_on_init, {"payload": payload}, name="bpp-dispatch-on-init")

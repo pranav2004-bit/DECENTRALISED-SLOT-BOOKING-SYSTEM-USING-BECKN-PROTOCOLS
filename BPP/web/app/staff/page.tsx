@@ -53,7 +53,7 @@ function CreateStaffForm({ onCreated }: { onCreated: (staff: StaffAccount) => vo
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-4 rounded-lg border border-neutral-200 p-4">
+    <form onSubmit={handleSubmit} className="flex flex-col gap-4 rounded-lg border border-neutral-200 bg-white p-4">
       <h2 className="text-sm font-semibold text-neutral-900">Add a staff account</h2>
       <FormField
         label="Staff name"
@@ -404,8 +404,8 @@ function StaffManagement({ account }: { account: BusinessAccount }) {
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8">
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">Staff</h1>
-        <Link href="/dashboard" className="text-sm text-neutral-600 underline">
-          Back to dashboard
+        <Link href="/resources" className="text-sm text-neutral-600 underline">
+          Back to resources
         </Link>
       </div>
 
@@ -415,7 +415,7 @@ function StaffManagement({ account }: { account: BusinessAccount }) {
           description="Add a staff account below to give someone their own login."
         />
       ) : (
-        <ul className="flex flex-col divide-y divide-neutral-200 rounded-lg border border-neutral-200">
+        <ul className="flex flex-col divide-y divide-neutral-200 rounded-lg border border-neutral-200 bg-white">
           {staff.map((s) => (
             <StaffRow
               key={s.id}
@@ -458,7 +458,7 @@ function StaffManagement({ account }: { account: BusinessAccount }) {
       {resources.length > 0 && (
         <div className="flex flex-col gap-2">
           <h2 className="text-sm font-semibold text-neutral-900">Assign staff to a resource</h2>
-          <ul className="flex flex-col divide-y divide-neutral-200 rounded-lg border border-neutral-200">
+          <ul className="flex flex-col divide-y divide-neutral-200 rounded-lg border border-neutral-200 bg-white">
             {resources.map((r) => (
               <AssignStaffRow
                 key={r.id}

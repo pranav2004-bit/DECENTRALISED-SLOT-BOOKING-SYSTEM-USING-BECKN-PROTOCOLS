@@ -9,6 +9,7 @@ vi.mock('next/navigation', () => ({
 import { AppShell } from './AppShell';
 import * as realtimeModule from '@/lib/realtime/useRealtimeConnection';
 import * as authApi from '@/lib/auth-api';
+import { AccountProvider } from '@/lib/account-context';
 
 vi.spyOn(realtimeModule, 'useRealtimeConnection').mockReturnValue({
   status: 'open',
@@ -21,9 +22,11 @@ vi.spyOn(authApi, 'me').mockResolvedValue(null);
 describe('AppShell', () => {
   it('renders the app name, a main landmark, and the given children', () => {
     render(
-      <AppShell appName="Provider App">
-        <p>page content</p>
-      </AppShell>
+      <AccountProvider>
+        <AppShell appName="Provider App">
+          <p>page content</p>
+        </AppShell>
+      </AccountProvider>
     );
     expect(screen.getByRole('link', { name: 'Provider App' })).toHaveAttribute('href', '/');
     expect(screen.getByRole('main')).toHaveTextContent('page content');
@@ -31,9 +34,11 @@ describe('AppShell', () => {
 
   it('renders a skip-to-main-content link as the first interactive element', () => {
     render(
-      <AppShell appName="Provider App">
-        <p>content</p>
-      </AppShell>
+      <AccountProvider>
+        <AppShell appName="Provider App">
+          <p>content</p>
+        </AppShell>
+      </AccountProvider>
     );
     const skipLink = screen.getByRole('link', { name: 'Skip to main content' });
     expect(skipLink).toHaveAttribute('href', '#main-content');

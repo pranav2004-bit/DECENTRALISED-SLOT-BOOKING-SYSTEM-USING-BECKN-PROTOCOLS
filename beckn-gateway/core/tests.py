@@ -1,6 +1,7 @@
 """Regression tests for Phase 1.2 Gateway Foundation and Phase 3.3 Gateway Onboarding."""
 
 import json
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -497,6 +498,67 @@ def test_dispatch_search_does_not_raise_when_a_bpp_is_unreachable():
         rsps.add(responses.POST, "https://bpp.example.com/search", status=503)
         # must not raise:
         routing.dispatch_search(payload=payload, authorization_header="irrelevant")
+
+
+def test_dispatch_search_dispatches_to_bpps_in_parallel_not_sequentially():
+    """Real incident fix (2026-10-25, see dispatch_search's own docstring): a single
+    slow/unreachable BPP must not delay delivery to any other BPP. Sequential
+    dispatch meant a dead participant's full retry cost was paid before even
+    attempting the next one — which, live, once let a legitimately-working BPP's
+    request arrive only after the original signature's own short validity window
+    had already expired, so that BPP correctly rejected it as an expired signature.
+    Proven directly here: the slow BPP is listed FIRST (same ordering as the real
+    incident) and sleeps before its fake client's `.post()` returns; the fast one's
+    `.post()` must still be invoked almost immediately, not only after the slow one
+    finishes. Deliberately bypasses `responses` for this one (unlike every other
+    `dispatch_search` test here) and stubs `get_participant_client` directly instead
+    — `responses`'s own global mock registry isn't guaranteed thread-safe/lock-free
+    across concurrent callback dispatch, which made an earlier version of this test
+    using `responses` callbacks measure real but misleading partial serialization
+    that was the mock library's own behavior, not `dispatch_search`'s. Stubbing the
+    client directly removes that confound entirely."""
+    payload = _build_search_context()
+    bpp_entries = [
+        {
+            "subscriber_id": "slow-bpp.example.com",
+            "url": "https://slow-bpp.example.com",
+            "status": "SUBSCRIBED",
+        },
+        {
+            "subscriber_id": "fast-bpp.example.com",
+            "url": "https://fast-bpp.example.com",
+            "status": "SUBSCRIBED",
+        },
+    ]
+    fast_bpp_received_at = []
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            pass
+
+    class _FakeClient:
+        def __init__(self, subscriber_id):
+            self.subscriber_id = subscriber_id
+
+        def post(self, url, data, headers):
+            if self.subscriber_id == "slow-bpp.example.com":
+                time.sleep(1.5)
+            else:
+                fast_bpp_received_at.append(time.monotonic())
+            return _FakeResponse()
+
+    with patch("core.routing.registry_client.lookup", return_value=bpp_entries), patch(
+        "core.routing.registry_client.get_participant_client",
+        side_effect=_FakeClient,
+    ):
+        start = time.monotonic()
+        routing.dispatch_search(payload=payload, authorization_header="irrelevant")
+
+    assert fast_bpp_received_at, "fast BPP was never reached"
+    assert fast_bpp_received_at[0] - start < 0.5, (
+        "fast BPP wasn't reached until the slow one finished — dispatch is still "
+        "sequential, not parallel"
+    )
 
 
 def test_search_view_rejects_tampered_signature(client):

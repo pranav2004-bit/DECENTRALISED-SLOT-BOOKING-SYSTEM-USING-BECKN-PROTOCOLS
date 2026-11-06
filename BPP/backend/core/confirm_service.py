@@ -18,9 +18,10 @@ this module never needs its own locking.
 
 import json
 import logging
-import threading
+import uuid
 
 import redis
+from background_thread import run_in_background
 from beckn_transaction import (
     PayloadValidationError,
     build_ack_response,
@@ -154,6 +155,26 @@ def dispatch_on_confirm(*, payload: dict, correlation_id: str | None = None) -> 
     context = payload["context"]
     order = payload["message"]["order"]
     booking_id = _extract_booking_id(order)
+    # The hold itself was created anonymously, at the moment the slot was
+    # first tapped (select_service.py's own module docstring) — confirm is
+    # the real, final point a customer's own identity is actually known, so
+    # this is where it's read off the wire (same real `stops[0].person`/
+    # `.contact` fields select already uses) and merged in, same "never
+    # trust a caller's own claim it already validated this" posture as the
+    # rest of this file.
+    customer_domain_data: dict = {}
+    try:
+        stop = order["fulfillments"][0]["stops"][0]
+    except (KeyError, IndexError, TypeError):
+        stop = {}
+    person = stop.get("person") or {}
+    if person.get("name"):
+        customer_domain_data["customer_name"] = person["name"]
+    contact = stop.get("contact") or {}
+    if contact.get("phone"):
+        customer_domain_data["customer_phone"] = contact["phone"]
+    if contact.get("email"):
+        customer_domain_data["customer_email"] = contact["email"]
 
     error = None
     resolved_order = None
@@ -169,6 +190,17 @@ def dispatch_on_confirm(*, payload: dict, correlation_id: str | None = None) -> 
         # Never distinguish "wrong owner" from "genuinely gone" in the response —
         # same IDOR-safety reasoning as /init (protocol_compliance_notes_v1.1.md §J).
         error = {"code": "SLOT_UNAVAILABLE", "message": "No matching booking for this order"}
+    elif not customer_domain_data.get("customer_name") and not booking.domain_data.get(
+        "customer_name"
+    ):
+        # A real appointment must belong to a real, named person — the hold
+        # itself may start anonymously, but confirming one without ever
+        # learning who it's for is rejected here even if a caller skipped
+        # BAP's own confirm_trigger_view requirement for this.
+        error = {
+            "code": "VALIDATION_ERROR",
+            "message": "message.order.fulfillments[0].stops[0].person.name is required to confirm",
+        }
     else:
         # §4.2: confirm every booking in the group together (Automotive's bay+mechanic
         # pair), not just the one the wire request actually names — `find_group_bookings`
@@ -234,6 +266,23 @@ def dispatch_on_confirm(*, payload: dict, correlation_id: str | None = None) -> 
                 confirmed_total_value=total_value,
                 confirmed_total_currency=resources[0].price_currency,
             )
+            # The user's own explicit requirement: every confirmed booking gets a
+            # fresh, globally-unique customer id, generated exactly here (confirm,
+            # not select — a HELD hold that never gets confirmed should never have
+            # minted one). uuid4 is cryptographically random (122 bits of entropy)
+            # — the collision probability across any realistic booking volume is
+            # negligible enough to treat "never collides" as a real, non-negotiable
+            # guarantee, the same way `Booking.id` itself already relies on uuid4
+            # for exactly this property. One id per booking in the group (not one
+            # shared id for a multi-resource pair) — each Booking row is a
+            # genuinely separate confirmed slot, so each gets its own identity.
+            for b in confirmed_bookings:
+                b.domain_data = {
+                    **b.domain_data,
+                    **customer_domain_data,
+                    "customer_id": str(uuid.uuid4()),
+                }
+            Booking.objects.bulk_update(confirmed_bookings, ["domain_data"])
             resolved_order = {
                 "id": str(confirmed_booking.id),
                 "status": confirmed_booking.status,
@@ -242,10 +291,33 @@ def dispatch_on_confirm(*, payload: dict, correlation_id: str | None = None) -> 
                 "fulfillments": [
                     {
                         "id": str(b.id),
+                        # "customer_id" is this project's own additive field (same
+                        # "project-defined, not protocol-confirmed" territory as
+                        # Item.rating_count elsewhere in this codebase) — the real
+                        # schema has no concept of it. Generated once, above, the
+                        # instant this specific booking was confirmed.
+                        "customer_id": b.domain_data.get("customer_id", ""),
                         "stops": [
                             {
                                 "type": "start",
                                 "time": {"timestamp": b.slot.start_time.isoformat()},
+                                **(
+                                    {"person": {"name": b.domain_data["customer_name"]}}
+                                    if b.domain_data.get("customer_name")
+                                    else {}
+                                ),
+                                **(
+                                    {
+                                        "contact": {
+                                            k: b.domain_data[f"customer_{k}"]
+                                            for k in ("phone", "email")
+                                            if b.domain_data.get(f"customer_{k}")
+                                        }
+                                    }
+                                    if b.domain_data.get("customer_phone")
+                                    or b.domain_data.get("customer_email")
+                                    else {}
+                                ),
                             }
                         ],
                     }
@@ -309,9 +381,8 @@ def dispatch_on_confirm_in_background(*, payload: dict) -> None:
     before spawning the background thread (§3.10) — the one correct place to
     read it, since it wouldn't be visible inside the spawned thread itself."""
     correlation_id = correlation_id_var.get()
-    thread = threading.Thread(
-        target=dispatch_on_confirm,
-        kwargs={"payload": payload, "correlation_id": correlation_id},
-        daemon=True,
+    run_in_background(
+        dispatch_on_confirm,
+        {"payload": payload, "correlation_id": correlation_id},
+        name="bpp-dispatch-on-confirm",
     )
-    thread.start()

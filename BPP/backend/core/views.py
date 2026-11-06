@@ -1217,7 +1217,9 @@ def dashboard_stats_view(request):
         paid_bookings.filter(slot__start_time__gte=today_start, slot__start_time__lt=today_end)
     )
     earnings_yesterday = _sum_revenue(
-        paid_bookings.filter(slot__start_time__gte=yesterday_start, slot__start_time__lt=today_start)
+        paid_bookings.filter(
+            slot__start_time__gte=yesterday_start, slot__start_time__lt=today_start
+        )
     )
     earnings_this_month = _sum_revenue(
         paid_bookings.filter(
@@ -1383,7 +1385,9 @@ def dashboard_stats_view(request):
 
 @csrf_exempt
 @require_http_methods(["POST"])
-@rate_limit(limit_per_minute=30, scope="order-fulfillment-status", key_func=by_authenticated_account)
+@rate_limit(
+    limit_per_minute=30, scope="order-fulfillment-status", key_func=by_authenticated_account
+)
 def order_fulfillment_status_update_view(request, booking_id):
     """Persists the Orders table's own Pending/Completed dropdown (BPP/web/app/
     orders/page.tsx) against the real `Booking.fulfillment_status` state machine —
@@ -1454,7 +1458,8 @@ def order_fulfillment_status_update_view(request, booking_id):
             return error_response("INVALID_TRANSITION", str(exc), 409)
 
     return JsonResponse(
-        {"booking_id": str(booking.id), "fulfillment_status": booking.fulfillment_status}, status=200
+        {"booking_id": str(booking.id), "fulfillment_status": booking.fulfillment_status},
+        status=200,
     )
 
 

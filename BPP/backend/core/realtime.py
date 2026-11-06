@@ -60,7 +60,11 @@ def broadcast_order_confirmed(booking) -> None:
                 "status": booking.status,
                 "fulfillment_status": booking.fulfillment_status,
                 "payment_status": booking.payment_status,
-                "amount": str(booking.confirmed_total_value) if booking.confirmed_total_value is not None else None,
+                "amount": (
+                    str(booking.confirmed_total_value)
+                    if booking.confirmed_total_value is not None
+                    else None
+                ),
                 "currency": booking.confirmed_total_currency,
                 # Project-defined customer fields (BAP/backend/core/select_service.py's
                 # own `stops[0].person`/`.contact`, stashed on Booking.domain_data at

@@ -190,7 +190,9 @@ def dispatch_on_confirm(*, payload: dict, correlation_id: str | None = None) -> 
         # Never distinguish "wrong owner" from "genuinely gone" in the response —
         # same IDOR-safety reasoning as /init (protocol_compliance_notes_v1.1.md §J).
         error = {"code": "SLOT_UNAVAILABLE", "message": "No matching booking for this order"}
-    elif not customer_domain_data.get("customer_name") and not booking.domain_data.get("customer_name"):
+    elif not customer_domain_data.get("customer_name") and not booking.domain_data.get(
+        "customer_name"
+    ):
         # A real appointment must belong to a real, named person — the hold
         # itself may start anonymously, but confirming one without ever
         # learning who it's for is rejected here even if a caller skipped
@@ -275,7 +277,11 @@ def dispatch_on_confirm(*, payload: dict, correlation_id: str | None = None) -> 
             # shared id for a multi-resource pair) — each Booking row is a
             # genuinely separate confirmed slot, so each gets its own identity.
             for b in confirmed_bookings:
-                b.domain_data = {**b.domain_data, **customer_domain_data, "customer_id": str(uuid.uuid4())}
+                b.domain_data = {
+                    **b.domain_data,
+                    **customer_domain_data,
+                    "customer_id": str(uuid.uuid4()),
+                }
             Booking.objects.bulk_update(confirmed_bookings, ["domain_data"])
             resolved_order = {
                 "id": str(confirmed_booking.id),
@@ -308,7 +314,8 @@ def dispatch_on_confirm(*, payload: dict, correlation_id: str | None = None) -> 
                                             if b.domain_data.get(f"customer_{k}")
                                         }
                                     }
-                                    if b.domain_data.get("customer_phone") or b.domain_data.get("customer_email")
+                                    if b.domain_data.get("customer_phone")
+                                    or b.domain_data.get("customer_email")
                                     else {}
                                 ),
                             }

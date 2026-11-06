@@ -578,7 +578,9 @@ function SearchPageInner() {
   // change. `selectedProviderId` (the primitive state that actually drives which
   // provider is open) is the real, stable dependency.
   const selectedProviderRef = useRef(selectedProvider);
-  selectedProviderRef.current = selectedProvider;
+  useEffect(() => {
+    selectedProviderRef.current = selectedProvider;
+  }, [selectedProvider]);
 
   // Fetches fresh the moment the provider or the selected date changes; reuses an
   // already-fetched (provider, date) pair instead of refetching it — flipping back

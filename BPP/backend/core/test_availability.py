@@ -84,7 +84,10 @@ def _known(*, bap_pub):
 def _signed_body(payload, *, priv):
     body = json.dumps(payload).encode()
     header = sign_outbound_request(
-        body=body, subscriber_id="bap.example.com", unique_key_id="key-1", signing_private_key_b64=priv
+        body=body,
+        subscriber_id="bap.example.com",
+        unique_key_id="key-1",
+        signing_private_key_b64=priv,
     )
     return body, header
 

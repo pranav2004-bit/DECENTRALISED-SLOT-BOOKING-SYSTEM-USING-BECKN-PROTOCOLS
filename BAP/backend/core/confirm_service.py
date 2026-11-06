@@ -24,12 +24,12 @@ from django.utils import timezone
 from django_observability.context import correlation_id_var
 
 from . import registry_client, trust
-from .realtime import broadcast_slot_confirmed
 from .crypto import sign_outbound_request
 from .metrics import record_confirm_succeeded
 from .models import SearchSession
 from .notifications import notify_booking_confirmed_in_background
 from .participant_keys import get_signing_keys
+from .realtime import broadcast_slot_confirmed
 from .session_authz import SessionAccessError, resolve_owned_session
 
 logger = logging.getLogger("bap")

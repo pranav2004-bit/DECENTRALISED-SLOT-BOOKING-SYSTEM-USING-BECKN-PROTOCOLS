@@ -29,10 +29,10 @@ from beckn_transaction import (
 )
 from django.conf import settings
 from django.utils import timezone
-from django_observability.context import correlation_id_var
 from django.utils.dateparse import parse_datetime
+from django_observability.context import correlation_id_var
 from inventory_core.domain_adapter import get_adapter
-from inventory_core.models import Resource, Slot
+from inventory_core.models import Booking, Resource, Slot
 from inventory_core.reservation import hold_multi_resource_booking, hold_slot, release_hold_now
 
 from . import registry_client, trust
@@ -281,7 +281,9 @@ def dispatch_on_select(*, payload: dict, correlation_id: str | None = None) -> N
     requested_hold_seconds = payload["message"].get("hold_seconds")
     hold_ttl_seconds = settings.RESERVATION_HOLD_TTL_SECONDS
     if isinstance(requested_hold_seconds, (int, float)) and requested_hold_seconds > 0:
-        hold_ttl_seconds = max(10, min(requested_hold_seconds, settings.RESERVATION_HOLD_TTL_SECONDS))
+        hold_ttl_seconds = max(
+            10, min(requested_hold_seconds, settings.RESERVATION_HOLD_TTL_SECONDS)
+        )
 
     error = None
     resolved_order = None

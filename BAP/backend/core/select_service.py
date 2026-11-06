@@ -27,8 +27,8 @@ from . import registry_client, trust
 from .crypto import sign_outbound_request
 from .metrics import record_select_succeeded
 from .models import PaymentTransaction, SearchSession
-from .realtime import broadcast_slot_held
 from .participant_keys import get_signing_keys
+from .realtime import broadcast_slot_held
 from .session_authz import SessionAccessError, resolve_owned_session
 
 logger = logging.getLogger("bap")

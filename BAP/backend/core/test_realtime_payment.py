@@ -10,6 +10,7 @@ import hmac
 import json
 import time
 
+import payment_gateway
 import pytest
 from channels.auth import AuthMiddlewareStack
 from channels.db import database_sync_to_async
@@ -19,8 +20,6 @@ from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
 from django.test import Client
 from django.urls import path
-
-import payment_gateway
 from payment_gateway.razorpay_adapter import RazorpayAdapter
 from resilient_http import ResilientHttpClient
 
@@ -197,6 +196,7 @@ async def test_push_arrives_well_before_the_frontends_1_5s_poll_interval_after_a
         payload = json.dumps(
             {
                 "event": "payment.captured",
+                "created_at": int(time.time()),
                 "payload": {
                     "payment": {
                         "entity": {

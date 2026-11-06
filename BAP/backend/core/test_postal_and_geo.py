@@ -3,8 +3,6 @@
 reverse-geocode endpoint.
 """
 
-import json
-
 import pytest
 import responses
 from django.test import Client

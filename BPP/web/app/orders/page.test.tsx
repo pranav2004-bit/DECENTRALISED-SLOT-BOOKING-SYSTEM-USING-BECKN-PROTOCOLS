@@ -8,6 +8,7 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mockPush }) }));
 import OrdersPage from './page';
 import * as authApi from '@/lib/auth-api';
 import * as resourcesApi from '@/lib/resources-api';
+import * as ordersApi from '@/lib/orders-api';
 
 // Mirrors the page's own formatFullDate() exactly — asserting against this
 // rather than a hardcoded literal keeps the test independent of the test
@@ -64,6 +65,10 @@ describe('OrdersPage', () => {
     // filter's contents matter. Prevents the real fetchOwnedResources from
     // ever reaching apiFetch (unconfigured in this test environment).
     vi.spyOn(resourcesApi, 'fetchOwnedResources').mockResolvedValue([]);
+    // Default: no orders — individual tests override this when the order
+    // list's contents matter. Same reason as fetchOwnedResources above:
+    // prevents the real fetchOrders from ever reaching apiFetch.
+    vi.spyOn(ordersApi, 'fetchOrders').mockResolvedValue({ orders: [], next_cursor: null });
   });
 
   afterEach(() => {

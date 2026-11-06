@@ -46,7 +46,11 @@ def frozen_now():
 def _signup_and_login(client, *, contact="owner@example.com"):
     client.post(
         reverse("business-signup"),
-        data={"business_name": "Pavan Group Of Hospitals", "contact": contact, "password": TEST_PASSWORD},
+        data={
+            "business_name": "Pavan Group Of Hospitals",
+            "contact": contact,
+            "password": TEST_PASSWORD,
+        },
         content_type="application/json",
     )
     client.post(
@@ -102,13 +106,17 @@ def test_dashboard_stats_view_returns_real_counts_and_revenue(client):
 
     # Doctor A: active, with an open slot today -> counted as available today.
     # Rated 4.0 by 5 patients.
-    doctor_a = _resource(owner.id, name="Dr. A", is_active=True, average_rating=Decimal("4.0"), rating_count=5)
+    doctor_a = _resource(
+        owner.id, name="Dr. A", is_active=True, average_rating=Decimal("4.0"), rating_count=5
+    )
     _slot(doctor_a, start_time=_FROZEN_NOW + dt.timedelta(hours=1))
 
     # Doctor B: active, but every slot today is already booked out -> NOT available today.
     # Rated 5.0 by 5 patients — the overall rating must be the review-weighted
     # average (4.5), not a plain mean of the two doctors' own averages.
-    doctor_b = _resource(owner.id, name="Dr. B", is_active=True, average_rating=Decimal("5.0"), rating_count=5)
+    doctor_b = _resource(
+        owner.id, name="Dr. B", is_active=True, average_rating=Decimal("5.0"), rating_count=5
+    )
     fully_booked_slot = _slot(
         doctor_b, start_time=_FROZEN_NOW, capacity_remaining=0, status=Slot.Status.BOOKED
     )

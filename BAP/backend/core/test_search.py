@@ -126,6 +126,146 @@ def test_trigger_search_creates_a_session_and_sends_a_real_signed_intent_to_gate
 
 
 @pytest.mark.django_db
+def test_trigger_search_stores_the_forwarded_client_ip_not_the_proxy_hop(
+    bap_identity_settings, client
+):
+    """Real gap found and closed live 2026-11-05: every browser call to this view
+    arrives via Next.js's same-origin rewrite, so REMOTE_ADDR is always that proxy's
+    own hop — identical for every real visitor. `select_service.MAX_CONCURRENT_HOLDS`
+    keys anonymous holds on this field, so capturing REMOTE_ADDR directly collapsed
+    every anonymous customer's hold cap into one shared, site-wide total (confirmed
+    live: a handful of unrelated test sessions tripped "Too many concurrent
+    reservation holds" for everyone). Must store the real forwarded client instead."""
+    with responses.RequestsMock() as rsps:
+        rsps.add(
+            responses.POST,
+            "http://gateway:8000/search",
+            json={"message": {"ack": {"status": "ACK"}}},
+            status=200,
+        )
+        resp = client.post(
+            reverse("search-trigger"),
+            data=json.dumps({"query": "haircut", "domain": "ONDC:RET13"}),
+            content_type="application/json",
+            REMOTE_ADDR="172.18.0.1",
+            HTTP_X_FORWARDED_FOR="203.0.113.42",
+        )
+
+    assert resp.status_code == 202
+    session = SearchSession.objects.get(transaction_id=resp.json()["transaction_id"])
+    assert session.client_ip == "203.0.113.42"
+
+
+@pytest.mark.django_db
+def test_trigger_search_sends_the_chosen_division_as_a_real_fulfillment_location(
+    bap_identity_settings, client
+):
+    """The search page's location picker (`division`) is a real, standard Beckn
+    Intent field (`intent.fulfillment.end.location`), previously never populated —
+    proves it actually reaches Gateway on the wire, not just stored locally."""
+    captured_requests = []
+
+    def gateway_search_callback(request):
+        captured_requests.append(request)
+        body = json.loads(request.body)
+        return (
+            200,
+            {},
+            json.dumps({"context": body["context"], "message": {"ack": {"status": "ACK"}}}),
+        )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://gateway:8000/search", callback=gateway_search_callback
+        )
+        resp = client.post(
+            reverse("search-trigger"),
+            data=json.dumps(
+                {
+                    "query": "haircut",
+                    "domain": "ONDC:RET13",
+                    "division": "Visakhapatnam Division",
+                }
+            ),
+            content_type="application/json",
+        )
+
+    assert resp.status_code == 202
+    forwarded = json.loads(captured_requests[0].body)
+    location = forwarded["message"]["intent"]["fulfillment"]["end"]["location"]
+    assert location["city"]["name"] == "Visakhapatnam Division"
+
+
+@pytest.mark.django_db
+def test_trigger_search_without_a_division_omits_fulfillment_entirely(
+    bap_identity_settings, client
+):
+    """A customer who hasn't picked a location browses everything — `fulfillment` is
+    genuinely absent from the intent, not sent as an empty/guessed value, so BPP's
+    own division filter correctly treats it as "no location filter requested"."""
+    captured_requests = []
+
+    def gateway_search_callback(request):
+        captured_requests.append(request)
+        body = json.loads(request.body)
+        return (
+            200,
+            {},
+            json.dumps({"context": body["context"], "message": {"ack": {"status": "ACK"}}}),
+        )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://gateway:8000/search", callback=gateway_search_callback
+        )
+        client.post(
+            reverse("search-trigger"),
+            data=json.dumps({"query": "haircut", "domain": "ONDC:RET13"}),
+            content_type="application/json",
+        )
+
+    forwarded = json.loads(captured_requests[0].body)
+    assert "fulfillment" not in forwarded["message"]["intent"]
+
+
+@pytest.mark.django_db
+def test_trigger_search_with_no_query_browses_everything_in_the_chosen_division(
+    bap_identity_settings, client
+):
+    """The location-picker flow (pick a division, see its providers) never requires
+    a typed query — an empty/missing `query` is a legitimate request, not a
+    validation error, and `item.descriptor.name` is omitted entirely rather than
+    sent as `""`, same "honest absence" discipline as `division`."""
+    captured_requests = []
+
+    def gateway_search_callback(request):
+        captured_requests.append(request)
+        body = json.loads(request.body)
+        return (
+            200,
+            {},
+            json.dumps({"context": body["context"], "message": {"ack": {"status": "ACK"}}}),
+        )
+
+    with responses.RequestsMock() as rsps:
+        rsps.add_callback(
+            responses.POST, "http://gateway:8000/search", callback=gateway_search_callback
+        )
+        resp = client.post(
+            reverse("search-trigger"),
+            data=json.dumps({"query": "", "domain": "ONDC:RET13", "division": "Visakhapatnam Division"}),
+            content_type="application/json",
+        )
+
+    assert resp.status_code == 202
+    forwarded = json.loads(captured_requests[0].body)
+    assert "item" not in forwarded["message"]["intent"]
+    assert forwarded["message"]["intent"]["fulfillment"]["end"]["location"]["city"]["name"] == (
+        "Visakhapatnam Division"
+    )
+
+
+@pytest.mark.django_db
 def test_trigger_search_view_rejects_missing_fields(client):
     resp = client.post(
         reverse("search-trigger"),

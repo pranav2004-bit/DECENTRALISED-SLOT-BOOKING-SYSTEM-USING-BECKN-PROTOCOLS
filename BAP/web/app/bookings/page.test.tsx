@@ -100,7 +100,7 @@ describe('BookingsPage', () => {
 
     expect(await screen.findByText('Haircut')).toBeInTheDocument();
     expect(screen.getByText('Dental Checkup')).toBeInTheDocument();
-    expect(screen.getByText('Beauty & Wellness')).toBeInTheDocument();
+    expect(screen.getByText('Wellness')).toBeInTheDocument();
     expect(screen.getByText('Healthcare')).toBeInTheDocument();
     expect(screen.getByText('Confirmed')).toBeInTheDocument();
     expect(screen.getByText('Cancelled')).toBeInTheDocument();

@@ -29,3 +29,5 @@ node_modules/
 infra/
 *.tfstate*
 .terraform/
+
+scratch/

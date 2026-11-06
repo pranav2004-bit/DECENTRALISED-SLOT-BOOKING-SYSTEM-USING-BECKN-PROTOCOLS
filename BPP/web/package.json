@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:carenest": "node scripts/dev.js carenest 3003",
+    "dev:stylenest": "node scripts/dev.js stylenest 3007",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

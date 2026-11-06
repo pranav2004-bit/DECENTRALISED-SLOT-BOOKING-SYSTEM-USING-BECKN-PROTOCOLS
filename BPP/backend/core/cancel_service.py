@@ -16,8 +16,8 @@ is race-safe by the same `select_for_update()` discipline as `confirm_hold`.
 
 import json
 import logging
-import threading
 
+from background_thread import run_in_background
 from beckn_transaction import (
     PayloadValidationError,
     build_ack_response,
@@ -220,9 +220,8 @@ def dispatch_on_cancel_in_background(*, payload: dict) -> None:
     before spawning the background thread (§3.10) — same pattern as
     `confirm_service.dispatch_on_confirm_in_background`."""
     correlation_id = correlation_id_var.get()
-    thread = threading.Thread(
-        target=dispatch_on_cancel,
-        kwargs={"payload": payload, "correlation_id": correlation_id},
-        daemon=True,
+    run_in_background(
+        dispatch_on_cancel,
+        {"payload": payload, "correlation_id": correlation_id},
+        name="bpp-dispatch-on-cancel",
     )
-    thread.start()

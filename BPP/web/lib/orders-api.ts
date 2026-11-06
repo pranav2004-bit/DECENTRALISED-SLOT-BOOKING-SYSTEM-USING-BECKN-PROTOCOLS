@@ -1,28 +1,48 @@
 import { apiFetch } from './api-client';
+import { csrfHeader } from './auth-api';
 
-/**
- * livetracker6.md §2.2 — the business-facing Orders list's own REST half (the
- * initial page load the WebSocket then keeps live), mirroring this project's
- * own established `apiFetch`-wrapper convention (`resources-api.ts`/`staff-api.ts`).
- */
-
-export interface Order {
+/** The real Orders list (BPP/backend/core/views.py's `orders_list_view`) —
+ * scoped server-side to exactly the resources this logged-in account can
+ * access (every owned resource for an owner, the one assigned resource for
+ * staff), same resource set the live `/ws/business/orders/` broadcast uses. */
+export interface OrderRow {
+  booking_id: string;
   transaction_id: string;
   resource_id: string;
   resource_name: string;
   slot_time: string;
+  slot_end_time: string;
   status: string;
-  /** livetracker5.md Phase 4.1 — '' means unknown/not paid yet, not "confirmed unpaid". */
+  fulfillment_status: 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | 'NO_SHOW';
   payment_status: string;
+  amount: string | null;
+  currency: string;
+  customer_id: string;
+  customer_name: string;
+  customer_email: string;
+  customer_phone: string;
 }
 
 export interface OrdersListResponse {
-  orders: Order[];
+  orders: OrderRow[];
   next_cursor: string | null;
 }
 
-export async function getOrders(cursor?: string | null): Promise<OrdersListResponse> {
-  const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
-  const resp = await apiFetch(`/api/v1/orders${qs}`);
+export async function fetchOrders(cursor?: string, limit = 200): Promise<OrdersListResponse> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor) params.set('cursor', cursor);
+  const resp = await apiFetch(`/api/v1/orders?${params.toString()}`);
+  return resp.json();
+}
+
+export async function updateFulfillmentStatus(
+  bookingId: string,
+  fulfillmentStatus: 'PENDING' | 'COMPLETED'
+): Promise<{ booking_id: string; fulfillment_status: string }> {
+  const resp = await apiFetch(`/api/v1/orders/${bookingId}/fulfillment-status`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeader()) },
+    body: JSON.stringify({ fulfillment_status: fulfillmentStatus }),
+  });
   return resp.json();
 }

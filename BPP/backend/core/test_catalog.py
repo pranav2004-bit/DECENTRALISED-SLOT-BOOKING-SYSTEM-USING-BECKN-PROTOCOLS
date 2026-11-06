@@ -21,7 +21,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from inventory_core.models import Resource
 
-from core.catalog import build_catalog, filter_catalog
+from core.catalog import build_catalog, filter_catalog, filter_catalog_by_division
 
 BusinessAccount = get_user_model()
 
@@ -59,6 +59,7 @@ def test_catalog_round_trips_real_business_and_resource_data():
         business_name="Glow Salon",
         password=TEST_PASSWORD,
         domain_code=BEAUTY,
+        is_accepting_bookings=True,
     )
     Resource.objects.create(
         owner_ref=str(business.id),
@@ -95,6 +96,7 @@ def test_catalog_item_uses_the_default_price_when_none_set():
         business_name="Default Price Salon",
         password=TEST_PASSWORD,
         domain_code=BEAUTY,
+        is_accepting_bookings=True,
     )
     Resource.objects.create(owner_ref=str(business.id), name="Stylist B")
 
@@ -185,6 +187,7 @@ def test_two_domains_never_leak_into_each_others_catalog():
         business_name="Glow Salon",
         password=TEST_PASSWORD,
         domain_code=BEAUTY,
+        is_accepting_bookings=True,
     )
     Resource.objects.create(
         owner_ref=str(salon.id), name="Stylist A", domain_data={"resource_type": "stylist"}
@@ -195,6 +198,7 @@ def test_two_domains_never_leak_into_each_others_catalog():
         business_name="City Clinic",
         password=TEST_PASSWORD,
         domain_code=HEALTHCARE,
+        is_accepting_bookings=True,
     )
     Resource.objects.create(
         owner_ref=str(clinic.id), name="Dr. Rao", domain_data={"resource_type": "doctor"}
@@ -220,6 +224,7 @@ def test_catalog_omits_rating_for_an_unrated_resource_and_provider():
         business_name="Glow Salon",
         password=TEST_PASSWORD,
         domain_code=BEAUTY,
+        is_accepting_bookings=True,
     )
     Resource.objects.create(owner_ref=str(business.id), name="Stylist A")
 
@@ -243,6 +248,7 @@ def test_catalog_surfaces_a_resources_real_rating_aggregate():
         business_name="Glow Salon",
         password=TEST_PASSWORD,
         domain_code=BEAUTY,
+        is_accepting_bookings=True,
     )
     resource = Resource.objects.create(owner_ref=str(business.id), name="Stylist A")
     resource.average_rating = "4.33"
@@ -270,6 +276,7 @@ def test_catalog_provider_rating_is_a_count_weighted_rollup_across_its_resources
         business_name="Glow Salon",
         password=TEST_PASSWORD,
         domain_code=BEAUTY,
+        is_accepting_bookings=True,
     )
     r1 = Resource.objects.create(owner_ref=str(business.id), name="Stylist A")
     r1.average_rating, r1.rating_count = "5.00", 1
@@ -296,6 +303,7 @@ def _seed_two_stylists():
         business_name="Glow Salon",
         password=TEST_PASSWORD,
         domain_code=BEAUTY,
+        is_accepting_bookings=True,
     )
     Resource.objects.create(owner_ref=str(business.id), name="Senior Stylist - Priya")
     Resource.objects.create(owner_ref=str(business.id), name="Junior Stylist - Anjali")
@@ -359,6 +367,7 @@ def test_filter_catalog_multiword_query_matches_regardless_of_word_order():
         business_name="Salon Hair Care",
         password=TEST_PASSWORD,
         domain_code=BEAUTY,
+        is_accepting_bookings=True,
     )
     Resource.objects.create(owner_ref=str(business.id), name="Basic Cut")
     catalog = build_catalog(BEAUTY)
@@ -376,6 +385,7 @@ def test_filter_catalog_excludes_a_provider_whose_no_items_match():
         business_name="Glow Salon",
         password=TEST_PASSWORD,
         domain_code=BEAUTY,
+        is_accepting_bookings=True,
     )
     Resource.objects.create(owner_ref=str(salon.id), name="Stylist A")
 
@@ -384,6 +394,7 @@ def test_filter_catalog_excludes_a_provider_whose_no_items_match():
         business_name="City Clinic",
         password=TEST_PASSWORD,
         domain_code=BEAUTY,
+        is_accepting_bookings=True,
     )
     Resource.objects.create(owner_ref=str(clinic.id), name="Dr. Rao")
     catalog = build_catalog(BEAUTY)
@@ -391,3 +402,50 @@ def test_filter_catalog_excludes_a_provider_whose_no_items_match():
     filtered = filter_catalog(catalog, "Stylist")
 
     assert [p["descriptor"]["name"] for p in filtered["providers"]] == ["Glow Salon"]
+
+
+@pytest.mark.django_db
+def test_filter_catalog_by_division_keeps_only_providers_in_that_division():
+    vizag_salon = BusinessAccount.objects.create_user(
+        contact="vizag@example.com",
+        business_name="Vizag Salon",
+        password=TEST_PASSWORD,
+        domain_code=BEAUTY,
+    )
+    BusinessAccount.objects.filter(id=vizag_salon.id).update(
+        is_accepting_bookings=True, division="Visakhapatnam Division"
+    )
+    Resource.objects.create(owner_ref=str(vizag_salon.id), name="Stylist A")
+
+    vijayawada_salon = BusinessAccount.objects.create_user(
+        contact="vijayawada@example.com",
+        business_name="Vijayawada Salon",
+        password=TEST_PASSWORD,
+        domain_code=BEAUTY,
+    )
+    BusinessAccount.objects.filter(id=vijayawada_salon.id).update(
+        is_accepting_bookings=True, division="Vijayawada Division"
+    )
+    Resource.objects.create(owner_ref=str(vijayawada_salon.id), name="Stylist B")
+
+    catalog = build_catalog(BEAUTY)
+
+    filtered = filter_catalog_by_division(catalog, "Visakhapatnam Division")
+
+    assert [p["descriptor"]["name"] for p in filtered["providers"]] == ["Vizag Salon"]
+
+
+@pytest.mark.django_db
+def test_filter_catalog_by_division_with_no_division_returns_the_catalog_unchanged():
+    business = BusinessAccount.objects.create_user(
+        contact="salon@example.com",
+        business_name="Glow Salon",
+        password=TEST_PASSWORD,
+        domain_code=BEAUTY,
+    )
+    BusinessAccount.objects.filter(id=business.id).update(is_accepting_bookings=True)
+    Resource.objects.create(owner_ref=str(business.id), name="Stylist A")
+    catalog = build_catalog(BEAUTY)
+
+    assert filter_catalog_by_division(catalog, None) == catalog
+    assert filter_catalog_by_division(catalog, "") == catalog

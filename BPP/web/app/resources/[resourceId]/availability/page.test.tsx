@@ -23,6 +23,15 @@ const OWNER: authApi.BusinessAccount = {
   domain_code: 'ONDC:RET13',
   role: 'OWNER',
   managed_by: null,
+  is_accepting_bookings: true,
+  description: '',
+  public_phone: '',
+  public_email: '',
+  address: '',
+  state: '',
+  division: '',
+  pincode: '',
+  created_at: '2026-01-01T00:00:00Z',
 };
 
 const SLOTS: availabilityApi.SlotInfo[] = [
@@ -50,6 +59,11 @@ const RESOURCE: availabilityApi.ResourceInfo = {
   average_rating: null,
   rating_count: 0,
   assigned_staff_id: null,
+  domain_data: {},
+  is_active: true,
+  price_currency: 'INR',
+  price_value: '0.00',
+  created_at: '2026-01-01T00:00:00Z',
 };
 
 const RATED_RESOURCE: availabilityApi.ResourceInfo = {
@@ -58,6 +72,11 @@ const RATED_RESOURCE: availabilityApi.ResourceInfo = {
   average_rating: '4.33',
   rating_count: 3,
   assigned_staff_id: null,
+  domain_data: {},
+  is_active: true,
+  price_currency: 'INR',
+  price_value: '0.00',
+  created_at: '2026-01-01T00:00:00Z',
 };
 
 describe('ResourceAvailabilityPage', () => {

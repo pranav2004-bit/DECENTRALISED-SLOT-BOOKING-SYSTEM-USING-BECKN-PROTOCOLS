@@ -46,6 +46,11 @@ export interface Brand {
   demoServiceName: string;
   demoSearchQuery: string;
   demoResultNames: string[];
+  /** "How ___ find you" widget on signup/login/home (components/marketing/CustomerSearchDemo.tsx) */
+  demoWidgetHeading: string;
+  demoWidgetBusinessName: string;
+  demoWidgetProfiles: { name: string; slots: string[] }[];
+  demoWidgetSlotStatus: Record<string, Record<string, 'taken' | 'selected'>>;
   colors: BrandColors;
 }
 
@@ -61,9 +66,46 @@ const BRANDS: Record<BrandId, Brand> = {
     heroSubtext:
       "List your salon on an open booking network and get discovered by real customers - no cost to start, you're covered for six months.",
     heroBadge: 'Built for beauty & salon businesses',
-    demoServiceName: 'Haircut & Styling',
+    demoServiceName: 'Kavya Sanjana - Hair Stylist',
     demoSearchQuery: 'Haircut near me',
-    demoResultNames: ['Style & Grace Salon', 'Glow Beauty Studio', 'The Clip Bar', 'Urban Cuts Studio'],
+    demoResultNames: ['Queens Choice', 'Glow Beauty Studio', 'The Clip Bar', 'Urban Cuts Studio'],
+    demoWidgetHeading: 'How customers find you',
+    demoWidgetBusinessName: 'Queens Choice',
+    demoWidgetProfiles: [
+      {
+        name: 'Kavya Sanjana - Hair Stylist',
+        slots: ['1:30 PM', '2:00 PM', '2:30 PM', '3:00 PM', '3:30 PM', '4:00 PM', '4:30 PM', '5:00 PM'],
+      },
+      {
+        name: 'Laxmisree - Makeup Artist',
+        slots: ['10:00 AM', '10:30 AM', '11:00 AM', '11:30 AM', '12:00 PM', '12:30 PM', '1:00 PM', '1:30 PM'],
+      },
+      {
+        name: 'Meghana - Nail Technician',
+        slots: ['3:00 PM', '3:30 PM', '4:00 PM', '4:30 PM', '5:00 PM', '5:30 PM', '6:00 PM', '6:30 PM'],
+      },
+      {
+        name: 'Niharika - Skincare Specialist',
+        slots: ['5:00 PM', '5:30 PM', '6:00 PM', '6:30 PM', '7:00 PM', '7:30 PM', '8:00 PM', '8:30 PM'],
+      },
+    ],
+    demoWidgetSlotStatus: {
+      'Kavya Sanjana - Hair Stylist': { '1:30 PM': 'taken', '2:00 PM': 'taken', '2:30 PM': 'selected' },
+      'Laxmisree - Makeup Artist': {
+        '10:00 AM': 'taken',
+        '10:30 AM': 'taken',
+        '11:00 AM': 'taken',
+        '11:30 AM': 'taken',
+      },
+      'Meghana - Nail Technician': {
+        '3:00 PM': 'taken',
+        '3:30 PM': 'taken',
+        '4:00 PM': 'taken',
+        '4:30 PM': 'taken',
+        '5:00 PM': 'taken',
+      },
+      'Niharika - Skincare Specialist': { '5:00 PM': 'taken', '5:30 PM': 'taken', '6:00 PM': 'taken' },
+    },
     colors: { 50: '#fffbeb', 100: '#fef3c7', 600: '#d97706', 700: '#b45309' },
   },
   medical: {
@@ -75,11 +117,55 @@ const BRANDS: Record<BrandId, Brand> = {
     domainCode: 'ONDC:SRV13',
     heroHeadline: 'Never miss a patient booking again.',
     heroSubtext:
-      "List your practice on an open booking network and get discovered by real patients - no cost to start, you're covered for six months.",
+      "List your clinic so patients can find and book you right away, at no cost for your first six months.",
     heroBadge: 'Built for clinics & practitioners',
-    demoServiceName: 'General Consultation',
+    demoServiceName: 'Dr. Kavya - Gynaecologist',
     demoSearchQuery: 'Doctor near me',
-    demoResultNames: ['Downtown Family Clinic', 'CareNest Wellness Center', 'Dr. Mehta’s Practice', 'Sunrise Health Clinic'],
+    demoResultNames: [
+      'Rainbow Hospitals',
+      'CareNest Wellness Center',
+      'Dr. Mehta’s Practice',
+      'Sunrise Health Clinic',
+      'Medicare Multispeciality',
+      'Apollo Clinic',
+    ],
+    demoWidgetHeading: 'How patients find you',
+    demoWidgetBusinessName: 'Rainbow Hospitals',
+    demoWidgetProfiles: [
+      {
+        name: 'Dr. Kavya - Gynaecologist',
+        slots: ['1:30 PM', '2:00 PM', '2:30 PM', '3:00 PM', '3:30 PM', '4:00 PM', '4:30 PM', '5:00 PM'],
+      },
+      {
+        name: 'Dr. Laxmisree - Cardiology',
+        slots: ['10:00 AM', '10:30 AM', '11:00 AM', '11:30 AM', '12:00 PM', '12:30 PM', '1:00 PM', '1:30 PM'],
+      },
+      {
+        name: 'Dr. Meghana - Neurology',
+        slots: ['3:00 PM', '3:30 PM', '4:00 PM', '4:30 PM', '5:00 PM', '5:30 PM', '6:00 PM', '6:30 PM'],
+      },
+      {
+        name: 'Dr. Niharika - Pediatrics',
+        slots: ['5:00 PM', '5:30 PM', '6:00 PM', '6:30 PM', '7:00 PM', '7:30 PM', '8:00 PM', '8:30 PM'],
+      },
+    ],
+    demoWidgetSlotStatus: {
+      'Dr. Kavya - Gynaecologist': { '1:30 PM': 'taken', '2:00 PM': 'taken', '2:30 PM': 'selected' },
+      'Dr. Laxmisree - Cardiology': {
+        '10:00 AM': 'taken',
+        '10:30 AM': 'taken',
+        '11:00 AM': 'taken',
+        '11:30 AM': 'taken',
+      },
+      'Dr. Meghana - Neurology': {
+        '3:00 PM': 'taken',
+        '3:30 PM': 'taken',
+        '4:00 PM': 'taken',
+        '4:30 PM': 'taken',
+        '5:00 PM': 'taken',
+      },
+      'Dr. Niharika - Pediatrics': { '5:00 PM': 'taken', '5:30 PM': 'taken', '6:00 PM': 'taken' },
+    },
     colors: { 50: '#f0fdfa', 100: '#ccfbf1', 600: '#0d9488', 700: '#0f766e' },
   },
   automotive: {
@@ -96,6 +182,43 @@ const BRANDS: Record<BrandId, Brand> = {
     demoServiceName: 'Brake Inspection',
     demoSearchQuery: 'Brake inspection near me',
     demoResultNames: ['Downtown Auto Garage', 'AutoCare Service Center', 'Reliable Motors', 'QuickFix Garage'],
+    demoWidgetHeading: 'How customers find you',
+    demoWidgetBusinessName: 'Downtown Auto Garage',
+    demoWidgetProfiles: [
+      {
+        name: 'Ravi Teja - Brake Specialist',
+        slots: ['1:30 PM', '2:00 PM', '2:30 PM', '3:00 PM', '3:30 PM', '4:00 PM', '4:30 PM', '5:00 PM'],
+      },
+      {
+        name: 'Suresh - Engine Diagnostics',
+        slots: ['10:00 AM', '10:30 AM', '11:00 AM', '11:30 AM', '12:00 PM', '12:30 PM', '1:00 PM', '1:30 PM'],
+      },
+      {
+        name: 'Kiran - Tyre & Alignment',
+        slots: ['3:00 PM', '3:30 PM', '4:00 PM', '4:30 PM', '5:00 PM', '5:30 PM', '6:00 PM', '6:30 PM'],
+      },
+      {
+        name: 'Arjun - AC & Electrical',
+        slots: ['5:00 PM', '5:30 PM', '6:00 PM', '6:30 PM', '7:00 PM', '7:30 PM', '8:00 PM', '8:30 PM'],
+      },
+    ],
+    demoWidgetSlotStatus: {
+      'Ravi Teja - Brake Specialist': { '1:30 PM': 'taken', '2:00 PM': 'taken', '2:30 PM': 'selected' },
+      'Suresh - Engine Diagnostics': {
+        '10:00 AM': 'taken',
+        '10:30 AM': 'taken',
+        '11:00 AM': 'taken',
+        '11:30 AM': 'taken',
+      },
+      'Kiran - Tyre & Alignment': {
+        '3:00 PM': 'taken',
+        '3:30 PM': 'taken',
+        '4:00 PM': 'taken',
+        '4:30 PM': 'taken',
+        '5:00 PM': 'taken',
+      },
+      'Arjun - AC & Electrical': { '5:00 PM': 'taken', '5:30 PM': 'taken', '6:00 PM': 'taken' },
+    },
     colors: { 50: '#eff6ff', 100: '#dbeafe', 600: '#2563eb', 700: '#1d4ed8' },
   },
 };

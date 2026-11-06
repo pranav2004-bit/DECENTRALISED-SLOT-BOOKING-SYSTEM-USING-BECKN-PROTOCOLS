@@ -24,6 +24,7 @@ from django.utils import timezone
 from django_observability.context import correlation_id_var
 
 from . import registry_client, trust
+from .realtime import broadcast_slot_confirmed
 from .crypto import sign_outbound_request
 from .metrics import record_confirm_succeeded
 from .models import SearchSession
@@ -41,7 +42,14 @@ class ConfirmError(Exception):
         self.status_code = status_code
 
 
-def trigger_confirm(*, transaction_id: str, customer=None) -> None:
+def trigger_confirm(
+    *,
+    transaction_id: str,
+    customer=None,
+    customer_name: str | None = None,
+    customer_email: str | None = None,
+    customer_phone: str | None = None,
+) -> None:
     """Customer-facing confirmation trigger — builds and sends the real signed
     Beckn /confirm to Gateway, targeting the same BPP a prior successful /select
     already resolved to. Requires a real successful /init to have happened first
@@ -89,10 +97,30 @@ def trigger_confirm(*, transaction_id: str, customer=None) -> None:
         location={"country": {"code": "IND"}},
         timestamp=timezone.now().isoformat(),
     )
+    fulfillments = session.init_order["fulfillments"]
+    # The hold itself is created anonymously, at the moment the slot is first
+    # tapped (select_service.py's own module docstring) — this is deliberately
+    # the one real point where who it's actually for becomes known, since this
+    # is the first call made only after the customer has filled in their own
+    # details. Carried the same real way as the original select
+    # (`stops[0].person`/`.contact`) rather than inventing a second channel.
+    if fulfillments and (customer_name or customer_email or customer_phone):
+        stop = dict(fulfillments[0].get("stops", [{}])[0])
+        if customer_name:
+            stop["person"] = {"name": customer_name}
+        if customer_email or customer_phone:
+            contact = {}
+            if customer_phone:
+                contact["phone"] = customer_phone
+            if customer_email:
+                contact["email"] = customer_email
+            stop["contact"] = contact
+        fulfillments = [{**fulfillments[0], "stops": [stop]}, *fulfillments[1:]]
+
     order = {
         "provider": session.init_order["provider"],
         "items": session.init_order["items"],
-        "fulfillments": session.init_order["fulfillments"],
+        "fulfillments": fulfillments,
     }
     payload = {"context": context, "message": {"order": order}}
     body = json.dumps(payload).encode()
@@ -222,8 +250,29 @@ def record_on_confirm_result(*, payload: dict) -> None:
     else:
         session.confirmed_order = payload["message"]["order"]
         session.confirmed_error = None
+        session.confirmed_order_at = timezone.now()
         record_confirm_succeeded()
-    session.save(update_fields=["confirmed_order", "confirmed_error", "updated_at"])
+        try:
+            order = session.confirmed_order
+            start_stop = order["fulfillments"][0]["stops"][0]
+            broadcast_slot_confirmed(
+                provider_id=order["provider"]["id"],
+                item_id=order["items"][0]["id"],
+                start_time=start_stop["time"]["timestamp"],
+            )
+        except (KeyError, IndexError, TypeError):
+            # Same posture as select_service.py's own identical try/except —
+            # the real booking already succeeded above regardless; this push
+            # is a pure UX improvement for other browsers, never something
+            # this customer's own successful confirm depends on.
+            logger.warning(
+                "record_on_confirm_result: could not derive slot-confirmed broadcast fields "
+                "for transaction_id=%r",
+                transaction_id,
+            )
+    session.save(
+        update_fields=["confirmed_order", "confirmed_error", "confirmed_order_at", "updated_at"]
+    )
 
     # livetracker3.md §4.1: fired after the real save above, only on genuine
     # success — a mail-send failure (backgrounded, logged, never raised) must

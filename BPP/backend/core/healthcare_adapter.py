@@ -19,6 +19,34 @@ from inventory_core.domain_adapter import DomainAdapter
 
 RESOURCE_TYPES = ("doctor",)
 CONSULTATION_TYPES = ("in_person", "tele_consultation")
+GENDER_OPTIONS = ("male", "female", "other")
+# Mirrored in BPP/web/app/resources/page.tsx's own SPECIALISATIONS constant
+# (ADR-0004: duplicated, not shared across the frontend/backend language boundary,
+# same as GENDER_OPTIONS/RESOURCE_TYPES already are). A fixed list, not free text —
+# real ONDC health listings need comparable, filterable specialisation values across
+# different clinics, not each business inventing its own spelling.
+SPECIALISATIONS = (
+    "General Medicine / General Physician",
+    "Cardiology",
+    "Orthopedics",
+    "Gynecology & Obstetrics",
+    "Pediatrics",
+    "Oncology",
+    "Neurology & Neurosurgery",
+    "Gastroenterology",
+    "Nephrology",
+    "Urology",
+    "Pulmonology",
+    "Dermatology",
+    "Ophthalmology",
+    "ENT (Otolaryngology)",
+    "Endocrinology",
+    "Rheumatology",
+    "Hematology",
+    "Psychiatry",
+    "General Surgery",
+    "Emergency Medicine",
+)
 
 
 class HealthcareDomainAdapter(DomainAdapter):
@@ -30,6 +58,32 @@ class HealthcareDomainAdapter(DomainAdapter):
             raise ValidationError(
                 f"resource_type must be one of {RESOURCE_TYPES}, got {resource_type!r}"
             )
+
+        # Doctor profile fields — required (not just validated-if-present): a doctor
+        # listing without these is the exact "not enough information to book"
+        # complaint real ONDC health listings have been flagged for, so this domain
+        # doesn't accept a half-filled one the way the generic fields elsewhere do.
+        specialisation = domain_data.get("specialisation")
+        if specialisation not in SPECIALISATIONS:
+            raise ValidationError(
+                f"specialisation must be one of {SPECIALISATIONS}, got {specialisation!r}"
+            )
+
+        education = (domain_data.get("education") or "").strip()
+        if not education:
+            raise ValidationError("education is required")
+        if len(education) > 255:
+            raise ValidationError("education is too long (max 255)")
+
+        years_of_experience = domain_data.get("years_of_experience")
+        if not isinstance(years_of_experience, int) or isinstance(years_of_experience, bool):
+            raise ValidationError("years_of_experience must be a whole number")
+        if years_of_experience < 0 or years_of_experience > 80:
+            raise ValidationError("years_of_experience must be between 0 and 80")
+
+        gender = domain_data.get("gender")
+        if gender not in GENDER_OPTIONS:
+            raise ValidationError(f"gender must be one of {GENDER_OPTIONS}, got {gender!r}")
 
     def validate_booking_domain_data(self, domain_data: dict) -> None:
         consultation_type = domain_data.get("consultation_type", "in_person")

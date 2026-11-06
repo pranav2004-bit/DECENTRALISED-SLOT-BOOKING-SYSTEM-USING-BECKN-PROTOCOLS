@@ -165,6 +165,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "django_observability",
     "inventory_core",
+    "postal_directory",
     "core",
 ]
 

@@ -18,8 +18,8 @@ deadlock between two concurrent reschedules swapping the same two slots.
 
 import json
 import logging
-import threading
 
+from background_thread import run_in_background
 from beckn_transaction import (
     PayloadValidationError,
     build_ack_response,
@@ -286,9 +286,8 @@ def dispatch_on_update_in_background(*, payload: dict) -> None:
     before spawning the background thread (§3.10) — same pattern as
     `confirm_service.dispatch_on_confirm_in_background`."""
     correlation_id = correlation_id_var.get()
-    thread = threading.Thread(
-        target=dispatch_on_update,
-        kwargs={"payload": payload, "correlation_id": correlation_id},
-        daemon=True,
+    run_in_background(
+        dispatch_on_update,
+        {"payload": payload, "correlation_id": correlation_id},
+        name="bpp-dispatch-on-update",
     )
-    thread.start()

@@ -23,6 +23,7 @@ the BAP side, get_bap_client on the BPP side) and proved it live before this fil
 dead code was removed. `_verify_caller` stays — /search and /on_search still use it.
 """
 
+import concurrent.futures
 import json
 import logging
 import threading
@@ -143,6 +144,23 @@ def validate_and_ack_on_search(
     return build_ack_response(context=context), 200
 
 
+def _dispatch_to_one_bpp(
+    *, bpp: dict, body: bytes, authorization_header: str, gateway_signature: str
+) -> None:
+    bpp_search_url = bpp["url"].rstrip("/") + "/search"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": authorization_header,
+        "X-Gateway-Authorization": gateway_signature,
+    }
+    try:
+        client = registry_client.get_participant_client(bpp["subscriber_id"])
+        response = client.post(bpp_search_url, data=body, headers=headers)
+        response.raise_for_status()
+    except Exception:
+        logger.exception("dispatch_search: forwarding to %s failed", bpp_search_url)
+
+
 def dispatch_search(*, payload: dict, authorization_header: str) -> None:
     """The actual forwarding work: looks up SUBSCRIBED BPPs for context.domain, and
     POSTs the intent to each one's own /search, signed with Gateway's own
@@ -155,7 +173,26 @@ def dispatch_search(*, payload: dict, authorization_header: str) -> None:
     response here; each BPP's own /on_search callback (routed back through Gateway
     separately, see on_search_view) is where the real catalog data arrives. Failures
     are logged, not raised — a single unreachable BPP must not affect the others or
-    anything the original caller already received (the ACK)."""
+    anything the original caller already received (the ACK).
+
+    Dispatched to every BPP in PARALLEL (a `ThreadPoolExecutor`), not a sequential
+    for-loop — a real incident found live (2026-10-25): a single stale/unreachable
+    Registry entry (an old external-tunnel deployment, long since dead) sat ahead of
+    a genuinely live BPP in the subscribed-participants list. Sequential dispatch
+    meant Gateway spent ~70-90s retrying the dead one (3 retries x up to 15s connect
+    timeout each) *before even attempting* the live BPP — and since `authorization_header`
+    is the same unmodified signature relayed to every BPP, by the time the live one
+    was finally tried, the signature's own short validity window (~30s, by protocol
+    design, see RUNBOOK.md) had already expired. The live BPP correctly rejected it
+    with a real 401 — not a bug in that BPP, a consequence of one dead participant's
+    retry cost being paid serially in front of every other participant. Dispatching
+    in parallel bounds the time to reach *any* participant to that participant's own
+    latency alone: a dead/slow one can still take as long as it likes to fail, but it
+    no longer delays delivery — or expires the signature — for anyone else. This is
+    the permanent fix; manually deactivating the specific stale entries that triggered
+    this incident (RUNBOOK.md's `deactivate_participant`) only cleaned up the data,
+    it didn't close the structural gap a *future* dead/slow registration would still
+    have hit."""
     context = payload["context"]
     body = json.dumps(payload).encode()
 
@@ -178,19 +215,18 @@ def dispatch_search(*, payload: dict, authorization_header: str) -> None:
         signing_private_key_b64=signing_priv,
     )
 
-    for bpp in subscribed_bpps:
-        bpp_search_url = bpp["url"].rstrip("/") + "/search"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": authorization_header,
-            "X-Gateway-Authorization": gateway_signature,
-        }
-        try:
-            client = registry_client.get_participant_client(bpp["subscriber_id"])
-            response = client.post(bpp_search_url, data=body, headers=headers)
-            response.raise_for_status()
-        except Exception:
-            logger.exception("dispatch_search: forwarding to %s failed", bpp_search_url)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(subscribed_bpps)) as executor:
+        futures = [
+            executor.submit(
+                _dispatch_to_one_bpp,
+                bpp=bpp,
+                body=body,
+                authorization_header=authorization_header,
+                gateway_signature=gateway_signature,
+            )
+            for bpp in subscribed_bpps
+        ]
+        concurrent.futures.wait(futures)
 
 
 def dispatch_search_in_background(*, payload: dict, authorization_header: str) -> None:

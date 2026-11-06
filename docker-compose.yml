@@ -17,6 +17,7 @@ services:
   # real multi-operator production deployment.
   bap-cache:
     image: redis:7-alpine
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -28,6 +29,7 @@ services:
   # same demo-scale decision as bap-cache above.
   bpp-cache:
     image: redis:7-alpine
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -39,6 +41,7 @@ services:
   # gunicorn's 2 worker processes instead of each worker keeping its own separate counter.
   registry-cache:
     image: redis:7-alpine
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -47,6 +50,7 @@ services:
 
   gateway-cache:
     image: redis:7-alpine
+    restart: unless-stopped
     # livetracker2.md §3.11: promoted from the optional with-gateway-cache profile to an
     # always-on service — no longer gated behind CACHE_ENABLED's old opt-in default. `search`
     # (§3.1) now puts Gateway on continuous, customer-facing traffic just like BAP/BPP, so its
@@ -71,6 +75,7 @@ services:
       context: .
       dockerfile: registry/Dockerfile
     env_file: ./registry/.env
+    restart: unless-stopped
     # Real gap found and fixed at Phase 3 Exit (livetracker2.md, 2026-07-24): this
     # path was never a persisted volume, so every container recreate silently wiped
     # Registry's own signing/encryption identity, and every dependent participant's
@@ -129,10 +134,22 @@ services:
       context: .
       dockerfile: beckn-gateway/Dockerfile
     env_file: ./beckn-gateway/.env
+    restart: unless-stopped
     # Same fix as registry above — Gateway's key wipe on recreate is the exact,
     # repeatedly-hit "re-run onboarding for all three" recovery procedure documented
     # in RUNBOOK.md; this volume is what actually closes that gap going forward.
+    # Real, separate gap found and fixed 2026-09-30: ONBOARDING_STATE_PATH
+    # (/app/data/onboarding_state.json — Gateway's own record of which domains it's
+    # SUBSCRIBED for, since it has no database) sat OUTSIDE this mount and was never
+    # itself persisted — confirmed live: a container recreate wiped it clean while
+    # Registry's own DB still correctly showed both domains SUBSCRIBED, leaving
+    # Gateway's local state silently out of sync with reality. Found while testing the
+    # domain-agnostic rotation fix above, which reads its domain list from exactly this
+    # file. `gateway-state:/app/data` mounted here (layered under the more specific
+    # `/app/data/secrets` mount, which still applies within it) closes this the same
+    # way the secrets volume already closes the key-wipe gap.
     volumes:
+      - gateway-state:/app/data
       - gateway-secrets:/app/data/secrets
     depends_on:
       registry:
@@ -144,12 +161,22 @@ services:
     # livetracker8.md §2.2: same shared scheduler that already watches `registry` above —
     # ofelia's daemon reads `ofelia.*` labels from every container on the Docker socket,
     # not just one, so no second scheduler instance is needed for Gateway's own rotation.
-    # Gateway's rotation needs a domain to re-Subscribe with — ONDC:RET13, its one real
-    # subscribed domain (confirmed live via Registry's own Participant table, 2026-09-04).
+    # Real bug found and fixed 2026-09-30: this label used to hardcode a single domain
+    # (`ONDC:RET13`) — once Gateway also became SUBSCRIBED for `ONDC:SRV13`, that would
+    # have rotated Gateway's one shared signing key and only told Registry about the
+    # RET13 half, silently breaking SRV13 traffic the next time it was checked. The
+    # command is now domain-agnostic (reads every currently-SUBSCRIBED domain from
+    # Gateway's own local onboarding state itself) — no domain argument here anymore,
+    # and none needs adding when a future domain is onboarded either.
     labels:
       ofelia.enabled: "true"
       ofelia.job-exec.rotate-gateway-keys.schedule: "@daily"
-      ofelia.job-exec.rotate-gateway-keys.command: "python manage.py onboarding_rotate_keys ONDC:RET13"
+      ofelia.job-exec.rotate-gateway-keys.command: "python manage.py onboarding_rotate_keys"
+      # 2026-10-21: catches identity drift (on-disk key vs Registry's record)
+      # within a day instead of silently breaking search — see
+      # check_identity_consistency's own docstring for the real incident this closes.
+      ofelia.job-exec.check-gateway-identity.schedule: "@daily"
+      ofelia.job-exec.check-gateway-identity.command: "python manage.py check_identity_consistency"
 
   bap-backend:
     build:
@@ -168,18 +195,44 @@ services:
       - "8001:8000"
     # Same shared key-rotation-scheduler mechanism as registry/beckn-gateway/bpp-backend
     # above — BAP's own onboarding_rotate_keys is now live-verified end-to-end (2026-09-06).
+    # Made domain-agnostic 2026-09-30 (same fix as beckn-gateway's identical command) —
+    # no domain argument anymore, reads every currently-SUBSCRIBED domain from BAP's own
+    # OnboardingStatus table instead of this hardcoded single value.
     labels:
       ofelia.enabled: "true"
       ofelia.job-exec.rotate-bap-keys.schedule: "@daily"
-      ofelia.job-exec.rotate-bap-keys.command: "python manage.py onboarding_rotate_keys ONDC:RET13"
+      ofelia.job-exec.rotate-bap-keys.command: "python manage.py onboarding_rotate_keys"
+      # 2026-10-21: catches identity drift (on-disk key vs Registry's record)
+      # within a day instead of silently breaking search — see
+      # check_identity_consistency's own docstring for the real incident this closes.
+      ofelia.job-exec.check-bap-identity.schedule: "@daily"
+      ofelia.job-exec.check-bap-identity.command: "python manage.py check_identity_consistency"
 
   bap-web:
     build:
       context: ./BAP/web
       args:
-        NEXT_PUBLIC_API_BASE_URL: http://localhost:8001
+        # Server-side only (next.config.ts's rewrite destination, and any RSC
+        # fetch) — this process runs *inside* this container, so it must reach
+        # bap-backend via the Compose network's own service DNS, not
+        # "localhost" (which inside this container is this container itself,
+        # not the host). The browser never reads this value for routing — see
+        # api-client.ts's own `typeof window === 'undefined'` branch — it
+        # always calls this app's same-origin /api/:path*, which is what that
+        # rewrite then proxies to the address below.
+        NEXT_PUBLIC_API_BASE_URL: http://bap-backend:8000
+        # Browser-only (new WebSocket(...) only ever runs client-side) — the
+        # opposite constraint from the URL above: this one genuinely must
+        # resolve from the *user's own machine*, so it stays the host-mapped
+        # address, not the container-internal one.
         NEXT_PUBLIC_WS_BASE_URL: ws://localhost:8001
         NEXT_PUBLIC_BRAND_ID: x
+        # Razorpay's key_id is a public identifier, not a secret — same real
+        # value as BAP/backend/.env's own RAZORPAY_KEY_ID (duplicated here
+        # deliberately, like HOLD_SECONDS elsewhere in this codebase, since
+        # compose build args can't read another service's env_file; keep
+        # both in sync on a real key rotation).
+        NEXT_PUBLIC_RAZORPAY_KEY_ID: rzp_test_TwQxlTIPuAS4ar
     env_file: ./BAP/web/.env
     depends_on:
       - bap-backend
@@ -191,6 +244,7 @@ services:
       context: .
       dockerfile: BPP/backend/Dockerfile
     env_file: ./BPP/backend/.env
+    restart: unless-stopped
     # Same fix as registry/beckn-gateway/bap-backend above.
     volumes:
       - bpp-secrets:/app/data/secrets
@@ -210,6 +264,11 @@ services:
       ofelia.enabled: "true"
       ofelia.job-exec.rotate-bpp-keys.schedule: "@daily"
       ofelia.job-exec.rotate-bpp-keys.command: "python manage.py onboarding_rotate_keys ONDC:RET13"
+      # 2026-10-21: catches identity drift (on-disk key vs Registry's record)
+      # within a day instead of silently breaking search — see
+      # check_identity_consistency's own docstring for the real incident this closes.
+      ofelia.job-exec.check-bpp-identity.schedule: "@daily"
+      ofelia.job-exec.check-bpp-identity.command: "python manage.py check_identity_consistency"
 
   # livetracker4.md §2.1 cutover (2026-08-02): BPP's audit-log/metrics/WebSocket-
   # broadcast consumers no longer run inline inside bpp-backend's own request path —
@@ -223,6 +282,17 @@ services:
       dockerfile: BPP/backend/Dockerfile
     env_file: ./BPP/backend/.env
     command: ["python", "manage.py", "run_event_worker"]
+    # Real identity-drift incident found live (2026-10-26): this service had no
+    # secrets volume at all, so its own on-disk signing key lived only in the
+    # container's ephemeral filesystem — recreating this container (a plain image
+    # update, not even a key rotation) silently generated a brand-new key that no
+    # longer matched Registry's stored record for this same subscriber_id, which
+    # bpp-backend's own persistent-volume-backed key still correctly held. Mounted
+    # read-only: this process has no business generating or rotating keys itself —
+    # only bpp-backend's own entrypoint/rotation cron should ever write here; this
+    # mount exists so the worker reads that same already-correct key, never its own.
+    volumes:
+      - bpp-secrets:/app/data/secrets:ro
     # This process never serves HTTP — bpp-backend's inherited Dockerfile HEALTHCHECK
     # (a GET against :8000/health) would otherwise report it permanently unhealthy.
     healthcheck:
@@ -243,7 +313,10 @@ services:
     build:
       context: ./BPP/web
       args:
-        NEXT_PUBLIC_API_BASE_URL: http://localhost:8002
+        # Same container-vs-host networking fix as bap-web above — this is the
+        # server-side rewrite destination (runs inside this container), not a
+        # value the browser ever routes through.
+        NEXT_PUBLIC_API_BASE_URL: http://bpp-backend:8000
         NEXT_PUBLIC_WS_BASE_URL: ws://localhost:8002
         NEXT_PUBLIC_BRAND_ID: beauty
     env_file: ./BPP/web/.env
@@ -264,6 +337,7 @@ services:
       context: .
       dockerfile: BPP/backend/Dockerfile
     env_file: ./BPP/backend/.env.medical
+    restart: unless-stopped
     volumes:
       - bpp-medical-secrets:/app/data/secrets
     depends_on:
@@ -279,6 +353,11 @@ services:
       ofelia.enabled: "true"
       ofelia.job-exec.rotate-bpp-medical-keys.schedule: "@daily"
       ofelia.job-exec.rotate-bpp-medical-keys.command: "python manage.py onboarding_rotate_keys ONDC:SRV13"
+      # 2026-10-21: catches identity drift (on-disk key vs Registry's record)
+      # within a day instead of silently breaking search — see
+      # check_identity_consistency's own docstring for the real incident this closes.
+      ofelia.job-exec.check-bpp-medical-identity.schedule: "@daily"
+      ofelia.job-exec.check-bpp-medical-identity.command: "python manage.py check_identity_consistency"
 
   bpp-medical-worker:
     build:
@@ -286,6 +365,10 @@ services:
       dockerfile: BPP/backend/Dockerfile
     env_file: ./BPP/backend/.env.medical
     command: ["python", "manage.py", "run_event_worker"]
+    # Same real identity-drift fix as bpp-worker above — see that service's own
+    # comment for the full incident this closes.
+    volumes:
+      - bpp-medical-secrets:/app/data/secrets:ro
     healthcheck:
       disable: true
     restart: unless-stopped
@@ -297,20 +380,22 @@ services:
     build:
       context: ./BPP/web
       args:
-        NEXT_PUBLIC_API_BASE_URL: http://localhost:8004
+        # Same container-vs-host networking fix as bap-web above.
+        NEXT_PUBLIC_API_BASE_URL: http://bpp-medical-backend:8000
         NEXT_PUBLIC_WS_BASE_URL: ws://localhost:8004
         NEXT_PUBLIC_BRAND_ID: medical
     env_file: ./BPP/web/.env
     depends_on:
       - bpp-medical-backend
     ports:
-      - "3008:3000"
+      - "3003:3000"
 
   bpp-automotive-backend:
     build:
       context: .
       dockerfile: BPP/backend/Dockerfile
     env_file: ./BPP/backend/.env.automotive
+    restart: unless-stopped
     volumes:
       - bpp-automotive-secrets:/app/data/secrets
     depends_on:
@@ -326,6 +411,11 @@ services:
       ofelia.enabled: "true"
       ofelia.job-exec.rotate-bpp-automotive-keys.schedule: "@daily"
       ofelia.job-exec.rotate-bpp-automotive-keys.command: "python manage.py onboarding_rotate_keys BECKN:AUTO01"
+      # 2026-10-21: catches identity drift (on-disk key vs Registry's record)
+      # within a day instead of silently breaking search — see
+      # check_identity_consistency's own docstring for the real incident this closes.
+      ofelia.job-exec.check-bpp-automotive-identity.schedule: "@daily"
+      ofelia.job-exec.check-bpp-automotive-identity.command: "python manage.py check_identity_consistency"
 
   bpp-automotive-worker:
     build:
@@ -333,6 +423,10 @@ services:
       dockerfile: BPP/backend/Dockerfile
     env_file: ./BPP/backend/.env.automotive
     command: ["python", "manage.py", "run_event_worker"]
+    # Same real identity-drift fix as bpp-worker above — see that service's own
+    # comment for the full incident this closes.
+    volumes:
+      - bpp-automotive-secrets:/app/data/secrets:ro
     healthcheck:
       disable: true
     restart: unless-stopped
@@ -344,7 +438,8 @@ services:
     build:
       context: ./BPP/web
       args:
-        NEXT_PUBLIC_API_BASE_URL: http://localhost:8005
+        # Same container-vs-host networking fix as bap-web above.
+        NEXT_PUBLIC_API_BASE_URL: http://bpp-automotive-backend:8000
         NEXT_PUBLIC_WS_BASE_URL: ws://localhost:8005
         NEXT_PUBLIC_BRAND_ID: automotive
     env_file: ./BPP/web/.env
@@ -358,6 +453,7 @@ services:
       context: .
       dockerfile: BAP/backend/Dockerfile
     env_file: ./BAP/backend/.env.y
+    restart: unless-stopped
     volumes:
       - bap-y-secrets:/app/data/secrets
     depends_on:
@@ -370,17 +466,25 @@ services:
     # Same shared codebase/fix as bap-backend above (BAP/backend/Dockerfile) — not yet
     # onboarded in this environment (zero OnboardingStatus rows, confirmed 2026-09-06),
     # so this job will fail safely (logged as a failed ofelia run, not a crash) until
-    # that's done — same situation as BPP's medical/automotive instances.
+    # that's done — same situation as BPP's medical/automotive instances. Made
+    # domain-agnostic 2026-09-30, same as bap-backend above — with zero SUBSCRIBED rows
+    # today it now fails with a clearer "no SUBSCRIBED domains" error, same safe outcome.
     labels:
       ofelia.enabled: "true"
       ofelia.job-exec.rotate-bap-y-keys.schedule: "@daily"
-      ofelia.job-exec.rotate-bap-y-keys.command: "python manage.py onboarding_rotate_keys ONDC:RET13"
+      ofelia.job-exec.rotate-bap-y-keys.command: "python manage.py onboarding_rotate_keys"
+      # 2026-10-21: catches identity drift (on-disk key vs Registry's record)
+      # within a day instead of silently breaking search — see
+      # check_identity_consistency's own docstring for the real incident this closes.
+      ofelia.job-exec.check-bap-y-identity.schedule: "@daily"
+      ofelia.job-exec.check-bap-y-identity.command: "python manage.py check_identity_consistency"
 
   bap-y-web:
     build:
       context: ./BAP/web
       args:
-        NEXT_PUBLIC_API_BASE_URL: http://localhost:8006
+        # Same container-vs-host networking fix as bap-web above.
+        NEXT_PUBLIC_API_BASE_URL: http://bap-y-backend:8000
         NEXT_PUBLIC_WS_BASE_URL: ws://localhost:8006
         NEXT_PUBLIC_BRAND_ID: y
     env_file: ./BAP/web/.env
@@ -430,6 +534,7 @@ volumes:
   # data-loss problem, not production key custody.
   registry-secrets:
   gateway-secrets:
+  gateway-state:
   bap-secrets:
   bpp-secrets:
   # livetracker7.md Phase 2: same key-persistence pattern, one volume per new

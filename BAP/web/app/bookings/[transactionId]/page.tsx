@@ -22,7 +22,7 @@ import {
   triggerUpdate,
 } from '@/lib/booking-api';
 import { ApiError } from '@/lib/api-client';
-import { formatDateTime, formatOrderItemName, formatPrice } from '@/lib/format';
+import { formatDateTime, formatOrderItemName, formatPrice, shortId } from '@/lib/format';
 import type { Order, Support } from '@/lib/beckn-types';
 
 const STATUS_LABEL: Record<string, string> = {
@@ -299,7 +299,7 @@ export default function BookingStatusPage() {
     <div className="mx-auto flex w-full max-w-md flex-1 flex-col px-4 py-8 sm:px-6 lg:px-8">
       <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">Your booking</h1>
 
-      <div className="mt-6 flex flex-col gap-4 rounded-lg border border-neutral-200 p-4">
+      <div className="mt-6 flex flex-col gap-4 rounded-xl border border-neutral-200 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between">
           <p className="font-medium text-neutral-900">{itemName}</p>
           <span className="rounded-full bg-neutral-100 px-2.5 py-0.5 text-xs font-medium text-neutral-700">
@@ -311,7 +311,7 @@ export default function BookingStatusPage() {
         {order.quote && (
           <p className="text-sm font-semibold text-neutral-900">{formatPrice(order.quote.price)}</p>
         )}
-        <p className="text-xs text-neutral-500">Booking reference: {order.id ?? transactionId}</p>
+        <p className="text-xs text-neutral-500">Booking reference: {shortId(order.id ?? transactionId)}</p>
         {refreshingStatus && (
           <p className="text-xs text-neutral-400" aria-live="polite">
             Checking latest status…
@@ -349,7 +349,7 @@ export default function BookingStatusPage() {
       )}
 
       {canReschedule && !rescheduled && (
-        <div className="mt-4 flex flex-col gap-3 rounded-lg border border-neutral-200 p-4">
+        <div className="mt-4 flex flex-col gap-3 rounded-xl border border-neutral-200 bg-white p-4 shadow-sm">
           {!showRescheduleForm ? (
             <button
               type="button"
@@ -395,7 +395,7 @@ export default function BookingStatusPage() {
       )}
 
       {currentStatus === 'COMPLETE' && (
-        <div className="mt-6 flex flex-col gap-3 rounded-lg border border-neutral-200 p-4">
+        <div className="mt-6 flex flex-col gap-3 rounded-xl border border-neutral-200 bg-white p-4 shadow-sm">
           <p className="font-medium text-neutral-900">Rate this booking</p>
           {ratingSubmitted && !showRatingForm ? (
             <div className="flex items-center justify-between">
@@ -441,7 +441,7 @@ export default function BookingStatusPage() {
         </div>
       )}
 
-      <div className="mt-6 flex flex-col gap-3 rounded-lg border border-neutral-200 p-4">
+      <div className="mt-6 flex flex-col gap-3 rounded-xl border border-neutral-200 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between gap-4">
           <p className="font-medium text-neutral-900">Need help?</p>
           {!supportContact && (
@@ -468,7 +468,7 @@ export default function BookingStatusPage() {
         {supportError && <BookingFailedError onRetry={handleRequestSupport} />}
       </div>
 
-      <div className="mt-6 flex flex-col gap-3 rounded-lg border border-neutral-200 p-4">
+      <div className="mt-6 flex flex-col gap-3 rounded-xl border border-neutral-200 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between gap-4">
           <p className="font-medium text-neutral-900">Tracking</p>
           <button

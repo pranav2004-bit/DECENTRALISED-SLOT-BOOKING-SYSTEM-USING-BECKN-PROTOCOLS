@@ -13,14 +13,18 @@ export type ConnectionStatus = 'connecting' | 'open' | 'closed' | 'error';
 
 const RECONNECT_DELAY_MS = 3000;
 
-export function useRealtimeConnection(path: string = '/ws/') {
+/** `path: null` means "don't connect at all" — the search page's own
+ * per-provider availability subscription only wants a live connection while
+ * a provider card is actually open, not for the page's whole lifetime; every
+ * existing caller still always passes a real string path, unaffected. */
+export function useRealtimeConnection(path: string | null = '/ws/') {
   const baseUrl = process.env.NEXT_PUBLIC_WS_BASE_URL;
-  const [status, setStatus] = useState<ConnectionStatus>(baseUrl ? 'connecting' : 'error');
+  const [status, setStatus] = useState<ConnectionStatus>(baseUrl && path ? 'connecting' : 'error');
   const [lastMessage, setLastMessage] = useState<unknown>(null);
   const [generation, setGeneration] = useState(0);
 
   useEffect(() => {
-    if (!baseUrl) return;
+    if (!baseUrl || !path) return;
 
     let cancelled = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;

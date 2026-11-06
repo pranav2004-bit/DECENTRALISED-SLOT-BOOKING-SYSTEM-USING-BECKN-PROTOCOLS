@@ -37,6 +37,27 @@ _ALL_COUNTERS = {
     "cancelled": _BOOKING_CANCELLED,
 }
 
+# Separate metric family, not folded into the booking-lifecycle one above — a
+# check_availability call is a read with no booking-lifecycle outcome, so it
+# has no honest place among hold/confirm/cancel counts (see
+# availability_service.py's own module docstring for why this call exists
+# outside the real Beckn action set in the first place).
+_AVAILABILITY_CHECK_SUCCEEDED = "bpp:metrics:availability_check_succeeded"
+_AVAILABILITY_CHECK_REJECTED = "bpp:metrics:availability_check_rejected"
+
+_AVAILABILITY_COUNTERS = {
+    "succeeded": _AVAILABILITY_CHECK_SUCCEEDED,
+    "rejected": _AVAILABILITY_CHECK_REJECTED,
+}
+
+
+def record_availability_check_succeeded() -> None:
+    increment_counter(_AVAILABILITY_CHECK_SUCCEEDED)
+
+
+def record_availability_check_rejected() -> None:
+    increment_counter(_AVAILABILITY_CHECK_REJECTED)
+
 
 def record_hold_created() -> None:
     increment_counter(_HOLD_CREATED)
@@ -96,6 +117,12 @@ def render_metrics() -> list[str]:
             help_text="Real booking-lifecycle event counts, Redis-backed (§3.10)",
             label_name="event",
             counters=_ALL_COUNTERS,
+        ),
+        *render_counter_family(
+            metric_name="bpp_availability_check_total",
+            help_text="Real check_availability call outcomes, Redis-backed",
+            label_name="outcome",
+            counters=_AVAILABILITY_COUNTERS,
         ),
         *_render_event_bus_health(),
     ]

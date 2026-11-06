@@ -38,6 +38,11 @@ db.sqlite3
 # --- Node / Next.js (BAP/web, BPP/web) ---
 node_modules/
 .next/
+# Per-brand local-dev build dirs (BPP/web's npm run dev:carenest / dev:stylenest,
+# distDir set via NEXT_DIST_DIR in .env.local.<brand> — see next.config.ts) — lets
+# two `next dev` instances run against the same source tree simultaneously without
+# colliding on one shared .next build cache.
+.next-*/
 out/
 .turbo/
 npm-debug.log*

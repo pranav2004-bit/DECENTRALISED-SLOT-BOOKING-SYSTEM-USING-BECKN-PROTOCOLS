@@ -14,6 +14,7 @@ vi.mock('next/navigation', () => ({
 import SignupPage from './page';
 import * as authApi from '@/lib/auth-api';
 import { ApiError } from '@/lib/api-client';
+import { ToastProvider } from '@/components/ui/Toast';
 
 describe('SignupPage', () => {
   beforeEach(() => {
@@ -25,10 +26,14 @@ describe('SignupPage', () => {
     vi.restoreAllMocks();
   });
 
-  it('livetracker7.md Phase 4: shows this brand’s own fixed category, not a picker', () => {
-    render(<SignupPage />);
+  it('has no Category field — the brand’s domain is fixed and never shown as a form field', () => {
+    render(
+      <ToastProvider>
+        <SignupPage />
+      </ToastProvider>
+    );
+    expect(screen.queryByText('Category')).not.toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: 'Category' })).not.toBeInTheDocument();
-    expect(screen.getByText('Beauty')).toBeInTheDocument();
   });
 
   it('livetracker3.md §7.1: signs up with this brand’s own domain and redirects to the dashboard', async () => {
@@ -40,8 +45,21 @@ describe('SignupPage', () => {
       role: 'OWNER',
       managed_by: null,
       owned_resource_ids: [],
+      is_accepting_bookings: true,
+      description: '',
+      public_phone: '',
+      public_email: '',
+      address: '',
+      state: '',
+      division: '',
+      pincode: '',
+      created_at: '2026-01-01T00:00:00Z',
     });
-    render(<SignupPage />);
+    render(
+      <ToastProvider>
+        <SignupPage />
+      </ToastProvider>
+    );
 
     await userEvent.type(screen.getByLabelText('Business name'), 'Glow Salon');
     await userEvent.type(screen.getByLabelText('Email'), 'owner@example.com');
@@ -54,14 +72,18 @@ describe('SignupPage', () => {
       'Passw0rd!23',
       'ONDC:RET13'
     );
-    expect(mockPush).toHaveBeenCalledWith('/dashboard');
+    expect(mockPush).toHaveBeenCalledWith('/resources');
   });
 
   it('shows the real API error and does not navigate on failure', async () => {
     vi.spyOn(authApi, 'signup').mockRejectedValue(
       new ApiError('an account with this contact already exists', 409, null)
     );
-    render(<SignupPage />);
+    render(
+      <ToastProvider>
+        <SignupPage />
+      </ToastProvider>
+    );
 
     await userEvent.type(screen.getByLabelText('Business name'), 'Glow Salon');
     await userEvent.type(screen.getByLabelText('Email'), 'owner@example.com');

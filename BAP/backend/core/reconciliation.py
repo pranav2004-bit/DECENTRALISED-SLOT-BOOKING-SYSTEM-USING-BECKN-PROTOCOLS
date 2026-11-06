@@ -36,10 +36,11 @@ import threading
 import time
 
 from django.conf import settings
+from django.db import close_old_connections
 from django.utils import timezone
 
-from . import confirm_service
-from .models import SearchSession
+from . import cancel_service, confirm_service
+from .models import PaymentTransaction, SearchSession
 
 logger = logging.getLogger("bap")
 
@@ -81,7 +82,74 @@ def sweep_stale_confirmations(*, stale_after_seconds: float) -> int:
     return resynced
 
 
+def sweep_unpaid_confirmed_bookings(*, deadline_seconds: float) -> int:
+    """Real gap found and closed live 2026-11-05: `/confirm` moves a slot from
+    HELD to permanently BOOKED before payment is ever attempted (this project's
+    real Beckn booking semantics — see `confirm_service.py`'s own docstring).
+    Nothing released a slot back if the payment that was supposed to follow was
+    then declined, abandoned mid-checkout, or simply never started — the
+    booking just stayed confirmed-and-unpaid forever, permanently denying that
+    slot to a real, paying customer. This is the mechanism that actually closes
+    that gap: finds every `SearchSession` confirmed more than `deadline_seconds`
+    ago with no `SUCCEEDED` `PaymentTransaction` against it, and cancels it
+    through the exact real customer-facing path (`cancel_service.trigger_cancel`)
+    — the same real signed /cancel wire call a customer's own cancellation
+    uses, which is what genuinely releases the slot at BPP (and is already a
+    safe no-op on the refund side: `record_on_cancel_result`'s own
+    `payment_service.refund_if_paid` call no-ops cleanly when nothing was ever
+    actually charged, since this is reached only when no payment succeeded).
+
+    Deliberately keyed on `confirmed_order_at`, not `updated_at` — see that
+    field's own docstring for why `updated_at` doesn't hold here (bumped by
+    unrelated later saves on the same session). `cancelled_order__isnull=True`
+    so an already-cancelled session (by the customer themselves, or a prior
+    sweep tick) is never re-cancelled. A session with any `SUCCEEDED`
+    `PaymentTransaction` is a real, legitimate booking regardless of age —
+    explicitly excluded.
+
+    Never raises for an individual session's cancel failing (e.g. the BPP is
+    genuinely unreachable right now) — logs and keeps sweeping the rest, same
+    discipline as `sweep_stale_confirmations` above."""
+    threshold = timezone.now() - timezone.timedelta(seconds=deadline_seconds)
+    stale_sessions = SearchSession.objects.filter(
+        confirmed_order__isnull=False,
+        confirmed_order_at__isnull=False,
+        confirmed_order_at__lt=threshold,
+        cancelled_order__isnull=True,
+    ).exclude(payment_transactions__status=PaymentTransaction.Status.SUCCEEDED)
+
+    cancelled = 0
+    for session in stale_sessions:
+        try:
+            cancel_service.trigger_cancel(
+                transaction_id=session.transaction_id,
+                cancellation_reason_id="payment_not_completed_in_time",
+                customer=session.customer,
+            )
+            cancelled += 1
+        except cancel_service.CancelError:
+            logger.exception(
+                "reconciliation: failed to release unpaid booking %s", session.transaction_id
+            )
+    return cancelled
+
+
 def _run_once() -> None:
+    # This loop runs on its own daemon thread, outside Django's request/response
+    # cycle — the `request_started`/`request_finished` signals that normally
+    # call this for every ordinary view never fire here, so this thread's own
+    # DB connection is never checked for staleness on its own. Without this,
+    # a connection the database itself closes from its side (Neon, this
+    # project's actual Postgres host, drops idle connections) stays a dead
+    # object in this thread forever — every subsequent query fails with
+    # "connection already closed", not just the one that caught it idle. Found
+    # live, 2026-11-04: this exact failure, every tick, logged but never
+    # recovering on its own. `close_old_connections()` is the real fix Django
+    # itself ties to those signals — calling it here before each tick's own
+    # queries re-creates the connection the moment it's actually needed again,
+    # the same thing any other long-running out-of-request process (a
+    # management command, a Celery task) has to do for the same reason.
+    close_old_connections()
     try:
         resynced = sweep_stale_confirmations(
             stale_after_seconds=settings.RECONCILIATION_STALE_CONFIRM_SECONDS
@@ -90,6 +158,15 @@ def _run_once() -> None:
             logger.info("reconciliation: resynced %d stale confirmation(s)", resynced)
     except Exception:
         logger.exception("reconciliation: sweep_stale_confirmations failed")
+
+    try:
+        released = sweep_unpaid_confirmed_bookings(
+            deadline_seconds=settings.PAYMENT_COMPLETION_DEADLINE_SECONDS
+        )
+        if released:
+            logger.info("reconciliation: released %d unpaid confirmed booking(s)", released)
+    except Exception:
+        logger.exception("reconciliation: sweep_unpaid_confirmed_bookings failed")
 
 
 def _loop() -> None:

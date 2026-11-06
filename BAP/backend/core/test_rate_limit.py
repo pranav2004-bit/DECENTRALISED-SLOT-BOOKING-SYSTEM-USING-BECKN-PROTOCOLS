@@ -61,6 +61,58 @@ def test_rate_limit_is_scoped_per_client_ip():
     assert _dummy_view(other_client).status_code == 200
 
 
+def test_rate_limit_uses_x_forwarded_for_over_remote_addr():
+    """Real gap found and closed live 2026-11-05: every customer-facing trigger view
+    is only ever reached browser -> Next.js's same-origin rewrite -> this backend, so
+    REMOTE_ADDR is always the Next.js container's own hop — identical for every real
+    visitor, collapsing this per-client limit into one global, site-wide bucket
+    (confirmed live: 21/21 recent requests from different browser sessions all
+    logged the same REMOTE_ADDR). Two different real clients, proxied through the
+    same REMOTE_ADDR but with distinct X-Forwarded-For values (what Next.js's
+    rewrite and Caddy, the real prod edge, both set), must get independent
+    counters."""
+    factory = RequestFactory()
+    proxied_a = factory.post(
+        "/dummy", REMOTE_ADDR="172.18.0.1", HTTP_X_FORWARDED_FOR="203.0.113.5"
+    )
+    for _ in range(3):
+        assert _dummy_view(proxied_a).status_code == 200
+    assert _dummy_view(proxied_a).status_code == 429
+
+    proxied_b = factory.post(
+        "/dummy", REMOTE_ADDR="172.18.0.1", HTTP_X_FORWARDED_FOR="203.0.113.9"
+    )
+    assert _dummy_view(proxied_b).status_code == 200
+
+
+def test_rate_limit_x_forwarded_for_takes_the_first_hop():
+    """A multi-hop chain (e.g. prod's Caddy edge appending its own hop after
+    Next.js's rewrite forwards the original) must key on the leftmost entry — the
+    real originating client, not an intermediate proxy."""
+    factory = RequestFactory()
+    request = factory.post(
+        "/dummy", HTTP_X_FORWARDED_FOR="203.0.113.7, 172.18.0.1, 10.0.0.5"
+    )
+    for _ in range(3):
+        assert _dummy_view(request).status_code == 200
+    assert _dummy_view(request).status_code == 429
+    assert cache.get("ratelimit:test-scope:203.0.113.7") == 4
+
+
+def test_rate_limit_falls_back_to_remote_addr_when_header_is_empty_or_malformed():
+    """An empty or whitespace-only X-Forwarded-For (seen from some proxies/load
+    balancers) must not become the cache key verbatim — fall back to REMOTE_ADDR
+    exactly like a request with no header at all."""
+    factory = RequestFactory()
+    request = factory.post(
+        "/dummy", REMOTE_ADDR="10.0.0.3", HTTP_X_FORWARDED_FOR="   "
+    )
+    for _ in range(3):
+        assert _dummy_view(request).status_code == 200
+    assert _dummy_view(request).status_code == 429
+    assert cache.get("ratelimit:test-scope:10.0.0.3") == 4
+
+
 def test_rate_limit_fails_open_when_redis_itself_is_unreachable():
     """Real gap found and closed at Phase 3 Exit (livetracker2.md, 2026-07-24, live
     "kill Redis" re-test): only `ValueError` was ever caught here — a genuine Redis

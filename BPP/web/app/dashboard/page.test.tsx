@@ -1,34 +1,80 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { render, screen, waitFor } from '@testing-library/react';
 
-const { mockPush, mockRefresh } = vi.hoisted(() => ({
-  mockPush: vi.fn(),
-  mockRefresh: vi.fn(),
-}));
+/** Stat-card values are plain, small numbers — easily ambiguous against the
+ * trend chart's own per-day counts/dates on the same page. Scopes the lookup
+ * to the one card with this exact label instead. */
+function getStatValue(label: string): string {
+  const labelEl = screen.getByText(label);
+  const card = labelEl.closest('div');
+  // The value lives inside a wrapper span (value + optional change badge) —
+  // its own first child is the plain value text, the badge (if any) is the second.
+  const valueEl = card?.querySelector('span:nth-child(2) > span:first-child');
+  if (!valueEl) throw new Error(`No value found for stat card labeled "${label}"`);
+  return valueEl.textContent ?? '';
+}
 
-vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: mockPush, refresh: mockRefresh }),
-}));
+const { mockPush } = vi.hoisted(() => ({ mockPush: vi.fn() }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mockPush }) }));
 
 import DashboardPage from './page';
 import * as authApi from '@/lib/auth-api';
-import * as availabilityApi from '@/lib/availability-api';
-import * as resourcesApi from '@/lib/resources-api';
+import * as dashboardApi from '@/lib/dashboard-api';
 
-const OWNER_ACCOUNT = {
-  id: 'biz-1',
-  business_name: 'Glow Salon',
+const OWNER: authApi.BusinessAccount = {
+  id: 'owner-1',
+  business_name: 'Pavan Group Of Hospitals',
   contact: 'owner@example.com',
-  domain_code: 'ONDC:RET13',
-  role: 'OWNER' as const,
+  domain_code: 'ONDC:SRV13',
+  role: 'OWNER',
   managed_by: null,
+  is_accepting_bookings: true,
+  description: '',
+  public_phone: '',
+  public_email: '',
+  address: '',
+  state: '',
+  division: '',
+  pincode: '',
+  created_at: '2024-03-10T00:00:00Z',
+};
+
+const STATS: dashboardApi.DashboardStats = {
+  total_doctors: 5,
+  doctors_available_today: 3,
+  doctors_unavailable_today: 2,
+  overall_rating: '4.6',
+  rating_count: 128,
+  earnings_today: '12500.00',
+  earnings_today_change_pct: 12.5,
+  earnings_this_month: '340000.00',
+  earnings_this_month_change_pct: -4.2,
+  total_bookings: 812,
+  bookings_today: 9,
+  bookings_today_change_pct: null,
+  pending_payment_count: 3,
+  avg_booking_value: '620.00',
+  cancellation_rate: '8.3',
+  top_doctor: { name: 'Dr. Kavya', revenue: '45000.00', bookings: 20 },
+  doctor_performance: [
+    { name: 'Dr. Kavya', specialisation: 'Gynecology & Obstetrics', fee: '500.00', bookings: 20, revenue: '45000.00' },
+    { name: 'Dr. Mehta', specialisation: '', fee: '400.00', bookings: 0, revenue: '0.00' },
+  ],
+  currency: 'INR',
+  trend: [
+    { date: '2026-11-01', bookings: 4, revenue: '2000.00' },
+    { date: '2026-11-02', bookings: 6, revenue: '3000.00' },
+    { date: '2026-11-03', bookings: 0, revenue: '0.00' },
+    { date: '2026-11-04', bookings: 5, revenue: '2500.00' },
+    { date: '2026-11-05', bookings: 8, revenue: '4000.00' },
+    { date: '2026-11-06', bookings: 2, revenue: '1000.00' },
+    { date: '2026-11-07', bookings: 9, revenue: '12500.00' },
+  ],
 };
 
 describe('DashboardPage', () => {
   beforeEach(() => {
     mockPush.mockClear();
-    mockRefresh.mockClear();
   });
 
   afterEach(() => {
@@ -42,125 +88,37 @@ describe('DashboardPage', () => {
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/login'));
   });
 
-  it('livetracker3.md §7.1: redirects a STAFF login to their own assigned resource, not the owner dashboard', async () => {
-    vi.spyOn(authApi, 'me').mockResolvedValue({
-      ...OWNER_ACCOUNT,
-      role: 'STAFF',
-      assigned_resource_ids: ['res-9'],
-    });
+  it('shows the real stat figures once loaded, scoped per the logged-in account', async () => {
+    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
+    vi.spyOn(dashboardApi, 'fetchDashboardStats').mockResolvedValue(STATS);
     render(<DashboardPage />);
 
-    await waitFor(() =>
-      expect(mockPush).toHaveBeenCalledWith('/resources/res-9/availability')
-    );
+    await screen.findByText('Welcome back');
+    expect(getStatValue('Total doctors')).toBe('5');
+    expect(getStatValue('Available today')).toBe('3');
+    expect(getStatValue('Not available today')).toBe('2');
+    expect(getStatValue('Overall rating')).toBe('4.6 ★');
+    expect(getStatValue('Pending payments')).toBe('3');
+    expect(getStatValue('Cancellation rate')).toBe('8.3%');
+    expect(getStatValue('Avg. booking value')).toBe('₹620');
+    expect(getStatValue('Top doctor (this month)')).toBe('Dr. Kavya - ₹45,000');
+    expect(screen.getByText('Dr. Kavya')).toBeInTheDocument();
+    expect(screen.getByText('Gynecology & Obstetrics')).toBeInTheDocument();
+    expect(screen.getByText('Dr. Mehta')).toBeInTheDocument();
+    expect(getStatValue('Total bookings')).toBe('812');
+    expect(getStatValue('Bookings today')).toBe('9');
+    // Whole-rupee Indian-locale formatting (no decimals) — matches
+    // BAP/web's own formatPrice convention.
+    expect(getStatValue("Today's earnings")).toBe('₹12,500');
+    expect(getStatValue("This month's earnings")).toBe('₹3,40,000');
+    expect(mockPush).not.toHaveBeenCalled();
   });
 
-  it('livetracker3.md §7.1: shows the real empty state for a brand-new owner with zero resources', async () => {
-    vi.spyOn(authApi, 'me').mockResolvedValue({ ...OWNER_ACCOUNT, owned_resource_ids: [] });
+  it('shows an error state if the stats request fails, without crashing the page', async () => {
+    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
+    vi.spyOn(dashboardApi, 'fetchDashboardStats').mockRejectedValue(new Error('network error'));
     render(<DashboardPage />);
 
-    expect(await screen.findByText('No services yet')).toBeInTheDocument();
-    expect(screen.getByText('Glow Salon')).toBeInTheDocument();
-  });
-
-  it('livetracker3.md §7.1: lists an already-existing owner’s pre-existing resources (regression check)', async () => {
-    vi.spyOn(authApi, 'me').mockResolvedValue({
-      ...OWNER_ACCOUNT,
-      owned_resource_ids: ['res-1', 'res-2'],
-    });
-    const getSlotsSpy = vi.spyOn(availabilityApi, 'getSlots').mockImplementation(async (id) => ({
-      resource: {
-        id,
-        name: id === 'res-1' ? 'Stylist A' : 'Stylist B',
-        average_rating: null,
-        rating_count: 0,
-        assigned_staff_id: null,
-      },
-      slots: [],
-    }));
-    render(<DashboardPage />);
-
-    expect(await screen.findByText('Stylist A')).toBeInTheDocument();
-    expect(screen.getByText('Stylist B')).toBeInTheDocument();
-    expect(getSlotsSpy).toHaveBeenCalledWith('res-1');
-    expect(getSlotsSpy).toHaveBeenCalledWith('res-2');
-    expect(screen.queryByText('No services yet')).not.toBeInTheDocument();
-  });
-
-  it('livetracker3.md §7.1: the full new-business reachability chain — creates a resource, then generates real availability for it', async () => {
-    const user = userEvent.setup();
-    vi.spyOn(authApi, 'me').mockResolvedValue({ ...OWNER_ACCOUNT, owned_resource_ids: [] });
-    const createResourceSpy = vi
-      .spyOn(resourcesApi, 'createResource')
-      .mockResolvedValue({ id: 'res-new', name: 'Stylist A' });
-    const createAvailabilitySpy = vi
-      .spyOn(resourcesApi, 'createAvailability')
-      .mockResolvedValue({ calendar_id: 'cal-1', slots_created: 4 });
-    render(<DashboardPage />);
-
-    expect(await screen.findByText('No services yet')).toBeInTheDocument();
-
-    await user.type(screen.getByLabelText('Name'), 'Stylist A');
-    await user.selectOptions(screen.getByLabelText('Type'), 'stylist');
-    await user.click(screen.getByRole('button', { name: 'Add resource' }));
-
-    expect(createResourceSpy).toHaveBeenCalledWith('Stylist A', 'stylist');
-    expect(await screen.findByText('Set up availability for Stylist A')).toBeInTheDocument();
-
-    // livetracker3.md §7.1: real bug found live — the new resource used to never
-    // appear in the list (loadResources() re-fetched using a stale, pre-creation
-    // owned_resource_ids snapshot from account, which never included the new id).
-    // The resource card must appear and the empty state must be gone, with no
-    // page reload — proving the list updates from the create response directly.
-    expect(screen.getAllByText('Stylist A').length).toBeGreaterThan(0);
-    expect(screen.queryByText('No services yet')).not.toBeInTheDocument();
-
-    // jsdom does not reliably simulate keystroke-by-keystroke typing into a native
-    // <input type="date"> the way userEvent.type() does for text inputs — set the
-    // value directly, matching this well-known testing-library/jsdom limitation.
-    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-08-10' } });
-    fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-08-11' } });
-    await user.clear(screen.getByLabelText('Times (comma-separated, e.g. 09:00, 14:00)'));
-    await user.type(
-      screen.getByLabelText('Times (comma-separated, e.g. 09:00, 14:00)'),
-      '09:00, 10:00'
-    );
-    await user.click(screen.getByRole('button', { name: 'Generate availability' }));
-
-    expect(createAvailabilitySpy).toHaveBeenCalledWith(
-      'res-new',
-      expect.objectContaining({ times: ['09:00', '10:00'], slotDurationMinutes: 30, slotCapacity: 1 })
-    );
-    expect(await screen.findByText(/Availability generated for/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'View availability dashboard' })).toHaveAttribute(
-      'href',
-      '/resources/res-new/availability'
-    );
-  });
-
-  it('livetracker3.md §7.1 audit fix: creating a second resource does not discard the first one’s still-pending availability setup', async () => {
-    const user = userEvent.setup();
-    vi.spyOn(authApi, 'me').mockResolvedValue({ ...OWNER_ACCOUNT, owned_resource_ids: [] });
-    vi
-      .spyOn(resourcesApi, 'createResource')
-      .mockResolvedValueOnce({ id: 'res-1', name: 'Stylist A' })
-      .mockResolvedValueOnce({ id: 'res-2', name: 'Stylist B' });
-    render(<DashboardPage />);
-
-    expect(await screen.findByText('No services yet')).toBeInTheDocument();
-
-    await user.type(screen.getByLabelText('Name'), 'Stylist A');
-    await user.click(screen.getByRole('button', { name: 'Add resource' }));
-    expect(await screen.findByText('Set up availability for Stylist A')).toBeInTheDocument();
-
-    // Real gap found on this phase's own post-close audit: creating a second
-    // resource before finishing the first's availability setup used to silently
-    // replace (not add to) the pending-setup form, permanently orphaning the
-    // first resource with no UI path to ever generate its availability.
-    await user.type(screen.getByLabelText('Name'), 'Stylist B');
-    await user.click(screen.getByRole('button', { name: 'Add resource' }));
-
-    expect(await screen.findByText('Set up availability for Stylist B')).toBeInTheDocument();
-    expect(screen.getByText('Set up availability for Stylist A')).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't load the dashboard")).toBeInTheDocument();
   });
 });

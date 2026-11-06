@@ -7,6 +7,7 @@ response; a deactivated business account's inventory stops appearing in search.
 """
 
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 import pytest
 import redis
@@ -220,8 +221,16 @@ def test_business_account_generates_real_slots_via_availability_calendar(client)
     assert AvailabilityCalendar.objects.filter(resource_id=resource_id).count() == 1
     slots = Slot.objects.filter(resource_id=resource_id).order_by("start_time")
     assert slots.count() == 2
-    assert slots[0].start_time.hour == 9
-    assert slots[1].start_time.hour == 14
+    # A "times" anchor like "09:00" is always IST wall-clock time, regardless of
+    # storage timezone (generate_slots()'s own docstring/comment — a real bug
+    # found live 2026-10-20: this used to compare the raw stored UTC hour
+    # directly against the IST input hour, which only an unconverted,
+    # since-fixed bug would ever satisfy). Convert back to IST before asserting
+    # against the wall-clock hour the request actually specified, so this test
+    # verifies the real round trip instead of the pre-fix behavior.
+    ist = ZoneInfo("Asia/Kolkata")
+    assert slots[0].start_time.astimezone(ist).hour == 9
+    assert slots[1].start_time.astimezone(ist).hour == 14
     assert all(s.capacity_remaining == 1 for s in slots)
 
 
@@ -314,6 +323,14 @@ def test_deactivated_business_accounts_resources_disappear_from_catalog(client):
     login_resp = _signup_and_login(client)
     account_id = login_resp.json()["id"]
     _create_resource(client)
+    # resources-list reflects real search/catalog visibility (its own docstring),
+    # which requires is_accepting_bookings — a fresh signup defaults to False
+    # (BusinessAccount.is_accepting_bookings's own docstring: an empty profile
+    # can't go "Live" the instant an account is created). Flip it directly
+    # rather than going through business_profile_update_view's full
+    # required-fields gate, which is a separate concern from what this test is
+    # actually about (visibility toggling on is_active, not profile completeness).
+    BusinessAccount.objects.filter(id=account_id).update(is_accepting_bookings=True)
 
     visible_before = client.get(reverse("resources-list")).json()["resources"]
     assert len(visible_before) == 1
@@ -401,15 +418,31 @@ def _signup_and_login_healthcare_business(
 def test_healthcare_business_creates_a_doctor_resource(client):
     _signup_and_login_healthcare_business(client)
 
+    # HealthcareDomainAdapter.validate_resource_domain_data requires all of
+    # these (its own comment: a doctor listing without them is the exact
+    # "not enough information to book" complaint real ONDC health listings
+    # get flagged for) — resource_type alone, this test's old payload, is no
+    # longer enough on its own.
+    domain_data = {
+        "resource_type": "doctor",
+        "specialisation": "General Medicine / General Physician",
+        "education": "MBBS",
+        "years_of_experience": 5,
+        "gender": "female",
+    }
     resp = client.post(
         reverse("resource-create"),
-        data={"name": "Dr. Rao", "domain_data": {"resource_type": "doctor"}},
+        data={"name": "Dr. Rao", "domain_data": domain_data},
         content_type="application/json",
     )
 
     assert resp.status_code == 201
     resource = Resource.objects.get(id=resp.json()["id"])
-    assert resource.domain_data == {"resource_type": "doctor"}
+    # resource_create_view adds its own server-generated doctor_id on top of
+    # whatever domain_data was submitted (its own comment: never client-supplied) —
+    # assert the submitted fields round-tripped, not byte-equality against the
+    # stored dict, so this doesn't re-break the next time that field is touched.
+    assert resource.domain_data == {**domain_data, "doctor_id": "DOC-0001"}
 
 
 @pytest.mark.django_db

@@ -28,6 +28,7 @@ import time
 
 import redis
 from django.conf import settings
+from django.db import close_old_connections
 from inventory_core.domain_adapter import registered_domains
 from inventory_core.reconciliation import sweep_completed_bookings, sweep_expired_holds
 
@@ -41,6 +42,15 @@ _started_lock = threading.Lock()
 
 
 def _run_once() -> None:
+    # Same real, live-found gap as BAP's own identical loop (core/reconciliation.py
+    # there) — this thread runs outside Django's request/response cycle, so the
+    # signals that normally call close_old_connections() around every view never
+    # fire here. Without this, a connection the database closes from its side
+    # (Neon, this project's actual Postgres host, drops idle connections) stays
+    # dead in this thread forever, and every one of this loop's three sweeps
+    # below fails with "connection already closed" from that tick on, not just
+    # the one that caught it idle.
+    close_old_connections()
     redis_client = redis.Redis.from_url(
         settings.REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5
     )

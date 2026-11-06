@@ -57,3 +57,54 @@ class PaymentStatusConsumer(AsyncWebsocketConsumer):
         except SessionAccessError:
             return False
         return True
+
+
+class AvailabilityConsumer(AsyncWebsocketConsumer):
+    """One connection per search-results card's own open provider — joins
+    `provider-{provider_id}-availability` with no IDOR check (unlike
+    `PaymentStatusConsumer` above): a provider's own slot availability isn't
+    owned by any one customer's session, it's the same publicly-browsable
+    fact `check_availability`/`list_available_slots` already answer for
+    anyone. Pushed to by `core/realtime.py::broadcast_slot_held()` the
+    instant any customer's real select genuinely lands — lets every *other*
+    browser currently looking at this same provider grey out that exact
+    slot immediately, instead of only discovering it's gone the next time
+    they themselves try to tap it (which stays safe either way — this
+    consumer is a pure UX improvement, not where the real guarantee against
+    double-booking lives; that's BPP's own atomic Slot/Booking hold)."""
+
+    async def connect(self):
+        self.provider_id = self.scope["url_route"]["kwargs"]["provider_id"]
+        self.group_name = f"provider-{self.provider_id}-availability"
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        await self.accept()
+
+    async def disconnect(self, close_code):
+        if hasattr(self, "group_name"):
+            await self.channel_layer.group_discard(self.group_name, self.channel_name)
+
+    async def slot_held(self, event):
+        """Handler name matches `broadcast_slot_held()`'s own `"type":
+        "slot.held"` (Channels maps `.` to `_`), same convention every other
+        consumer in this codebase already follows."""
+        await self.send(
+            text_data=json.dumps(
+                {
+                    "type": "slot.held",
+                    "item_id": event["item_id"],
+                    "start_time": event["start_time"],
+                    "expires_at": event["expires_at"],
+                }
+            )
+        )
+
+    async def slot_confirmed(self, event):
+        """Handler name matches `broadcast_slot_confirmed()`'s own `"type":
+        "slot.confirmed"`. See that function's own docstring for why this
+        needs to be a genuinely separate message, not just another
+        `slot.held` with a far-future expiry."""
+        await self.send(
+            text_data=json.dumps(
+                {"type": "slot.confirmed", "item_id": event["item_id"], "start_time": event["start_time"]}
+            )
+        )

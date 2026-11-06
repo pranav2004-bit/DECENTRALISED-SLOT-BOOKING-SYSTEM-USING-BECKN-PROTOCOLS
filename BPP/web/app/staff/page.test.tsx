@@ -25,6 +25,15 @@ const OWNER_ACCOUNT = {
   role: 'OWNER' as const,
   managed_by: null,
   owned_resource_ids: ['res-1'],
+  is_accepting_bookings: true,
+  description: '',
+  public_phone: '',
+  public_email: '',
+  address: '',
+  state: '',
+  division: '',
+  pincode: '',
+  created_at: '2026-01-01T00:00:00Z',
 };
 
 const RESOURCE = {
@@ -33,6 +42,11 @@ const RESOURCE = {
   average_rating: null,
   rating_count: 0,
   assigned_staff_id: null,
+  domain_data: {},
+  is_active: true,
+  price_currency: 'INR',
+  price_value: '0.00',
+  created_at: '2026-01-01T00:00:00Z',
 };
 
 describe('StaffPage', () => {
@@ -144,6 +158,11 @@ describe('StaffPage', () => {
         average_rating: null,
         rating_count: 0,
         assigned_staff_id: id === 'res-1' ? 'staff-1' : null,
+        domain_data: {},
+        is_active: true,
+        price_currency: 'INR',
+        price_value: '0.00',
+        created_at: '2026-01-01T00:00:00Z',
       },
       slots: [],
     }));

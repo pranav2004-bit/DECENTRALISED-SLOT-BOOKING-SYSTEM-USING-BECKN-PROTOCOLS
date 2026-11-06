@@ -23,7 +23,7 @@ function readCookie(name: string): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-async function csrfHeader(): Promise<Record<string, string>> {
+export async function csrfHeader(): Promise<Record<string, string>> {
   if (!readCookie('csrftoken')) {
     await apiFetch('/api/v1/auth/csrf');
   }

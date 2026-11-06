@@ -1,20 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const { mockPush } = vi.hoisted(() => ({ mockPush: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mockPush }) }));
 
-const { mockUseRealtimeConnection } = vi.hoisted(() => ({
-  mockUseRealtimeConnection: vi.fn(),
-}));
-vi.mock('@/lib/realtime/useRealtimeConnection', () => ({
-  useRealtimeConnection: mockUseRealtimeConnection,
-}));
-
 import OrdersPage from './page';
 import * as authApi from '@/lib/auth-api';
-import * as ordersApi from '@/lib/orders-api';
+import * as resourcesApi from '@/lib/resources-api';
+
+// Mirrors the page's own formatFullDate() exactly — asserting against this
+// rather than a hardcoded literal keeps the test independent of the test
+// runner's locale (day/month ordering varies: "June 30, 2025" vs "30 June 2025").
+function formatFullDate(date: Date): string {
+  return date.toLocaleDateString(undefined, {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+}
 
 const OWNER: authApi.BusinessAccount = {
   id: 'owner-1',
@@ -23,49 +28,46 @@ const OWNER: authApi.BusinessAccount = {
   domain_code: 'ONDC:RET13',
   role: 'OWNER',
   managed_by: null,
+  is_accepting_bookings: true,
+  description: '',
+  public_phone: '',
+  public_email: '',
+  address: '',
+  state: '',
+  division: '',
+  pincode: '',
+  // Joining year is well before "today" below, so the history year list has
+  // more than just the current year to verify against.
+  created_at: '2024-03-10T00:00:00Z',
 };
 
 const STAFF: authApi.BusinessAccount = {
+  ...OWNER,
   id: 'staff-1',
   business_name: 'Stylist One',
   contact: 'staff@example.com',
-  domain_code: 'ONDC:RET13',
   role: 'STAFF',
   managed_by: 'owner-1',
-  assigned_resource_ids: ['resource-a'],
-};
-
-const ORDER_A: ordersApi.Order = {
-  transaction_id: 'tx-a',
-  resource_id: 'resource-a',
-  resource_name: 'Stylist A',
-  slot_time: '2026-08-05T09:00:00+00:00',
-  status: 'ACTIVE',
-  payment_status: '',
-};
-
-const ORDER_B: ordersApi.Order = {
-  transaction_id: 'tx-b',
-  resource_id: 'resource-b',
-  resource_name: 'Stylist B',
-  slot_time: '2026-08-05T10:00:00+00:00',
-  status: 'ACTIVE',
-  payment_status: '',
+  assigned_resource_ids: [],
 };
 
 describe('OrdersPage', () => {
-  let capturedOnMessage: ((message: unknown) => void) | undefined;
-
   beforeEach(() => {
     mockPush.mockClear();
-    capturedOnMessage = undefined;
-    mockUseRealtimeConnection.mockImplementation((_path: string, onMessage?: (m: unknown) => void) => {
-      capturedOnMessage = onMessage;
-      return { status: 'open', lastMessage: null, reconnect: vi.fn(), send: vi.fn(() => true) };
-    });
+    // Faking only Date (not setTimeout/setInterval) — testing-library's own
+    // waitFor polling needs real timers to ever resolve.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    // Thu 15 Oct 2026 — a mid-month weekday so "today" and the strip's own
+    // bounds are both unambiguous regardless of where the test runs.
+    vi.setSystemTime(new Date(2026, 9, 15, 12, 0, 0));
+    // Default: no doctors — individual tests override this when the doctor
+    // filter's contents matter. Prevents the real fetchOwnedResources from
+    // ever reaching apiFetch (unconfigured in this test environment).
+    vi.spyOn(resourcesApi, 'fetchOwnedResources').mockResolvedValue([]);
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -78,132 +80,244 @@ describe('OrdersPage', () => {
 
   it('does not redirect a STAFF account away — orders is reachable for both roles', async () => {
     vi.spyOn(authApi, 'me').mockResolvedValue(STAFF);
-    vi.spyOn(ordersApi, 'getOrders').mockResolvedValue({ orders: [ORDER_A], next_cursor: null });
     render(<OrdersPage />);
 
-    await waitFor(() => expect(screen.getByText('Stylist A')).toBeInTheDocument());
+    expect(await screen.findByText('October 2026')).toBeInTheDocument();
     expect(mockPush).not.toHaveBeenCalled();
   });
 
-  it('shows an empty state with zero orders', async () => {
+  it('shows the current month/year heading, a History button, and the full date strip', async () => {
     vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
-    vi.spyOn(ordersApi, 'getOrders').mockResolvedValue({ orders: [], next_cursor: null });
     render(<OrdersPage />);
 
-    expect(await screen.findByText('No orders yet')).toBeInTheDocument();
+    expect(await screen.findByText('October 2026')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'History' })).toBeInTheDocument();
+    // October has 31 days.
+    expect(screen.getByRole('button', { name: 'Thu 15' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^\w+ 1$/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^\w+ 31$/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^\w+ 32$/ })).not.toBeInTheDocument();
   });
 
-  it('lists real orders from the initial page load', async () => {
-    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
-    vi.spyOn(ordersApi, 'getOrders').mockResolvedValue({
-      orders: [ORDER_A, ORDER_B],
-      next_cursor: null,
-    });
-    render(<OrdersPage />);
-
-    await waitFor(() => expect(screen.getByText('Stylist A')).toBeInTheDocument());
-    expect(screen.getByText('Stylist B')).toBeInTheDocument();
-  });
-
-  it('livetracker6.md §2.2: a live order.confirmed broadcast prepends a new row without a reload', async () => {
-    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
-    vi.spyOn(ordersApi, 'getOrders').mockResolvedValue({ orders: [ORDER_A], next_cursor: null });
-    render(<OrdersPage />);
-
-    await waitFor(() => expect(screen.getByText('Stylist A')).toBeInTheDocument());
-    expect(capturedOnMessage).toBeDefined();
-
-    capturedOnMessage?.({ type: 'order.confirmed', order: ORDER_B });
-
-    await waitFor(() => expect(screen.getByText('Stylist B')).toBeInTheDocument());
-    expect(screen.getByText('Stylist A')).toBeInTheDocument();
-  });
-
-  it('a live broadcast for an order already on the page is not shown twice', async () => {
-    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
-    vi.spyOn(ordersApi, 'getOrders').mockResolvedValue({ orders: [ORDER_A], next_cursor: null });
-    render(<OrdersPage />);
-
-    await waitFor(() => expect(screen.getByText('Stylist A')).toBeInTheDocument());
-    capturedOnMessage?.({ type: 'order.confirmed', order: ORDER_A });
-
-    expect(screen.getAllByText('Stylist A')).toHaveLength(1);
-  });
-
-  it('loads a second page via cursor pagination', async () => {
+  it('defaults the selected date to today, and switches it when another date is picked', async () => {
     const user = userEvent.setup();
     vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
-    const getOrders = vi.spyOn(ordersApi, 'getOrders');
-    getOrders.mockResolvedValueOnce({ orders: [ORDER_A], next_cursor: 'cursor-1' });
-    getOrders.mockResolvedValueOnce({ orders: [ORDER_B], next_cursor: null });
     render(<OrdersPage />);
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Load more' })).toBeInTheDocument());
-    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    await screen.findByText('October 2026');
+    expect(screen.getByRole('button', { name: 'Thu 15' })).toHaveAttribute('aria-pressed', 'true');
 
-    await waitFor(() => expect(screen.getByText('Stylist B')).toBeInTheDocument());
-    expect(getOrders).toHaveBeenLastCalledWith('cursor-1');
-    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Fri 2' }));
+    expect(screen.getByRole('button', { name: 'Fri 2' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Thu 15' })).toHaveAttribute('aria-pressed', 'false');
   });
 
-  it('livetracker5.md Phase 4.1: shows a paid badge for an order with a known payment_status', async () => {
+  it('opens History to a year picker bounded by the account’s own join year', async () => {
+    const user = userEvent.setup();
     vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
-    vi.spyOn(ordersApi, 'getOrders').mockResolvedValue({
-      orders: [{ ...ORDER_A, payment_status: 'SUCCEEDED' }],
-      next_cursor: null,
-    });
     render(<OrdersPage />);
 
-    await waitFor(() => expect(screen.getByText('Stylist A')).toBeInTheDocument());
-    expect(screen.getByText('Paid')).toBeInTheDocument();
+    await screen.findByText('October 2026');
+    await user.click(screen.getByRole('button', { name: 'History' }));
+
+    // Joined 2024-03-10, "today" is 2026 — all three years should be offered.
+    expect(screen.getByRole('button', { name: '2026' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '2025' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '2024' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '2023' })).not.toBeInTheDocument();
   });
 
-  it('shows no payment badge for an order with no known payment_status', async () => {
+  it('drills year -> month -> date, and picking a date returns to the calendar view with that date selected', async () => {
+    const user = userEvent.setup();
     vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
-    vi.spyOn(ordersApi, 'getOrders').mockResolvedValue({ orders: [ORDER_A], next_cursor: null });
     render(<OrdersPage />);
 
-    await waitFor(() => expect(screen.getByText('Stylist A')).toBeInTheDocument());
-    expect(screen.queryByText('Paid')).not.toBeInTheDocument();
-    expect(screen.queryByText('Refunded')).not.toBeInTheDocument();
+    await screen.findByText('October 2026');
+    await user.click(screen.getByRole('button', { name: 'History' }));
+    await user.click(screen.getByRole('button', { name: '2025' }));
+
+    expect(screen.getByText('2025')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Jan' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Dec' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Jun' }));
+    expect(screen.getByText('June 2025')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: formatFullDate(new Date(2025, 5, 30)) })
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: formatFullDate(new Date(2025, 5, 18)) }));
+
+    // Back on the calendar view, now showing June 2025 itself (not still
+    // headed "October 2026") — picking a date from History switches the
+    // strip to that date's own month, with it selected there too (the strip
+    // uses the short "Wed 18" aria-label, not History's full-date one).
+    expect(screen.getByText('June 2025')).toBeInTheDocument();
+    expect(screen.queryByText('October 2026')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Wed 18' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument();
+
+    // "Today" jumps back to the real current month.
+    await user.click(screen.getByRole('button', { name: 'Today' }));
+    expect(screen.getByText('October 2026')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Thu 15' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByRole('button', { name: 'Today' })).not.toBeInTheDocument();
   });
 
-  it('livetracker5.md Phase 4.1: a live order.payment_status_changed broadcast updates the badge without a reload', async () => {
-    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
-    vi.spyOn(ordersApi, 'getOrders').mockResolvedValue({ orders: [ORDER_A], next_cursor: null });
+  it('a join year partway through the year starts the month list at the join month, not January', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER); // joined March 2024
     render(<OrdersPage />);
 
-    await waitFor(() => expect(screen.getByText('Stylist A')).toBeInTheDocument());
-    expect(capturedOnMessage).toBeDefined();
+    await screen.findByText('October 2026');
+    await user.click(screen.getByRole('button', { name: 'History' }));
+    await user.click(screen.getByRole('button', { name: '2024' }));
 
-    capturedOnMessage?.({
-      type: 'order.payment_status_changed',
-      order: { transaction_id: 'tx-a', resource_id: 'resource-a', payment_status: 'SUCCEEDED' },
-    });
-
-    await waitFor(() => expect(screen.getByText('Paid')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Mar' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Dec' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Feb' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Jan' })).not.toBeInTheDocument();
   });
 
-  it('a payment_status broadcast for an order not on this page is a safe no-op', async () => {
+  it('the forward window stays at two months ahead, crossing into next year in December', async () => {
+    const user = userEvent.setup();
+    vi.setSystemTime(new Date(2026, 11, 15, 12, 0, 0)); // Dec 15 2026
     vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
-    vi.spyOn(ordersApi, 'getOrders').mockResolvedValue({ orders: [ORDER_A], next_cursor: null });
     render(<OrdersPage />);
 
-    await waitFor(() => expect(screen.getByText('Stylist A')).toBeInTheDocument());
-    capturedOnMessage?.({
-      type: 'order.payment_status_changed',
-      order: { transaction_id: 'tx-unknown', resource_id: 'resource-z', payment_status: 'SUCCEEDED' },
-    });
+    await screen.findByText('December 2026');
+    await user.click(screen.getByRole('button', { name: 'History' }));
 
-    expect(screen.queryByText('Paid')).not.toBeInTheDocument();
+    // Two months ahead of Dec is Feb — the next year must already be reachable.
+    expect(screen.getByRole('button', { name: '2027' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '2027' }));
+    expect(screen.getByRole('button', { name: 'Jan' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Feb' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Mar' })).not.toBeInTheDocument();
   });
 
-  it('shows an error state with retry when loading orders fails', async () => {
-    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
-    const { ApiError } = await import('@/lib/api-client');
-    vi.spyOn(ordersApi, 'getOrders').mockRejectedValue(new ApiError('backend unreachable', 502, null));
+  it('a month more than two months out is not yet reachable', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER); // system time: Oct 15 2026
     render(<OrdersPage />);
 
-    expect(await screen.findByText('backend unreachable')).toBeInTheDocument();
+    await screen.findByText('October 2026');
+    await user.click(screen.getByRole('button', { name: 'History' }));
+
+    expect(screen.queryByRole('button', { name: '2027' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '2026' }));
+    expect(screen.getByRole('button', { name: 'Dec' })).toBeInTheDocument();
+  });
+
+  it('Back steps up one level at a time and finally returns to the calendar view', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
+    render(<OrdersPage />);
+
+    await screen.findByText('October 2026');
+    await user.click(screen.getByRole('button', { name: 'History' }));
+    await user.click(screen.getByRole('button', { name: '2025' }));
+    await user.click(screen.getByRole('button', { name: 'Jun' }));
+    expect(screen.getByText('June 2025')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByText('2025')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Jun' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByRole('button', { name: '2025' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByRole('button', { name: 'History' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument();
+  });
+
+  it('shows the bookings table with every required column, empty for now', async () => {
+    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
+    render(<OrdersPage />);
+
+    await screen.findByText('October 2026');
+    for (const column of [
+      'Customer ID', 'Booking ID', 'Customer name', 'Email', 'Phone',
+      'Consulted doctor', 'Slot time', 'Amount (INR)', 'Payment status', 'Status',
+    ]) {
+      expect(screen.getByRole('columnheader', { name: column })).toBeInTheDocument();
+    }
+    expect(screen.getByText('No bookings for this date.')).toBeInTheDocument();
+  });
+
+  it('the doctor filter is populated from the business’s real, current resource list', async () => {
+    vi.spyOn(authApi, 'me').mockResolvedValue({ ...OWNER, owned_resource_ids: ['doc-1', 'doc-2'] });
+    vi.spyOn(resourcesApi, 'fetchOwnedResources').mockResolvedValue([
+      {
+        id: 'doc-1',
+        name: 'Dr. Kavya',
+        average_rating: null,
+        rating_count: 0,
+        assigned_staff_id: null,
+        domain_data: {},
+        is_active: true,
+        price_currency: 'INR',
+        price_value: '500.00',
+        created_at: '2026-01-01T00:00:00Z',
+      },
+      {
+        id: 'doc-2',
+        name: 'Dr. Laxmisree',
+        average_rating: null,
+        rating_count: 0,
+        assigned_staff_id: null,
+        domain_data: {},
+        is_active: true,
+        price_currency: 'INR',
+        price_value: '600.00',
+        created_at: '2026-01-01T00:00:00Z',
+      },
+    ]);
+    render(<OrdersPage />);
+
+    await screen.findByText('October 2026');
+    const doctorFilter = await screen.findByLabelText('Filter by consulted doctor');
+    expect(resourcesApi.fetchOwnedResources).toHaveBeenCalledWith(['doc-1', 'doc-2']);
+    expect(within(doctorFilter).getByRole('option', { name: 'Dr. Kavya' })).toBeInTheDocument();
+    expect(within(doctorFilter).getByRole('option', { name: 'Dr. Laxmisree' })).toBeInTheDocument();
+  });
+
+  it('search, status filter and doctor filter controls are present and operable', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
+    render(<OrdersPage />);
+
+    await screen.findByText('October 2026');
+    const search = screen.getByPlaceholderText('Customer ID or Booking ID');
+    await user.type(search, 'CUST-001');
+    expect(search).toHaveValue('CUST-001');
+
+    const statusFilter = screen.getByLabelText('Filter by status');
+    await user.selectOptions(statusFilter, 'Completed');
+    expect(statusFilter).toHaveValue('COMPLETED');
+  });
+
+  it('"Clear filters" only appears once a filter is active, and resets all of them', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(authApi, 'me').mockResolvedValue(OWNER);
+    render(<OrdersPage />);
+
+    await screen.findByText('October 2026');
+    expect(screen.queryByRole('button', { name: 'Clear filters' })).not.toBeInTheDocument();
+
+    const search = screen.getByPlaceholderText('Customer ID or Booking ID');
+    await user.type(search, 'CUST-001');
+    const statusFilter = screen.getByLabelText('Filter by status');
+    await user.selectOptions(statusFilter, 'Completed');
+
+    const clearButton = await screen.findByRole('button', { name: 'Clear filters' });
+    await user.click(clearButton);
+
+    expect(search).toHaveValue('');
+    expect(statusFilter).toHaveValue('ALL');
+    expect(screen.queryByRole('button', { name: 'Clear filters' })).not.toBeInTheDocument();
   });
 });

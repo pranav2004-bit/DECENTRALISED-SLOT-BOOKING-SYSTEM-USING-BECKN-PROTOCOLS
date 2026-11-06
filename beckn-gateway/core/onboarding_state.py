@@ -39,6 +39,17 @@ def get_domain_status(domain: str) -> dict:
     return _load()["domains"].get(domain, dict(_DEFAULT_DOMAIN_ENTRY))
 
 
+def list_subscribed_domains() -> list[str]:
+    """Every domain this Gateway is currently `SUBSCRIBED` for, per its own local
+    record — the domain-agnostic source of truth `onboarding_rotate_keys` reads from
+    (2026-09-30 fix) instead of taking a single domain on the command line. Not every
+    domain ever `approve()`d — only ones that actually reached `SUBSCRIBED`, since
+    re-confirming an `AWAITING_APPROVAL`/`FAILED` domain with rotated keys isn't a real
+    rotation of anything live."""
+    state = _load()
+    return [domain for domain, entry in state["domains"].items() if entry["status"] == "SUBSCRIBED"]
+
+
 def approve(domain: str) -> dict:
     with _lock:
         state = _load()

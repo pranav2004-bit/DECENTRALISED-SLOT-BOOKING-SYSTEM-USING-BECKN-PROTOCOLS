@@ -17,6 +17,7 @@ import threading
 from decimal import Decimal, InvalidOperation
 
 import payment_gateway
+from alerting import send_alert
 from beckn_transaction import build_context, new_message_id
 from django.conf import settings
 from django.db import IntegrityError, transaction
@@ -118,7 +119,23 @@ def record_webhook_event(*, vendor: str, payload: bytes, headers: dict) -> None:
             return  # duplicate webhook delivery — expected, not an error
 
         if event.status in (PaymentTransaction.Status.SUCCEEDED, PaymentTransaction.Status.FAILED):
-            if txn.status != PaymentTransaction.Status.PENDING:
+            # Real gap found and fixed live 2026-11-05: a hosted Razorpay
+            # checkout lets the customer retry with a different method after
+            # one attempt fails, all within the same widget session and the
+            # same order — Razorpay sends a separate webhook per attempt, all
+            # correlated to this one row's own vendor_txn_id. A later genuine
+            # SUCCEEDED for a row that's currently FAILED is exactly that real,
+            # legitimate case (see PaymentTransaction._TRANSITIONS's own
+            # docstring for the live incident this closes) — the one edge let
+            # through past the general "already resolved" guard below. A
+            # SUCCEEDED row is still never touched by a later FAILED (or
+            # anything else): a genuine capture must never be downgraded by a
+            # stale/out-of-order/unrelated delivery.
+            is_recoverable_retry = (
+                txn.status == PaymentTransaction.Status.FAILED
+                and event.status == PaymentTransaction.Status.SUCCEEDED
+            )
+            if txn.status != PaymentTransaction.Status.PENDING and not is_recoverable_retry:
                 # Already resolved (by a prior webhook, or a direct charge()
                 # response) to something other than what this webhook claims —
                 # do not silently overwrite a terminal state from a stale/
@@ -195,6 +212,10 @@ def refund_if_paid(*, transaction_id: str) -> None:
             "left for manual reconciliation",
             transaction_id,
         )
+        send_alert(
+            "Refund failed — needs manual reconciliation",
+            transaction_id=transaction_id,
+        )
 
 
 def _refund_if_paid(*, transaction_id: str) -> None:
@@ -225,6 +246,11 @@ def _refund_if_paid(*, transaction_id: str) -> None:
             vendor,
             transaction_id,
         )
+        send_alert(
+            "Refund failed — no vendor adapter registered",
+            vendor=vendor,
+            transaction_id=transaction_id,
+        )
         return
 
     idempotency_key = f"refund:{transaction_id}:1"
@@ -240,6 +266,10 @@ def _refund_if_paid(*, transaction_id: str) -> None:
             "leaving SUCCEEDED status intact",
             transaction_id,
         )
+        send_alert(
+            "Refund call raised — SUCCEEDED status left intact, needs manual reconciliation",
+            transaction_id=transaction_id,
+        )
         return
 
     if result.status == payment_gateway.PaymentStatus.REFUNDED:
@@ -252,6 +282,11 @@ def _refund_if_paid(*, transaction_id: str) -> None:
             "SUCCEEDED status intact for manual reconciliation",
             transaction_id,
             result.status.value,
+        )
+        send_alert(
+            "Refund call returned an unexpected status — needs manual reconciliation",
+            transaction_id=transaction_id,
+            vendor_status=result.status.value,
         )
         return
 
@@ -510,10 +545,18 @@ def _notify_bpp_of_payment_status(*, transaction_id: str, status: str) -> None:
                 "notification for transaction_id=%r",
                 transaction_id,
             )
+            send_alert(
+                "BPP NACKed a payment-status notification",
+                transaction_id=transaction_id,
+            )
     except Exception:
         logger.exception(
             "_notify_bpp_of_payment_status: failed to notify BPP for transaction_id=%r",
             transaction_id,
+        )
+        send_alert(
+            "Failed to notify BPP of payment status",
+            transaction_id=transaction_id,
         )
 
 

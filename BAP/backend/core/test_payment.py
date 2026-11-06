@@ -493,6 +493,103 @@ def test_record_webhook_event_ignores_a_stale_webhook_against_a_resolved_transac
     assert txn.status == PaymentTransaction.Status.SUCCEEDED
 
 
+def test_record_webhook_event_recovers_a_failed_transaction_when_a_retry_genuinely_succeeds(
+    confirmed_session,
+):
+    """Real gap found and fixed live 2026-11-05: inside Razorpay's own hosted
+    checkout widget, a customer can retry with a different method after one
+    attempt fails — all within the same order, never leaving the widget.
+    Razorpay sends a separate webhook per attempt, both correlated to this
+    one row's own vendor_txn_id. Live incident this closes: a card decline's
+    FAILED webhook landed first; the real payment.captured webhook for the
+    customer's successful netbanking retry was then silently discarded —
+    Razorpay's own widget showed "Payment Successful" while this app kept
+    showing "declined" forever. A later genuine SUCCEEDED for a currently-
+    FAILED row must now actually update it."""
+    payment_gateway.register_adapter(
+        "razorpay", _FakeAdapter(outcome=payment_gateway.PaymentStatus.PENDING)
+    )
+    initiate_payment(transaction_id="txn-pay-1")
+    txn = PaymentTransaction.objects.get(transaction_id_text="txn-pay-1")
+
+    headers = {"X-Fake-Signature": "valid"}
+    payment_service.record_webhook_event(
+        vendor="razorpay",
+        payload=_webhook_payload(txn.vendor_txn_id, "FAILED"),
+        headers=headers,
+    )
+    txn.refresh_from_db()
+    assert txn.status == PaymentTransaction.Status.FAILED
+
+    payment_service.record_webhook_event(
+        vendor="razorpay",
+        payload=_webhook_payload(txn.vendor_txn_id, "SUCCEEDED"),
+        headers=headers,
+    )
+    txn.refresh_from_db()
+    assert txn.status == PaymentTransaction.Status.SUCCEEDED
+    assert txn.succeeded_at is not None
+    # The earlier failure stays on record — a true, honest audit trail of this
+    # row's real history, not something the recovery should erase.
+    assert txn.failed_at is not None
+
+
+@patch("core.realtime.broadcast_payment_status_changed")
+def test_record_webhook_event_broadcasts_and_notifies_bpp_on_a_recovered_success(
+    mock_broadcast, confirmed_session
+):
+    """The recovery must drive the exact same real, already-proven side
+    effects an ordinary first-time success does — the customer's own browser
+    (parked on "declined") only ever finds out via this broadcast, and BPP
+    must still learn the booking is genuinely paid for."""
+    payment_gateway.register_adapter(
+        "razorpay", _FakeAdapter(outcome=payment_gateway.PaymentStatus.PENDING)
+    )
+    initiate_payment(transaction_id="txn-pay-1")
+    txn = PaymentTransaction.objects.get(transaction_id_text="txn-pay-1")
+    headers = {"X-Fake-Signature": "valid"}
+    payment_service.record_webhook_event(
+        vendor="razorpay", payload=_webhook_payload(txn.vendor_txn_id, "FAILED"), headers=headers
+    )
+    mock_broadcast.reset_mock()
+
+    with patch("core.payment_service.notify_bpp_of_payment_status_in_background") as mock_notify:
+        payment_service.record_webhook_event(
+            vendor="razorpay",
+            payload=_webhook_payload(txn.vendor_txn_id, "SUCCEEDED"),
+            headers=headers,
+        )
+
+    mock_broadcast.assert_called_once_with(transaction_id="txn-pay-1", status="SUCCEEDED")
+    mock_notify.assert_called_once_with(transaction_id="txn-pay-1", status="SUCCEEDED")
+
+
+def test_record_webhook_event_never_downgrades_a_genuinely_succeeded_transaction(
+    confirmed_session,
+):
+    """The one direction this fix deliberately does NOT open — a real capture
+    must never be undone by a later, stray, or out-of-order FAILED delivery
+    (e.g. an unrelated second attempt's own decline after the first already
+    succeeded). Asymmetric by design: only FAILED -> SUCCEEDED recovers,
+    never the reverse."""
+    payment_gateway.register_adapter(
+        "razorpay", _FakeAdapter(outcome=payment_gateway.PaymentStatus.PENDING)
+    )
+    initiate_payment(transaction_id="txn-pay-1")
+    txn = PaymentTransaction.objects.get(transaction_id_text="txn-pay-1")
+    headers = {"X-Fake-Signature": "valid"}
+    payment_service.record_webhook_event(
+        vendor="razorpay", payload=_webhook_payload(txn.vendor_txn_id, "SUCCEEDED"), headers=headers
+    )
+
+    payment_service.record_webhook_event(
+        vendor="razorpay", payload=_webhook_payload(txn.vendor_txn_id, "FAILED"), headers=headers
+    )
+
+    txn.refresh_from_db()
+    assert txn.status == PaymentTransaction.Status.SUCCEEDED
+
+
 def test_razorpay_webhook_view_rejects_an_invalid_signature(client, confirmed_session):
     payment_gateway.register_adapter("razorpay", _FakeAdapter())
     response = client.post(

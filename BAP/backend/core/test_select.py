@@ -6,16 +6,19 @@ forwarding Gateway).
 """
 
 import json
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
 import responses
+from django.conf import settings
 from django.test import Client
 from django.urls import reverse
+from django.utils import timezone
 
 from core import select_service
 from core.crypto import generate_signing_key_pair, sign_outbound_request
-from core.models import SearchSession
+from core.models import PaymentTransaction, SearchSession
 
 
 @pytest.fixture
@@ -410,6 +413,7 @@ def test_trigger_select_rejects_a_new_hold_once_the_concurrent_cap_is_reached(
         other = _session_with_result(transaction_id=f"other-txn-{i}")
         other.client_ip = same_ip
         other.selected_order = {"provider": {"id": "biz-1"}, "items": [{"id": "item-1"}]}
+        other.selected_order_at = timezone.now()
         other.save()
 
     under_test = _session_with_result(transaction_id="txn-under-test")
@@ -426,17 +430,87 @@ def test_trigger_select_rejects_a_new_hold_once_the_concurrent_cap_is_reached(
 
 
 @pytest.mark.django_db
-def test_trigger_select_does_not_count_already_confirmed_or_cancelled_transactions(
+def test_trigger_select_does_not_count_holds_whose_ttl_has_genuinely_elapsed(
     bap_identity_settings,
 ):
-    """A transaction that already reached a terminal state (confirmed or
-    cancelled) is a real past booking, not an outstanding hold — must not count
-    toward the cap."""
+    """Real gap found and closed live 2026-11-05: the cap had no time bound at
+    all — a `selected_order` counted forever, even long after the real BPP-side
+    hold's own TTL (`HOLD_SECONDS`) had elapsed, permanently using up a
+    customer's cap for slots long since released back to everyone else. A hold
+    recorded well past `HOLD_SECONDS` + the margin ago must not count — this is
+    what actually unblocks a real customer's later, genuinely-new selection."""
+    same_ip = "203.0.113.7"
+    long_ago = timezone.now() - timedelta(seconds=select_service.HOLD_SECONDS + 3600)
+    for i in range(select_service.MAX_CONCURRENT_HOLDS):
+        other = _session_with_result(transaction_id=f"other-txn-{i}")
+        other.client_ip = same_ip
+        other.selected_order = {"provider": {"id": "biz-1"}, "items": [{"id": "item-1"}]}
+        other.selected_order_at = long_ago
+        other.save()
+
+    under_test = _session_with_result(transaction_id="txn-under-test")
+    under_test.client_ip = same_ip
+    under_test.save()
+
+    captured_requests = []
+
+    def bpp_select_callback(request):
+        captured_requests.append(request)
+        body = json.loads(request.body)
+        return (
+            200,
+            {},
+            json.dumps({"context": body["context"], "message": {"ack": {"status": "ACK"}}}),
+        )
+
+    with responses.RequestsMock() as rsps:
+        _mock_bpp_registry_lookup(rsps)
+        rsps.add_callback(
+            responses.POST, "https://bpp.example.com/select", callback=bpp_select_callback
+        )
+        select_service.trigger_select(
+            transaction_id="txn-under-test",
+            item_id="item-1",
+            requested_timestamp="2026-08-01T10:00:00+00:00",
+        )
+
+    assert len(captured_requests) == 1
+
+
+@pytest.mark.django_db
+def test_trigger_select_does_not_count_a_hold_with_no_recorded_timestamp(
+    bap_identity_settings,
+):
+    """A `selected_order` from before this field existed (`selected_order_at`
+    left `NULL` by the migration backfill) must not be treated as indefinitely
+    active either — same real-world effect as a genuinely stale hold, and the
+    safer default than silently capping against unknown age."""
     same_ip = "203.0.113.7"
     for i in range(select_service.MAX_CONCURRENT_HOLDS):
         other = _session_with_result(transaction_id=f"other-txn-{i}")
         other.client_ip = same_ip
         other.selected_order = {"provider": {"id": "biz-1"}, "items": [{"id": "item-1"}]}
+        other.save()  # selected_order_at deliberately left unset (None)
+
+    under_test = _session_with_result(transaction_id="txn-under-test")
+    assert select_service._count_in_flight_holds(session=under_test) == 0
+
+
+@pytest.mark.django_db
+def test_trigger_select_does_not_count_a_confirmed_transaction_with_no_recorded_confirm_time(
+    bap_identity_settings,
+):
+    """Edge case distinct from the `confirmed_order_at`-aware tests below: a
+    confirmed session with no `confirmed_order_at` recorded at all (predates
+    that field, or was never captured for some other reason) must not be
+    treated as indefinitely "still within the payment window" — same
+    fail-safe default as `selected_order_at`'s own identical edge case."""
+    same_ip = "203.0.113.7"
+    for i in range(select_service.MAX_CONCURRENT_HOLDS):
+        other = _session_with_result(transaction_id=f"other-txn-{i}")
+        other.client_ip = same_ip
+        other.selected_order = {"provider": {"id": "biz-1"}, "items": [{"id": "item-1"}]}
+        other.selected_order_at = timezone.now()
         other.confirmed_order = {"id": f"booking-{i}", "status": "ACTIVE"}
         other.save()
 
@@ -466,3 +540,86 @@ def test_trigger_select_does_not_count_already_confirmed_or_cancelled_transactio
             requested_timestamp="2026-08-01T10:00:00+00:00",
         )
     assert len(captured_requests) == 1
+
+
+@pytest.mark.django_db
+def test_trigger_select_rejects_a_new_hold_once_unpaid_confirmed_bookings_fill_the_cap(
+    bap_identity_settings,
+):
+    """Real gap found and closed live 2026-11-05: `/confirm` permanently books a
+    slot before payment is ever attempted, and a confirmed session used to drop
+    out of this cap entirely — a single actor could repeat select -> confirm
+    without limit, locking unlimited slots without ever paying for any of them.
+    A confirmed-but-unpaid session, still within the real payment deadline, now
+    counts the same as an ordinary hold."""
+    same_ip = "203.0.113.7"
+    for i in range(select_service.MAX_CONCURRENT_HOLDS):
+        other = _session_with_result(transaction_id=f"other-txn-{i}")
+        other.client_ip = same_ip
+        other.selected_order = {"provider": {"id": "biz-1"}, "items": [{"id": "item-1"}]}
+        other.selected_order_at = timezone.now()
+        other.confirmed_order = {"id": f"booking-{i}", "status": "ACTIVE"}
+        other.confirmed_order_at = timezone.now()
+        other.save()
+
+    under_test = _session_with_result(transaction_id="txn-under-test")
+    under_test.client_ip = same_ip
+    under_test.save()
+
+    with pytest.raises(select_service.SelectError) as exc_info:
+        select_service.trigger_select(
+            transaction_id="txn-under-test",
+            item_id="item-1",
+            requested_timestamp="2026-08-01T10:00:00+00:00",
+        )
+    assert exc_info.value.status_code == 429
+
+
+@pytest.mark.django_db
+def test_trigger_select_does_not_count_an_unpaid_confirmed_booking_past_the_payment_deadline(
+    bap_identity_settings,
+):
+    """`confirmed_order_at` old enough that `reconciliation.
+    sweep_unpaid_confirmed_bookings` would already have released it (or will on
+    its next tick) — must not still occupy the cap in the meantime."""
+    same_ip = "203.0.113.7"
+    long_ago = timezone.now() - timedelta(seconds=settings.PAYMENT_COMPLETION_DEADLINE_SECONDS + 60)
+    for i in range(select_service.MAX_CONCURRENT_HOLDS):
+        other = _session_with_result(transaction_id=f"other-txn-{i}")
+        other.client_ip = same_ip
+        other.selected_order = {"provider": {"id": "biz-1"}, "items": [{"id": "item-1"}]}
+        other.confirmed_order = {"id": f"booking-{i}", "status": "ACTIVE"}
+        other.confirmed_order_at = long_ago
+        other.save()
+
+    under_test = _session_with_result(transaction_id="txn-under-test")
+    assert select_service._count_in_flight_holds(session=under_test) == 0
+
+
+@pytest.mark.django_db
+def test_trigger_select_does_not_count_a_confirmed_booking_that_was_genuinely_paid(
+    bap_identity_settings,
+):
+    """A `SUCCEEDED` payment makes this a real, legitimate booking, not an
+    abuse signal — must never count against the cap, no matter how recent."""
+    same_ip = "203.0.113.7"
+    for i in range(select_service.MAX_CONCURRENT_HOLDS):
+        other = _session_with_result(transaction_id=f"other-txn-{i}")
+        other.client_ip = same_ip
+        other.selected_order = {"provider": {"id": "biz-1"}, "items": [{"id": "item-1"}]}
+        other.confirmed_order = {"id": f"booking-{i}", "status": "ACTIVE"}
+        other.confirmed_order_at = timezone.now()
+        other.save()
+        PaymentTransaction.objects.create(
+            session=other,
+            transaction_id_text=other.transaction_id,
+            amount="500.00",
+            currency="INR",
+            vendor="razorpay",
+            vendor_txn_id=f"order_{i}",
+            idempotency_key=f"charge:{other.transaction_id}:1",
+            status=PaymentTransaction.Status.SUCCEEDED,
+        )
+
+    under_test = _session_with_result(transaction_id="txn-under-test")
+    assert select_service._count_in_flight_holds(session=under_test) == 0

@@ -1,4 +1,6 @@
+import datetime as dt
 import json
+import re
 
 import payment_gateway
 from django.contrib.auth import authenticate, get_user_model, login, logout, password_validation
@@ -8,12 +10,15 @@ from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 from django_observability.errors import error_response
 from django_observability.idempotency import idempotent_view
-from django_observability.rate_limit import rate_limit
+from django_observability.rate_limit import rate_limit, resolve_client_ip
+from postal_directory.models import Circle, Pincode
 
 from . import (
+    availability_service,
     booking_history_service,
     cancel_service,
     confirm_service,
+    geo_service,
     init_service,
     onboarding_service,
     pagination,
@@ -197,7 +202,6 @@ def bookings_list_view(request):
     return JsonResponse(result, status=200)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 @rate_limit(limit_per_minute=20, scope="search")
 def search_trigger_view(request):
@@ -214,8 +218,13 @@ def search_trigger_view(request):
 
     query = (payload.get("query") or "").strip()
     domain = (payload.get("domain") or "").strip()
-    if not query or not domain:
-        return error_response("VALIDATION_ERROR", "query and domain are required", 400)
+    division = (payload.get("division") or "").strip()
+    if not domain:
+        return error_response("VALIDATION_ERROR", "domain is required", 400)
+    # An empty query is a legitimate "browse everything" request (location-picker
+    # flow: pick a division, see its providers, no typed query needed) — BPP's own
+    # filter_catalog already treats a missing query_text this way; query is only
+    # required to be a string, not non-empty.
     # §3.7: reject oversized input before it reaches business logic / the DB.
     if len(query) > 500:
         return error_response("VALIDATION_ERROR", "query is too long (max 500)", 400, field="query")
@@ -223,14 +232,19 @@ def search_trigger_view(request):
         return error_response(
             "VALIDATION_ERROR", "domain is too long (max 100)", 400, field="domain"
         )
+    if len(division) > 255:
+        return error_response(
+            "VALIDATION_ERROR", "division is too long (max 255)", 400, field="division"
+        )
 
     customer = request.user if request.user.is_authenticated else None
     try:
         transaction_id = search_service.trigger_search(
             query=query,
             domain=domain,
+            division=division or None,
             customer=customer,
-            client_ip=request.META.get("REMOTE_ADDR"),
+            client_ip=resolve_client_ip(request),
         )
     except search_service.SearchError as exc:
         return error_response("SEARCH_UNAVAILABLE", exc.message, exc.status_code)
@@ -285,7 +299,6 @@ def on_search_view(request):
     return JsonResponse(response_body, status=status_code)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 @rate_limit(limit_per_minute=10, scope="select")
 def select_trigger_view(request):
@@ -308,6 +321,44 @@ def select_trigger_view(request):
             400,
         )
 
+    # Who this is actually for is optional *here* — this view now fires the
+    # instant a customer taps a time slot (BAP/web/app/search/page.tsx), well
+    # before they've filled in their own details; the real hold this creates
+    # is deliberately anonymous. Their identity becomes required at the one
+    # point it's actually known: confirm_trigger_view, the final step.
+    # Validated the same way when present (never trusted un-checked), just
+    # not required to be.
+    customer_name = (payload.get("customer_name") or "").strip() or None
+    customer_email = (payload.get("customer_email") or "").strip() or None
+    customer_phone = (payload.get("customer_phone") or "").strip() or None
+    if customer_name and len(customer_name) > 100:
+        return error_response("VALIDATION_ERROR", "customer_name is too long", 400, field="customer_name")
+    if customer_email and (len(customer_email) > 254 or "@" not in customer_email):
+        return error_response("VALIDATION_ERROR", "customer_email is invalid", 400, field="customer_email")
+    if customer_phone:
+        phone_digits = re.sub(r"[\s-]", "", customer_phone)
+        phone_digits = re.sub(r"^(\+91|91|0)", "", phone_digits)
+        if not re.fullmatch(r"[6-9]\d{9}", phone_digits):
+            return error_response("VALIDATION_ERROR", "customer_phone is invalid", 400, field="customer_phone")
+        customer_phone = phone_digits
+
+    # Project-defined, not a real protocol field (no such concept exists in
+    # the real Select schema) — a short-hold request for exactly this
+    # tap-to-reserve UX (§ "prevent a 2nd customer from selecting the same
+    # slot while the 1st is still filling in their details"). BAP has no
+    # reservation-hold concept of its own (BPP owns Slot/Booking, and its
+    # own select_service.dispatch_on_select does the real, authoritative
+    # clamp against *its* settings.RESERVATION_HOLD_TTL_SECONDS) — this is
+    # only a defense-in-depth sanity bound on this side, a flat ceiling well
+    # above what the frontend actually ever requests (HOLD_SECONDS = 180 in
+    # search/page.tsx), not a value that needs to track BPP's own config.
+    MAX_REQUESTABLE_HOLD_SECONDS = 300
+    try:
+        hold_seconds = int(payload.get("hold_seconds", 0))
+    except (TypeError, ValueError):
+        hold_seconds = 0
+    hold_seconds = max(10, min(hold_seconds, MAX_REQUESTABLE_HOLD_SECONDS)) if hold_seconds else None
+
     customer = request.user if request.user.is_authenticated else None
     try:
         select_service.trigger_select(
@@ -315,6 +366,10 @@ def select_trigger_view(request):
             item_id=item_id,
             requested_timestamp=requested_timestamp,
             customer=customer,
+            customer_name=customer_name,
+            customer_email=customer_email,
+            customer_phone=customer_phone,
+            hold_seconds=hold_seconds,
         )
     except select_service.SelectError as exc:
         return error_response("SELECT_UNAVAILABLE", exc.message, exc.status_code)
@@ -339,6 +394,88 @@ def select_result_view(request, transaction_id):
     return JsonResponse(result, status=200)
 
 
+@require_http_methods(["POST"])
+@rate_limit(limit_per_minute=30, scope="check-availability")
+def check_availability_view(request, transaction_id):
+    """Customer-facing availability-by-date check for the search-results UI (a
+    doctor's/stylist's/mechanic's card only renders once this confirms they have a
+    real open slot on the selected date). Synchronous, not trigger+poll like select —
+    see availability_service.py's own module docstring for why a read with no side
+    effects doesn't need the async gap select/init/confirm need."""
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    provider_id = (payload.get("provider_id") or "").strip()
+    resource_ids = payload.get("resource_ids")
+    date = (payload.get("date") or "").strip()
+    if not provider_id or not date or not isinstance(resource_ids, list) or not resource_ids:
+        return error_response(
+            "VALIDATION_ERROR",
+            "provider_id, a non-empty resource_ids list, and date are required",
+            400,
+        )
+    if not all(isinstance(rid, str) for rid in resource_ids):
+        return error_response("VALIDATION_ERROR", "resource_ids must be strings", 400)
+    try:
+        dt.date.fromisoformat(date)
+    except ValueError:
+        return error_response("VALIDATION_ERROR", f"Invalid date {date!r} — expected YYYY-MM-DD", 400)
+
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        availability = availability_service.check_doctor_availability(
+            transaction_id=transaction_id,
+            provider_id=provider_id,
+            resource_ids=resource_ids,
+            date=date,
+            customer=customer,
+        )
+    except availability_service.AvailabilityError as exc:
+        return error_response("AVAILABILITY_UNAVAILABLE", exc.message, exc.status_code)
+
+    return JsonResponse({"availability": availability}, status=200)
+
+
+@require_http_methods(["POST"])
+@rate_limit(limit_per_minute=30, scope="list-available-slots")
+def list_available_slots_view(request, transaction_id):
+    """Customer-facing real-slot-list for the booking page's time picker (so a
+    customer can only request a time that genuinely exists) — see
+    availability_service.py's own list_doctor_slots docstring."""
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error_response("VALIDATION_ERROR", "Request body is not valid JSON", 400)
+
+    provider_id = (payload.get("provider_id") or "").strip()
+    resource_id = (payload.get("resource_id") or "").strip()
+    date = (payload.get("date") or "").strip()
+    if not provider_id or not resource_id or not date:
+        return error_response(
+            "VALIDATION_ERROR", "provider_id, resource_id, and date are required", 400
+        )
+    try:
+        dt.date.fromisoformat(date)
+    except ValueError:
+        return error_response("VALIDATION_ERROR", f"Invalid date {date!r} — expected YYYY-MM-DD", 400)
+
+    customer = request.user if request.user.is_authenticated else None
+    try:
+        slots = availability_service.list_doctor_slots(
+            transaction_id=transaction_id,
+            provider_id=provider_id,
+            resource_id=resource_id,
+            date=date,
+            customer=customer,
+        )
+    except availability_service.AvailabilityError as exc:
+        return error_response("AVAILABILITY_UNAVAILABLE", exc.message, exc.status_code)
+
+    return JsonResponse({"slots": slots}, status=200)
+
+
 @csrf_exempt
 @require_http_methods(["POST"])
 def on_select_view(request):
@@ -361,7 +498,6 @@ def on_select_view(request):
     return JsonResponse(response_body, status=status_code)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 @rate_limit(limit_per_minute=10, scope="init")
 def init_trigger_view(request):
@@ -425,7 +561,6 @@ def on_init_view(request):
     return JsonResponse(response_body, status=status_code)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 @rate_limit(limit_per_minute=10, scope="confirm")
 @idempotent_view()
@@ -435,6 +570,14 @@ def confirm_trigger_view(request):
     sends the real signed Beckn /confirm to Gateway, targeting the same BPP a prior
     successful /init already resolved to. No new fields needed from the customer —
     everything required already lives on the session from Initialization.
+
+    Real gap found and closed live 2026-11-05: deliberately NOT `@csrf_exempt`
+    (removed) — this permanently books real inventory and binds a real customer
+    identity to it, the same real-consequence reasoning `payment_trigger_view`'s
+    own docstring already applies to itself. A CSRF-exempt confirm let a
+    malicious page silently confirm a booking (with attacker-chosen contact
+    details) using a victim's own session, the instant it could guess/obtain a
+    `transaction_id`.
 
     `@idempotent_view()` (§3.6): a client sending a real `Idempotency-Key` header gets
     the exact same recorded response replayed on a retry, instead of a second real
@@ -450,9 +593,35 @@ def confirm_trigger_view(request):
     if not transaction_id:
         return error_response("VALIDATION_ERROR", "transaction_id is required", 400)
 
+    # The hold itself (select_trigger_view) is created anonymously, the moment
+    # a slot is first tapped — this is the real, final point a customer's own
+    # identity is required, same server-side-never-trust-the-client
+    # re-validation discipline as select_trigger_view's own comment.
+    customer_name = (payload.get("customer_name") or "").strip()
+    customer_email = (payload.get("customer_email") or "").strip()
+    customer_phone = (payload.get("customer_phone") or "").strip()
+    if not customer_name or not customer_email or not customer_phone:
+        return error_response(
+            "VALIDATION_ERROR", "customer_name, customer_email, and customer_phone are required", 400
+        )
+    if len(customer_name) > 100:
+        return error_response("VALIDATION_ERROR", "customer_name is too long", 400, field="customer_name")
+    if len(customer_email) > 254 or "@" not in customer_email:
+        return error_response("VALIDATION_ERROR", "customer_email is invalid", 400, field="customer_email")
+    phone_digits = re.sub(r"[\s-]", "", customer_phone)
+    phone_digits = re.sub(r"^(\+91|91|0)", "", phone_digits)
+    if not re.fullmatch(r"[6-9]\d{9}", phone_digits):
+        return error_response("VALIDATION_ERROR", "customer_phone is invalid", 400, field="customer_phone")
+
     customer = request.user if request.user.is_authenticated else None
     try:
-        confirm_service.trigger_confirm(transaction_id=transaction_id, customer=customer)
+        confirm_service.trigger_confirm(
+            transaction_id=transaction_id,
+            customer=customer,
+            customer_name=customer_name,
+            customer_email=customer_email,
+            customer_phone=phone_digits,
+        )
     except confirm_service.ConfirmError as exc:
         return error_response("CONFIRM_UNAVAILABLE", exc.message, exc.status_code)
 
@@ -578,7 +747,6 @@ def razorpay_webhook_view(request):
     return JsonResponse({"status": "ok"}, status=200)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 @rate_limit(limit_per_minute=10, scope="status")
 def status_trigger_view(request):
@@ -640,7 +808,6 @@ def on_status_view(request):
     return JsonResponse(response_body, status=status_code)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 @rate_limit(limit_per_minute=10, scope="cancel")
 def cancel_trigger_view(request):
@@ -648,7 +815,12 @@ def cancel_trigger_view(request):
     NOT the Beckn wire shape. Sends the real signed Beckn /cancel to Gateway,
     targeting the same BPP this transaction was confirmed with.
     `cancellation_reason_id` is optional free-form text from the customer (no
-    real cancellation-reason catalog exists in this project)."""
+    real cancellation-reason catalog exists in this project).
+
+    Real gap found and closed live 2026-11-05: deliberately NOT `@csrf_exempt`
+    (removed) — a CSRF-exempt cancel let a malicious page silently cancel a
+    victim's own real, paid-for booking using their own session; same real-
+    consequence reasoning as `confirm_trigger_view`'s own fix."""
     try:
         payload = json.loads(request.body or b"{}")
     except json.JSONDecodeError:
@@ -711,14 +883,18 @@ def on_cancel_view(request):
     return JsonResponse(response_body, status=status_code)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 @rate_limit(limit_per_minute=10, scope="update")
 def update_trigger_view(request):
     """Customer-facing reschedule trigger (livetracker2.md §3.5) — deliberately
     NOT the Beckn wire shape. Sends the real signed Beckn /update to Gateway,
     targeting the same BPP this transaction was confirmed with, requesting the
-    booking be moved to `requested_timestamp`."""
+    booking be moved to `requested_timestamp`.
+
+    Real gap found and closed live 2026-11-05: deliberately NOT `@csrf_exempt`
+    (removed) — same real-consequence reasoning as `confirm_trigger_view`'s own
+    fix (a real booking's real time would otherwise be changeable by a
+    malicious page using the victim's own session)."""
     try:
         payload = json.loads(request.body or b"{}")
     except json.JSONDecodeError:
@@ -782,7 +958,6 @@ def on_update_view(request):
     return JsonResponse(response_body, status=status_code)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 @rate_limit(limit_per_minute=10, scope="track")
 def track_trigger_view(request):
@@ -845,7 +1020,6 @@ def on_track_view(request):
     return JsonResponse(response_body, status=status_code)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 @rate_limit(limit_per_minute=10, scope="rating")
 def rating_trigger_view(request):
@@ -926,7 +1100,6 @@ def on_rating_view(request):
     return JsonResponse(response_body, status=status_code)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 @rate_limit(limit_per_minute=10, scope="support")
 def support_trigger_view(request):
@@ -990,3 +1163,105 @@ def on_support_view(request):
     if status_code == 200:
         support_service.record_on_support_result(payload=payload)
     return JsonResponse(response_body, status=status_code)
+
+
+# Search page's State -> Division location picker — mirrors BPP/backend/core/views.py's
+# own ALL_INDIA_STATES (duplicated, not shared across the frontend/backend language
+# boundary, same convention as that file's own comment on this list).
+ALL_INDIA_STATES = (
+    "Andaman and Nicobar Islands",
+    "Andhra Pradesh",
+    "Arunachal Pradesh",
+    "Assam",
+    "Bihar",
+    "Chandigarh",
+    "Chhattisgarh",
+    "Dadra and Nagar Haveli and Daman and Diu",
+    "Delhi",
+    "Goa",
+    "Gujarat",
+    "Haryana",
+    "Himachal Pradesh",
+    "Jammu and Kashmir",
+    "Jharkhand",
+    "Karnataka",
+    "Kerala",
+    "Ladakh",
+    "Lakshadweep",
+    "Madhya Pradesh",
+    "Maharashtra",
+    "Manipur",
+    "Meghalaya",
+    "Mizoram",
+    "Nagaland",
+    "Odisha",
+    "Puducherry",
+    "Punjab",
+    "Rajasthan",
+    "Sikkim",
+    "Tamil Nadu",
+    "Telangana",
+    "Tripura",
+    "Uttar Pradesh",
+    "Uttarakhand",
+    "West Bengal",
+)
+
+
+@require_http_methods(["GET"])
+@rate_limit(limit_per_minute=30, scope="postal-directory-read")
+def postal_divisions_view(request):
+    """Real Divisions under one state's Circle, for the search page's location
+    picker — public (search itself doesn't require login, same reasoning as
+    search_trigger_view). An empty list for a state with no postal_directory data
+    seeded yet (currently only Andhra Pradesh) is a normal "coming soon" state, not
+    an error — same convention as BPP's own postal_divisions_view."""
+    state = (request.GET.get("state") or "").strip()
+    if state not in ALL_INDIA_STATES:
+        return error_response("VALIDATION_ERROR", "not a recognised state", 400, field="state")
+    circle = Circle.objects.filter(name=f"{state} Circle").first()
+    divisions = (
+        [{"id": d.id, "name": d.name} for d in circle.divisions.order_by("name")]
+        if circle
+        else []
+    )
+    return JsonResponse({"divisions": divisions}, status=200)
+
+
+@require_http_methods(["GET"])
+@rate_limit(limit_per_minute=30, scope="postal-directory-read")
+def postal_lookup_by_pincode_view(request):
+    """"Detect my location" step 2: given a real pincode (already resolved from the
+    browser's GPS coordinates by geo_reverse_view), returns its Division and State —
+    a plain postal_directory read, no external service. 404 for a pincode this
+    project's seeded data doesn't cover (most of India, currently — same honest
+    "not seeded yet" territory as postal_divisions_view's empty-list case, just a
+    404 here since there's no single state to show a "coming soon" message for)."""
+    pincode = (request.GET.get("pincode") or "").strip()
+    try:
+        division = Pincode.objects.select_related("division__circle").get(code=pincode).division
+    except Pincode.DoesNotExist:
+        return error_response("NOT_FOUND", "pincode not in our coverage yet", 404)
+    state = division.circle.name.removesuffix(" Circle")
+    return JsonResponse(
+        {"division": {"id": division.id, "name": division.name}, "state": state}, status=200
+    )
+
+
+@require_http_methods(["GET"])
+@rate_limit(limit_per_minute=15, scope="geo-reverse")
+def geo_reverse_view(request):
+    """"Detect my location" step 1: the browser's GPS coordinates, reverse-geocoded
+    to a pincode via geo_service (server-side — see that module's docstring for
+    why). Returns `{"pincode": null}` (200) when the location genuinely doesn't
+    resolve to one, not an error — only a real request failure is a 502."""
+    try:
+        lat = float(request.GET.get("lat", ""))
+        lon = float(request.GET.get("lon", ""))
+    except ValueError:
+        return error_response("VALIDATION_ERROR", "lat and lon must be real numbers", 400)
+    try:
+        pincode = geo_service.reverse_geocode_to_pincode(lat=lat, lon=lon)
+    except geo_service.GeocodingError as exc:
+        return error_response("GEOCODING_UNAVAILABLE", str(exc), 502)
+    return JsonResponse({"pincode": pincode}, status=200)

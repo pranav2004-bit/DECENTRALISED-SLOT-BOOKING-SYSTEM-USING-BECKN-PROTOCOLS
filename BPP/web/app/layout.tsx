@@ -1,8 +1,11 @@
 import type { CSSProperties } from 'react';
 import type { Metadata, Viewport } from 'next';
+import { Manrope } from 'next/font/google';
 import './globals.css';
 import { AppShell } from '@/components/shell/AppShell';
 import { PWARegister } from '@/components/shell/PWARegister';
+import { ToastProvider } from '@/components/ui/Toast';
+import { AccountProvider } from '@/lib/account-context';
 import { BRAND, BRAND_ID } from '@/lib/brand';
 
 // livetracker7.md Phase 4.2: real, designer-delivered per-brand icon set, replacing
@@ -12,7 +15,7 @@ import { BRAND, BRAND_ID } from '@/lib/brand';
 const ICON_DIR = `/icons/${BRAND_ID}`;
 
 export const metadata: Metadata = {
-  title: `${BRAND.name} — Provider App`,
+  title: BRAND.name,
   description: 'Decentralized slot booking — Beckn Provider Platform',
   icons: {
     icon: [
@@ -46,16 +49,34 @@ const brandStyle = {
   '--brand-700': BRAND.colors[700],
 } as CSSProperties;
 
+// Deliberate wordmark typeface, reserved for the brand's own "display" moments —
+// the AppShell header title, and large standalone numbers used as a visual device
+// elsewhere on the landing page (How it works' step numbers, Accuracy's stats).
+// Everything else (body text, headings, descriptions) intentionally stays on the
+// system-UI stack — this isn't the page's general type, just the one consistent
+// face used wherever a big number or the logo itself needs to stand out.
+// Confident/trustworthy weight range for a healthcare-adjacent B2B brand, not the
+// generic default it was rendering in before.
+const titleFont = Manrope({ subsets: ['latin'], weight: ['700', '800'], variable: '--font-title' });
+
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="h-full antialiased" style={brandStyle}>
+    <html
+      lang="en"
+      className={`h-full antialiased ${titleFont.variable}`}
+      style={brandStyle}
+    >
       <body className="min-h-full flex flex-col bg-white text-neutral-900">
         <PWARegister />
-        <AppShell appName={BRAND.name}>{children}</AppShell>
+        <ToastProvider>
+          <AccountProvider>
+            <AppShell appName={BRAND.name}>{children}</AppShell>
+          </AccountProvider>
+        </ToastProvider>
       </body>
     </html>
   );

@@ -19,6 +19,21 @@ export interface BusinessAccount {
   assigned_resource_ids?: string[];
   /** livetracker3.md §7.1 — an owner's own resources, mirroring assigned_resource_ids' shape. */
   owned_resource_ids?: string[];
+  /** Profile page's Live/Offline toggle — NOT the same as account-active/login-gating;
+   * see BPP/backend/core/models.py's own field comment for why these are kept separate. */
+  is_accepting_bookings: boolean;
+  /** Profile page's public-facing fields — always a string (never null), empty when unset. */
+  description: string;
+  public_phone: string;
+  public_email: string;
+  address: string;
+  /** Profile page's cascading State -> Division -> Pincode picker — each '' when
+   * unset. See BPP/backend/core/models.py's own BusinessAccount field comments. */
+  state: string;
+  division: string;
+  pincode: string;
+  /** "Date of joining" — bounds how far back the Orders page's history browser goes. */
+  created_at: string;
 }
 
 function readCookie(name: string): string | null {
@@ -69,6 +84,45 @@ export async function logout(): Promise<void> {
   await apiFetch('/api/v1/auth/logout', {
     method: 'POST',
     headers: await csrfHeader(),
+  });
+}
+
+/** Profile page — partial update; only send the fields that actually changed. */
+export async function updateProfile(
+  changes: Partial<
+    Pick<
+      BusinessAccount,
+      | 'business_name'
+      | 'is_accepting_bookings'
+      | 'description'
+      | 'public_phone'
+      | 'public_email'
+      | 'address'
+      | 'state'
+      | 'division'
+      | 'pincode'
+    >
+  >
+): Promise<BusinessAccount> {
+  const resp = await apiFetch('/api/v1/auth/profile', {
+    method: 'POST',
+    headers: { ...JSON_HEADERS, ...(await csrfHeader()) },
+    body: JSON.stringify(changes),
+  });
+  return resp.json();
+}
+
+/** Profile page's Password section — the current session stays valid after this
+ * (the backend calls Django's update_session_auth_hash), so no re-login is needed
+ * anywhere else the same session cookie is already in use. */
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  await apiFetch('/api/v1/auth/password', {
+    method: 'POST',
+    headers: { ...JSON_HEADERS, ...(await csrfHeader()) },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
   });
 }
 

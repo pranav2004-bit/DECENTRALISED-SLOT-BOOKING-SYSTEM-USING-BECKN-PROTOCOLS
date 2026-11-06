@@ -8,8 +8,8 @@ mandatory, ACK returns without waiting on the actual catalog build/relay).
 
 import json
 import logging
-import threading
 
+from background_thread import run_in_background
 from beckn_transaction import (
     PayloadValidationError,
     build_ack_response,
@@ -21,7 +21,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from . import registry_client, trust
-from .catalog import filter_catalog
+from .catalog import filter_catalog, filter_catalog_by_division
 from .catalog_cache import get_cached_catalog
 from .crypto import sign_outbound_request
 from .domain_scope import DomainNotSupportedError, validate_domain_supported
@@ -99,18 +99,21 @@ def dispatch_on_search(*, payload: dict) -> None:
     read at all, so every search silently returned the entire domain catalog
     regardless of what was searched for. An empty/missing query still returns the
     full catalog unfiltered (defined "browse everything" behavior, not a regression).
-    `message.intent.category.descriptor.code`/`message.intent.fulfillment.type` are
-    not read here — BAP's `trigger_search()` never populates either field today, so
-    there's nothing real to filter on yet; only `item.descriptor.name` is wired."""
+
+    Also reads `message.intent.fulfillment.end.location.city.name` — the customer's
+    chosen postal Division (BAP search page's location picker) — and narrows further
+    via `filter_catalog_by_division()`. Same "browse everything" default when absent.
+    `message.intent.category.descriptor.code` is not read here — BAP's
+    `trigger_search()` never populates it today, so there's nothing real to filter
+    on yet."""
     context = payload["context"]
-    query_text = (
-        payload.get("message", {})
-        .get("intent", {})
-        .get("item", {})
-        .get("descriptor", {})
-        .get("name")
+    intent = payload.get("message", {}).get("intent", {})
+    query_text = intent.get("item", {}).get("descriptor", {}).get("name")
+    division = (
+        intent.get("fulfillment", {}).get("end", {}).get("location", {}).get("city", {}).get("name")
     )
     catalog = filter_catalog(get_cached_catalog(context["domain"]), query_text)
+    catalog = filter_catalog_by_division(catalog, division)
 
     on_search_context = build_context(
         domain=context["domain"],
@@ -154,5 +157,4 @@ def dispatch_on_search_in_background(*, payload: dict) -> None:
     """Fires dispatch_on_search on a daemon thread — the actual fire-and-forget entry
     point the view uses. Kept separate so tests can call dispatch_on_search directly
     and synchronously without racing a thread."""
-    thread = threading.Thread(target=dispatch_on_search, kwargs={"payload": payload}, daemon=True)
-    thread.start()
+    run_in_background(dispatch_on_search, {"payload": payload}, name="bpp-dispatch-on-search")

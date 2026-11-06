@@ -12,6 +12,7 @@ import responses
 from django.contrib.auth import get_user_model
 from django.test import Client
 from django.urls import reverse
+from django.utils import timezone
 
 from core import confirm_service
 from core.crypto import generate_signing_key_pair, sign_outbound_request
@@ -21,6 +22,16 @@ Customer = get_user_model()
 
 # Test fixture value, not a real credential.
 TEST_PASSWORD = "a-strong-passw0rd!"  # pragma: allowlist secret
+
+# confirm_trigger_view requires these since this phase's real-identity-at-confirm
+# change (views.py) — every /confirm POST below that expects a real dispatch (not
+# itself testing the missing-fields rejection) needs them merged into its payload,
+# or it 400s before ever reaching the registry/BPP mocks (caught live, 2026-11-04).
+_VALID_CUSTOMER_FIELDS = {
+    "customer_name": "Test Customer",
+    "customer_email": "test.customer@example.com",
+    "customer_phone": "9876543210",
+}
 
 
 @pytest.fixture
@@ -183,7 +194,7 @@ def test_trigger_confirm_targets_the_same_bpp_from_init_and_sends_a_real_signed_
         )
         resp = client.post(
             reverse("confirm-trigger"),
-            data=json.dumps({"transaction_id": "txn-1"}),
+            data=json.dumps({"transaction_id": "txn-1", **_VALID_CUSTOMER_FIELDS}),
             content_type="application/json",
         )
 
@@ -225,7 +236,7 @@ def test_trigger_confirm_rejects_when_bpp_no_longer_subscribed(bap_identity_sett
         )
         resp = client.post(
             reverse("confirm-trigger"),
-            data=json.dumps({"transaction_id": "txn-1"}),
+            data=json.dumps({"transaction_id": "txn-1", **_VALID_CUSTOMER_FIELDS}),
             content_type="application/json",
         )
 
@@ -261,7 +272,7 @@ def test_trigger_confirm_forwards_the_real_inbound_correlation_id_to_gateway(
         )
         resp = client.post(
             reverse("confirm-trigger"),
-            data=json.dumps({"transaction_id": "txn-1"}),
+            data=json.dumps({"transaction_id": "txn-1", **_VALID_CUSTOMER_FIELDS}),
             content_type="application/json",
             HTTP_X_CORRELATION_ID="corr-real-inbound-1",
         )
@@ -299,13 +310,13 @@ def test_trigger_confirm_is_idempotent_on_repeat_with_the_same_key(bap_identity_
         )
         first = client.post(
             reverse("confirm-trigger"),
-            data=json.dumps({"transaction_id": "txn-1"}),
+            data=json.dumps({"transaction_id": "txn-1", **_VALID_CUSTOMER_FIELDS}),
             content_type="application/json",
             HTTP_IDEMPOTENCY_KEY="retry-key-1",
         )
         second = client.post(
             reverse("confirm-trigger"),
-            data=json.dumps({"transaction_id": "txn-1"}),
+            data=json.dumps({"transaction_id": "txn-1", **_VALID_CUSTOMER_FIELDS}),
             content_type="application/json",
             HTTP_IDEMPOTENCY_KEY="retry-key-1",
         )
@@ -345,12 +356,12 @@ def test_trigger_confirm_without_idempotency_key_is_not_deduplicated(
         )
         client.post(
             reverse("confirm-trigger"),
-            data=json.dumps({"transaction_id": "txn-1"}),
+            data=json.dumps({"transaction_id": "txn-1", **_VALID_CUSTOMER_FIELDS}),
             content_type="application/json",
         )
         client.post(
             reverse("confirm-trigger"),
-            data=json.dumps({"transaction_id": "txn-1"}),
+            data=json.dumps({"transaction_id": "txn-1", **_VALID_CUSTOMER_FIELDS}),
             content_type="application/json",
         )
 
@@ -380,7 +391,7 @@ def test_trigger_confirm_retryable_failure_is_not_cached_so_a_real_retry_can_suc
         _mock_bpp_registry_lookup(rsps)
         first = client.post(
             reverse("confirm-trigger"),
-            data=json.dumps({"transaction_id": "txn-1"}),
+            data=json.dumps({"transaction_id": "txn-1", **_VALID_CUSTOMER_FIELDS}),
             content_type="application/json",
             HTTP_IDEMPOTENCY_KEY="retry-key-2",
         )
@@ -405,7 +416,7 @@ def test_trigger_confirm_retryable_failure_is_not_cached_so_a_real_retry_can_suc
         )
         second = client.post(
             reverse("confirm-trigger"),
-            data=json.dumps({"transaction_id": "txn-1"}),
+            data=json.dumps({"transaction_id": "txn-1", **_VALID_CUSTOMER_FIELDS}),
             content_type="application/json",
             HTTP_IDEMPOTENCY_KEY="retry-key-2",
         )
@@ -437,6 +448,31 @@ def test_trigger_confirm_view_rejects_missing_fields(client):
         content_type="application/json",
     )
     assert resp.status_code == 400
+
+
+@pytest.mark.django_db
+def test_trigger_confirm_view_rejects_a_request_with_no_csrf_token():
+    """Real gap found and closed live 2026-11-05: this view permanently books
+    real inventory and binds a real customer identity to it — deliberately NOT
+    `@csrf_exempt` anymore, same real-consequence reasoning `payment_trigger_
+    view`'s own test already covers for itself. A request with no CSRF token
+    at all must be rejected by Django's own CsrfViewMiddleware, not silently
+    accepted (the project's own `client` fixture above doesn't enforce CSRF,
+    so this test builds one that genuinely does, matching test_payment.py's
+    own precedent)."""
+    _session_with_init(transaction_id="txn-1")
+    enforcing_client = Client(enforce_csrf_checks=True)
+
+    resp = enforcing_client.post(
+        reverse("confirm-trigger"),
+        data=json.dumps({"transaction_id": "txn-1", **_VALID_CUSTOMER_FIELDS}),
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 403
+    session = SearchSession.objects.get(transaction_id="txn-1")
+    assert session.confirmed_order is None
+    assert session.confirm_triggered_at is None
 
 
 @pytest.mark.django_db
@@ -595,6 +631,39 @@ def test_record_on_confirm_result_stores_the_real_confirmed_order():
     assert session.confirmed_order["status"] == "ACTIVE"
     assert session.confirmed_order["payments"] == [{"status": "NOT-PAID"}]
     assert session.confirmed_error is None
+
+
+@pytest.mark.django_db
+def test_record_on_confirm_result_stamps_confirmed_order_at_on_success():
+    """Real gap found and closed live 2026-11-05: `confirmed_order_at` is what
+    both `select_service._count_in_flight_holds` and `reconciliation.
+    sweep_unpaid_confirmed_bookings` rely on to know a booking's real age —
+    must be set at the exact moment a confirm genuinely succeeds."""
+    _session_with_init()
+    before = timezone.now()
+    payload = _build_on_confirm_payload()
+
+    confirm_service.record_on_confirm_result(payload=payload)
+
+    session = SearchSession.objects.get(transaction_id="txn-1")
+    assert session.confirmed_order_at is not None
+    assert session.confirmed_order_at >= before
+
+
+@pytest.mark.django_db
+def test_record_on_confirm_result_does_not_stamp_confirmed_order_at_on_an_error():
+    """Symmetric to the success case — an error is not a real confirmation,
+    so this timestamp (which marks "a slot was genuinely just booked") must
+    stay unset."""
+    _session_with_init()
+    payload = _build_on_confirm_payload(
+        error={"code": "SLOT_UNAVAILABLE", "message": "No matching booking for this order"}
+    )
+
+    confirm_service.record_on_confirm_result(payload=payload)
+
+    session = SearchSession.objects.get(transaction_id="txn-1")
+    assert session.confirmed_order_at is None
 
 
 @pytest.mark.django_db

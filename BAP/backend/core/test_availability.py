@@ -384,7 +384,10 @@ def test_slots_posts_a_real_signed_request_for_this_one_resource(bap_identity_se
                     "message": {
                         "ack": {"status": "ACK"},
                         "slots": [
-                            {"start_time": "2026-11-01T10:00:00+00:00", "end_time": "2026-11-01T10:30:00+00:00"}
+                            {
+                                "start_time": "2026-11-01T10:00:00+00:00",
+                                "end_time": "2026-11-01T10:30:00+00:00",
+                            }
                         ],
                     },
                 }

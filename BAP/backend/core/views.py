@@ -332,14 +332,20 @@ def select_trigger_view(request):
     customer_email = (payload.get("customer_email") or "").strip() or None
     customer_phone = (payload.get("customer_phone") or "").strip() or None
     if customer_name and len(customer_name) > 100:
-        return error_response("VALIDATION_ERROR", "customer_name is too long", 400, field="customer_name")
+        return error_response(
+            "VALIDATION_ERROR", "customer_name is too long", 400, field="customer_name"
+        )
     if customer_email and (len(customer_email) > 254 or "@" not in customer_email):
-        return error_response("VALIDATION_ERROR", "customer_email is invalid", 400, field="customer_email")
+        return error_response(
+            "VALIDATION_ERROR", "customer_email is invalid", 400, field="customer_email"
+        )
     if customer_phone:
         phone_digits = re.sub(r"[\s-]", "", customer_phone)
         phone_digits = re.sub(r"^(\+91|91|0)", "", phone_digits)
         if not re.fullmatch(r"[6-9]\d{9}", phone_digits):
-            return error_response("VALIDATION_ERROR", "customer_phone is invalid", 400, field="customer_phone")
+            return error_response(
+                "VALIDATION_ERROR", "customer_phone is invalid", 400, field="customer_phone"
+            )
         customer_phone = phone_digits
 
     # Project-defined, not a real protocol field (no such concept exists in
@@ -357,7 +363,9 @@ def select_trigger_view(request):
         hold_seconds = int(payload.get("hold_seconds", 0))
     except (TypeError, ValueError):
         hold_seconds = 0
-    hold_seconds = max(10, min(hold_seconds, MAX_REQUESTABLE_HOLD_SECONDS)) if hold_seconds else None
+    hold_seconds = (
+        max(10, min(hold_seconds, MAX_REQUESTABLE_HOLD_SECONDS)) if hold_seconds else None
+    )
 
     customer = request.user if request.user.is_authenticated else None
     try:
@@ -421,7 +429,9 @@ def check_availability_view(request, transaction_id):
     try:
         dt.date.fromisoformat(date)
     except ValueError:
-        return error_response("VALIDATION_ERROR", f"Invalid date {date!r} — expected YYYY-MM-DD", 400)
+        return error_response(
+            "VALIDATION_ERROR", f"Invalid date {date!r} — expected YYYY-MM-DD", 400
+        )
 
     customer = request.user if request.user.is_authenticated else None
     try:
@@ -459,7 +469,9 @@ def list_available_slots_view(request, transaction_id):
     try:
         dt.date.fromisoformat(date)
     except ValueError:
-        return error_response("VALIDATION_ERROR", f"Invalid date {date!r} — expected YYYY-MM-DD", 400)
+        return error_response(
+            "VALIDATION_ERROR", f"Invalid date {date!r} — expected YYYY-MM-DD", 400
+        )
 
     customer = request.user if request.user.is_authenticated else None
     try:
@@ -602,16 +614,24 @@ def confirm_trigger_view(request):
     customer_phone = (payload.get("customer_phone") or "").strip()
     if not customer_name or not customer_email or not customer_phone:
         return error_response(
-            "VALIDATION_ERROR", "customer_name, customer_email, and customer_phone are required", 400
+            "VALIDATION_ERROR",
+            "customer_name, customer_email, and customer_phone are required",
+            400,
         )
     if len(customer_name) > 100:
-        return error_response("VALIDATION_ERROR", "customer_name is too long", 400, field="customer_name")
+        return error_response(
+            "VALIDATION_ERROR", "customer_name is too long", 400, field="customer_name"
+        )
     if len(customer_email) > 254 or "@" not in customer_email:
-        return error_response("VALIDATION_ERROR", "customer_email is invalid", 400, field="customer_email")
+        return error_response(
+            "VALIDATION_ERROR", "customer_email is invalid", 400, field="customer_email"
+        )
     phone_digits = re.sub(r"[\s-]", "", customer_phone)
     phone_digits = re.sub(r"^(\+91|91|0)", "", phone_digits)
     if not re.fullmatch(r"[6-9]\d{9}", phone_digits):
-        return error_response("VALIDATION_ERROR", "customer_phone is invalid", 400, field="customer_phone")
+        return error_response(
+            "VALIDATION_ERROR", "customer_phone is invalid", 400, field="customer_phone"
+        )
 
     customer = request.user if request.user.is_authenticated else None
     try:

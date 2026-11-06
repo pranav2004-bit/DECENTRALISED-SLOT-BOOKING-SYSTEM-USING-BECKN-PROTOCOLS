@@ -59,7 +59,13 @@ def _find_provider_bpp(session: SearchSession, provider_id: str) -> tuple[str, s
 
 
 def _check_one_batch(
-    *, session: SearchSession, transaction_id: str, bpp_id: str, bpp_uri: str, resource_ids: list[str], date: str
+    *,
+    session: SearchSession,
+    transaction_id: str,
+    bpp_id: str,
+    bpp_uri: str,
+    resource_ids: list[str],
+    date: str,
 ) -> dict[str, bool]:
     """One signed round trip for at most MAX_RESOURCE_IDS ids — see
     check_doctor_availability's own docstring for why a larger request is split
@@ -150,7 +156,9 @@ def check_doctor_availability(
     if not checked_ids:
         return {}
 
-    batches = [checked_ids[i : i + MAX_RESOURCE_IDS] for i in range(0, len(checked_ids), MAX_RESOURCE_IDS)]
+    batches = [
+        checked_ids[i : i + MAX_RESOURCE_IDS] for i in range(0, len(checked_ids), MAX_RESOURCE_IDS)
+    ]
 
     availability: dict[str, bool] = {}
     first_batch = _check_one_batch(

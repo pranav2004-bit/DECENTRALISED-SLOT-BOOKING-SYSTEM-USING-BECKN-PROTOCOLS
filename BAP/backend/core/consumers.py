@@ -105,6 +105,10 @@ class AvailabilityConsumer(AsyncWebsocketConsumer):
         `slot.held` with a far-future expiry."""
         await self.send(
             text_data=json.dumps(
-                {"type": "slot.confirmed", "item_id": event["item_id"], "start_time": event["start_time"]}
+                {
+                    "type": "slot.confirmed",
+                    "item_id": event["item_id"],
+                    "start_time": event["start_time"],
+                }
             )
         )

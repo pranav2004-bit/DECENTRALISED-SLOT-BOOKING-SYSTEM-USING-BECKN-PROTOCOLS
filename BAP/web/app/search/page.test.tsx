@@ -14,6 +14,19 @@ import * as bookingApi from '@/lib/booking-api';
 import * as postalApi from '@/lib/postal-api';
 import * as geoApi from '@/lib/geo-api';
 import type { SearchResultsResponse } from '@/lib/beckn-types';
+import { HeaderContentProvider } from '@/components/shell/HeaderContext';
+import { formatTime } from '@/lib/format';
+
+// search/page.tsx calls usePageHeader() (components/shell/HeaderContext.tsx),
+// which throws outside a HeaderContentProvider — AppShell provides this in the
+// real app; tests render SearchPage standalone, so they need the same wrapper.
+function renderSearchPage() {
+  return render(
+    <HeaderContentProvider>
+      <SearchPage />
+    </HeaderContentProvider>
+  );
+}
 
 // The State/Division pickers are a custom listbox (components/ui/Dropdown), not a
 // native <select> — opens on click, options are real DOM nodes with role="option".
@@ -24,6 +37,19 @@ async function chooseOption(
 ) {
   await user.click(screen.getByLabelText(label));
   await user.click(await screen.findByRole('option', { name: optionText }));
+}
+
+/** Browsing only starts once a division is actually picked (app/search/page.tsx's
+ * own "no division means nothing to show yet" gate) — every test that needs
+ * triggerSearch to actually fire drives the real picker first, the same way a
+ * customer would, rather than reaching into state directly. */
+async function pickLocation(
+  user: ReturnType<typeof userEvent.setup>,
+  divisionName = 'Visakhapatnam Division'
+) {
+  await chooseOption(user, 'State', 'Andhra Pradesh');
+  await waitFor(() => expect(screen.getByLabelText('Division')).not.toBeDisabled());
+  await chooseOption(user, 'Division', divisionName);
 }
 
 function catalogResult(): SearchResultsResponse {
@@ -60,57 +86,103 @@ function catalogResult(): SearchResultsResponse {
 describe('SearchPage', () => {
   beforeEach(() => {
     mockUseSearchParams.mockReturnValue(new URLSearchParams());
+    // Default, single-division fixture — enough for every test that just needs
+    // *a* location picked; tests exercising the picker itself override this.
+    vi.spyOn(postalApi, 'fetchDivisions').mockResolvedValue([
+      { id: 1, name: 'Visakhapatnam Division' },
+    ]);
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('browses automatically on load, with no typed query, and renders results with a link to the select screen', async () => {
+  it('shows a "pick a location" prompt and never browses before a division is chosen', async () => {
+    const trigger = vi.spyOn(bookingApi, 'triggerSearch').mockResolvedValue('tx-1');
+    renderSearchPage();
+
+    expect(await screen.findByText('Select a location')).toBeInTheDocument();
+    expect(trigger).not.toHaveBeenCalled();
+  });
+
+  it('browses with no typed query once a location is picked, drills into a provider, and reserves a slot with a link to the select screen', async () => {
+    const user = userEvent.setup({ delay: null });
     const trigger = vi.spyOn(bookingApi, 'triggerSearch').mockResolvedValue('tx-1');
     vi.spyOn(bookingApi, 'getSearchResults').mockResolvedValue(catalogResult());
-    render(<SearchPage />);
+    vi.spyOn(bookingApi, 'checkAvailability').mockResolvedValue({ 'item-1': true });
+    const slotStart = '2026-08-01T10:00:00+00:00';
+    vi.spyOn(bookingApi, 'listAvailableSlots').mockResolvedValue([
+      { start_time: slotStart, end_time: '2026-08-01T10:30:00+00:00', status: 'available' },
+    ]);
+    vi.spyOn(bookingApi, 'triggerSelect').mockResolvedValue(undefined);
+    vi.spyOn(bookingApi, 'getSelectResult').mockResolvedValue({
+      transaction_id: 'tx-1',
+      selected_error: null,
+      selected_order: { provider: { id: 'provider-1' }, items: [{ id: 'item-1' }], fulfillments: [] },
+    });
+    renderSearchPage();
+
+    await pickLocation(user);
 
     expect(await screen.findByRole('status')).toHaveTextContent('Finding providers');
-    expect(trigger).toHaveBeenCalledWith('', 'ONDC:SRV13', undefined);
+    expect(trigger).toHaveBeenCalledWith('', 'ONDC:SRV13', 'Visakhapatnam Division');
 
-    await waitFor(() => expect(screen.getByText('Haircut')).toBeInTheDocument());
-    expect(screen.getByText('Glow Salon')).toBeInTheDocument();
-    const link = screen.getByRole('link', { name: 'Choose a time' });
+    await waitFor(() => expect(screen.getByText('Glow Salon')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Glow Salon' }));
+    // Healthcare (this test's default domain) prepends "Dr." to item names —
+    // doctorDisplayName() in app/search/page.tsx.
+    await waitFor(() => expect(screen.getByText('Dr. Haircut')).toBeInTheDocument());
+
+    await user.click(await screen.findByRole('button', { name: formatTime(slotStart) }));
+    const link = await screen.findByRole('link', { name: 'Book this slot' });
     expect(link.getAttribute('href')).toContain('item_id=item-1');
     expect(link.getAttribute('href')).toContain('transaction_id=tx-1');
   });
 
-  it('shows an error state with retry when the initial browse trigger fails', async () => {
+  it('shows an error state with retry when the browse trigger fails', async () => {
+    const user = userEvent.setup({ delay: null });
     vi.spyOn(bookingApi, 'triggerSearch').mockRejectedValue(new Error('network down'));
-    render(<SearchPage />);
+    renderSearchPage();
+
+    await pickLocation(user);
 
     expect(await screen.findByText("Couldn't load providers")).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
 
-  it('shows a rated item\'s real average rating and count, and omits it for an unrated item', async () => {
+  it('shows a rated provider\'s real average rating and count, and omits it for an unrated provider', async () => {
+    const user = userEvent.setup({ delay: null });
     const result = catalogResult();
-    result.results[0].catalog.providers[0].items[0].rating = '4.33';
-    result.results[0].catalog.providers[0].items[0].rating_count = 3;
-    result.results[0].catalog.providers[0].items.push({
-      id: 'item-2',
-      descriptor: { name: 'Beard Trim' },
-      price: { currency: 'INR', value: '200.00' },
+    result.results[0].catalog.providers[0].rating = '4.33';
+    result.results[0].catalog.providers[0].rating_count = 3;
+    result.results[0].catalog.providers.push({
+      id: 'provider-2',
+      descriptor: { name: 'Urban Cuts' },
+      items: [
+        {
+          id: 'item-2',
+          descriptor: { name: 'Beard Trim' },
+          price: { currency: 'INR', value: '200.00' },
+        },
+      ],
     });
     vi.spyOn(bookingApi, 'triggerSearch').mockResolvedValue('tx-1');
     vi.spyOn(bookingApi, 'getSearchResults').mockResolvedValue(result);
-    render(<SearchPage />);
+    renderSearchPage();
 
-    await waitFor(() => expect(screen.getByText('Haircut')).toBeInTheDocument());
-    expect(screen.getByText('★ 4.33')).toBeInTheDocument();
-    expect(screen.getByText('(3 ratings)')).toBeInTheDocument();
+    await pickLocation(user);
 
-    const beardTrimItem = screen.getByText('Beard Trim').closest('li');
-    expect(beardTrimItem?.textContent).not.toContain('★');
+    await waitFor(() => expect(screen.getByText('Glow Salon')).toBeInTheDocument());
+    const glowSalonCard = screen.getByText('Glow Salon').closest('li');
+    expect(glowSalonCard?.textContent).toContain('★ 4.33');
+    expect(glowSalonCard?.textContent).toContain('(3 ratings)');
+
+    const urbanCutsCard = screen.getByText('Urban Cuts').closest('li');
+    expect(urbanCutsCard?.textContent).not.toContain('★');
   });
 
   it('shows an empty state once polling exhausts its attempts with no results', async () => {
+    const user = userEvent.setup({ delay: null });
     vi.spyOn(bookingApi, 'triggerSearch').mockResolvedValue('tx-empty');
     vi.spyOn(bookingApi, 'getSearchResults').mockResolvedValue({
       transaction_id: 'tx-empty',
@@ -119,7 +191,9 @@ describe('SearchPage', () => {
       next_cursor: null,
       results: [],
     });
-    render(<SearchPage />);
+    renderSearchPage();
+
+    await pickLocation(user);
 
     // 12 real attempts at a 1.5s interval — a genuine ~18s wall-clock wait,
     // not simulated, so this exercises the same maxAttempts cutoff a real
@@ -130,41 +204,59 @@ describe('SearchPage', () => {
   }, 25000);
 
   it('shows a retry-able error state when polling for results fails', async () => {
+    const user = userEvent.setup({ delay: null });
     vi.spyOn(bookingApi, 'triggerSearch').mockResolvedValue('tx-1');
     vi.spyOn(bookingApi, 'getSearchResults').mockRejectedValue(new Error('network down'));
-    render(<SearchPage />);
+    renderSearchPage();
+
+    await pickLocation(user);
 
     expect(await screen.findByText("Couldn't load results")).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
 
-  it('livetracker3.md §6.1: defaults the category to Healthcare and browses it on load', async () => {
+  it('livetracker3.md §6.1: defaults the category to Healthcare', async () => {
+    const user = userEvent.setup({ delay: null });
     const trigger = vi.spyOn(bookingApi, 'triggerSearch').mockResolvedValue('tx-1');
     vi.spyOn(bookingApi, 'getSearchResults').mockResolvedValue(catalogResult());
-    render(<SearchPage />);
+    renderSearchPage();
 
-    await waitFor(() => expect(trigger).toHaveBeenCalledWith('', 'ONDC:SRV13', undefined));
+    await pickLocation(user);
+
+    await waitFor(() =>
+      expect(trigger).toHaveBeenCalledWith('', 'ONDC:SRV13', 'Visakhapatnam Division')
+    );
   });
 
-  it('deep-links from the home page: a valid ?domain= browses that domain on load', async () => {
+  it('deep-links from the home page: a valid ?domain= browses that domain once a location is picked', async () => {
+    const user = userEvent.setup({ delay: null });
     const trigger = vi.spyOn(bookingApi, 'triggerSearch').mockResolvedValue('tx-1');
     vi.spyOn(bookingApi, 'getSearchResults').mockResolvedValue(catalogResult());
     mockUseSearchParams.mockReturnValue(new URLSearchParams({ domain: 'BECKN:AUTO01' }));
-    render(<SearchPage />);
+    renderSearchPage();
 
-    await waitFor(() => expect(trigger).toHaveBeenCalledWith('', 'BECKN:AUTO01', undefined));
+    await pickLocation(user);
+
+    await waitFor(() =>
+      expect(trigger).toHaveBeenCalledWith('', 'BECKN:AUTO01', 'Visakhapatnam Division')
+    );
   });
 
   it('an unrecognized ?domain= value is ignored, falling back to the first real domain', async () => {
+    const user = userEvent.setup({ delay: null });
     const trigger = vi.spyOn(bookingApi, 'triggerSearch').mockResolvedValue('tx-1');
     vi.spyOn(bookingApi, 'getSearchResults').mockResolvedValue(catalogResult());
     mockUseSearchParams.mockReturnValue(new URLSearchParams({ domain: 'NOT-A-REAL-DOMAIN' }));
-    render(<SearchPage />);
+    renderSearchPage();
 
-    await waitFor(() => expect(trigger).toHaveBeenCalledWith('', 'ONDC:SRV13', undefined));
+    await pickLocation(user);
+
+    await waitFor(() =>
+      expect(trigger).toHaveBeenCalledWith('', 'ONDC:SRV13', 'Visakhapatnam Division')
+    );
   });
 
-  it('BookMyShow-style location picker: choosing a state then a division re-browses with the division', async () => {
+  it('BookMyShow-style location picker: choosing a state then a division browses with the division', async () => {
     const user = userEvent.setup({ delay: null });
     const trigger = vi.spyOn(bookingApi, 'triggerSearch').mockResolvedValue('tx-1');
     vi.spyOn(bookingApi, 'getSearchResults').mockResolvedValue(catalogResult());
@@ -172,9 +264,9 @@ describe('SearchPage', () => {
       { id: 1, name: 'Visakhapatnam Division' },
       { id: 2, name: 'Vijayawada Division' },
     ]);
-    render(<SearchPage />);
+    renderSearchPage();
 
-    await waitFor(() => expect(trigger).toHaveBeenCalledWith('', 'ONDC:SRV13', undefined));
+    expect(trigger).not.toHaveBeenCalled();
 
     await chooseOption(user, 'State', 'Andhra Pradesh');
     await waitFor(() => expect(screen.getByLabelText('Division')).not.toBeDisabled());
@@ -198,9 +290,7 @@ describe('SearchPage', () => {
       { id: 1, name: 'Visakhapatnam Division' },
       { id: 2, name: 'Vijayawada Division' },
     ]);
-    render(<SearchPage />);
-
-    await waitFor(() => expect(trigger).toHaveBeenCalledWith('', 'ONDC:SRV13', undefined));
+    renderSearchPage();
 
     await user.click(screen.getByRole('button', { name: 'Detect my location' }));
 
@@ -219,7 +309,7 @@ describe('SearchPage', () => {
     vi.spyOn(bookingApi, 'getSearchResults').mockResolvedValue(catalogResult());
     vi.spyOn(geoApi, 'detectPincode').mockResolvedValue('999999');
     vi.spyOn(postalApi, 'lookupByPincode').mockResolvedValue(null);
-    render(<SearchPage />);
+    renderSearchPage();
 
     await user.click(screen.getByRole('button', { name: 'Detect my location' }));
 

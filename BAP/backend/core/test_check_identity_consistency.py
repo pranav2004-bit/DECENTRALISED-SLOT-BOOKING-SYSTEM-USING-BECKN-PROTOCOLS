@@ -44,7 +44,9 @@ def test_fails_loud_when_registrys_key_does_not_match_the_current_on_disk_key():
 
 @pytest.mark.django_db
 def test_fails_loud_when_a_subscribed_domain_has_no_registry_record_at_all():
-    OnboardingStatus.objects.create(domain="BECKN:AUTO01", status=OnboardingStatus.Status.SUBSCRIBED)
+    OnboardingStatus.objects.create(
+        domain="BECKN:AUTO01", status=OnboardingStatus.Status.SUBSCRIBED
+    )
     with patch("core.participant_keys.get_signing_keys", return_value=("current-pub-key", "priv")):
         with patch("core.registry_client.lookup", return_value=[]):
             with pytest.raises(CommandError, match="no Registry record found"):

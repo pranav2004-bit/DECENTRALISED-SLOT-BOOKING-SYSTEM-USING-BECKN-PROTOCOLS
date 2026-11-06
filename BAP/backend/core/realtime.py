@@ -21,7 +21,9 @@ def broadcast_payment_status_changed(*, transaction_id: str, status: str) -> Non
     )
 
 
-def broadcast_slot_held(*, provider_id: str, item_id: str, start_time: str, expires_at: str) -> None:
+def broadcast_slot_held(
+    *, provider_id: str, item_id: str, start_time: str, expires_at: str
+) -> None:
     """Fans a real "this slot just got held" signal out to every browser
     currently watching this provider's own search-results card
     (`core/consumers.py`'s `AvailabilityConsumer`) — fired from
@@ -52,7 +54,12 @@ def broadcast_slot_held(*, provider_id: str, item_id: str, start_time: str, expi
         return
     async_to_sync(layer.group_send)(
         f"provider-{provider_id}-availability",
-        {"type": "slot.held", "item_id": item_id, "start_time": start_time, "expires_at": expires_at},
+        {
+            "type": "slot.held",
+            "item_id": item_id,
+            "start_time": start_time,
+            "expires_at": expires_at,
+        },
     )
 
 

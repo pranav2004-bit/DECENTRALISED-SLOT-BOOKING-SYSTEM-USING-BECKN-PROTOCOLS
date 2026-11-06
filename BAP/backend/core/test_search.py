@@ -253,7 +253,9 @@ def test_trigger_search_with_no_query_browses_everything_in_the_chosen_division(
         )
         resp = client.post(
             reverse("search-trigger"),
-            data=json.dumps({"query": "", "domain": "ONDC:RET13", "division": "Visakhapatnam Division"}),
+            data=json.dumps(
+                {"query": "", "domain": "ONDC:RET13", "division": "Visakhapatnam Division"}
+            ),
             content_type="application/json",
         )
 

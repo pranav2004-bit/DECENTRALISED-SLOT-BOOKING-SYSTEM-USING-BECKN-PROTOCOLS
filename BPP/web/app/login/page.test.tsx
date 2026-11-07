@@ -56,7 +56,7 @@ describe('LoginPage', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Log in' }));
 
     expect(loginSpy).toHaveBeenCalledWith('owner@example.com', 'Passw0rd!23');
-    expect(mockPush).toHaveBeenCalledWith('/resources');
+    expect(mockPush).toHaveBeenCalledWith('/dashboard');
   });
 
   it('shows the real API error and does not navigate on failure', async () => {

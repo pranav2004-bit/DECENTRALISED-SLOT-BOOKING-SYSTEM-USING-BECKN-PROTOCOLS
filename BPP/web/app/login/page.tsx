@@ -28,10 +28,7 @@ export default function LoginPage() {
     try {
       await login(contact.trim(), password);
       showToast('Logged in successfully');
-      // Not /dashboard — that's a placeholder now. /resources has its own
-      // owner-vs-staff redirect (mirroring what /dashboard used to do), so this is
-      // still correct for a staff login too, not just an owner one.
-      router.push('/resources');
+      router.push('/dashboard');
       router.refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not log in');

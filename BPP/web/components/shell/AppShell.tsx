@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import type { ReactNode } from 'react';
 import { RealtimeStatus } from './RealtimeStatus';
 import { AccountStatus } from './AccountStatus';
@@ -13,6 +13,7 @@ import { isAppInteriorPath } from '@/lib/route-scope';
 
 export function AppShell({ appName, children }: { appName: string; children: ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const isLanding = pathname === '/';
   // Login/signup pages show neither the landing nav+CTAs nor the authenticated
   // AccountStatus/RealtimeStatus block — a "Log in" link is redundant on the login
@@ -135,6 +136,7 @@ export function AppShell({ appName, children }: { appName: string; children: Rea
         <button
           type="button"
           aria-label="Chat"
+          onClick={() => router.push('/login')}
           className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--brand-600)] text-white shadow-xl shadow-[var(--brand-600)]/40 transition-all hover:-translate-y-0.5 hover:bg-[var(--brand-700)] hover:shadow-2xl hover:shadow-[var(--brand-600)]/50 focus:outline-none focus:ring-2 focus:ring-[var(--brand-600)] focus:ring-offset-2"
         >
           <svg

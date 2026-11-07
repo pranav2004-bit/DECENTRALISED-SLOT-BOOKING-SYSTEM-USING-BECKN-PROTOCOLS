@@ -41,9 +41,12 @@ def _signup_and_login(client, *, business_name="Glow Salon", contact="owner@exam
 
 
 def _create_resource(client, *, name="Stylist A"):
+    # "chair" (not "stylist") deliberately — see test_business_account.py's
+    # identical helper for why: the new required stylist profile fields would
+    # otherwise reject this file's many unrelated callers.
     return client.post(
         reverse("resource-create"),
-        data={"name": name, "domain_data": {"resource_type": "stylist"}},
+        data={"name": name, "domain_data": {"resource_type": "chair"}},
         content_type="application/json",
     )
 
@@ -845,7 +848,7 @@ def test_resource_can_be_tagged_with_own_location(client):
         reverse("resource-create"),
         data={
             "name": "Stylist A",
-            "domain_data": {"resource_type": "stylist"},
+            "domain_data": {"resource_type": "chair"},
             "location_id": location_id,
         },
         content_type="application/json",
@@ -869,7 +872,7 @@ def test_resource_create_rejects_a_foreign_location_id(client):
         reverse("resource-create"),
         data={
             "name": "Stylist A",
-            "domain_data": {"resource_type": "stylist"},
+            "domain_data": {"resource_type": "chair"},
             "location_id": foreign_location_id,
         },
         content_type="application/json",

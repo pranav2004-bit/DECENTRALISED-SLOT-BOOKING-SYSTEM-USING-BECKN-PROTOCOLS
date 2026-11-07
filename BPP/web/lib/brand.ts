@@ -40,6 +40,18 @@ export interface Brand {
    * Wellness' don't match verbatim). Used to lock signup's category picker to the
    * only domain this instance's backend can actually accept. */
   domainCode: string;
+  /** Dashboard/Orders pages are shared, byte-identical code across all 3 brands —
+   * "Doctor" was hardcoded there (CareNest-only, by historical accident), showing
+   * up verbatim for StyleNest/AutoCare too. These drive every visible occurrence
+   * instead. */
+  resourceNounSingular: string;
+  resourceNounPlural: string;
+  /** The landing page's own "How it works" steps (app/page.tsx's STEPS) are
+   * shared, byte-identical copy across all 3 brands — "patient"/"clinic" was
+   * hardcoded there too, same leak as resourceNounSingular above fixes for
+   * Dashboard/Orders. */
+  customerNoun: string;
+  businessNoun: string;
   heroHeadline: string;
   heroSubtext: string;
   heroBadge: string;
@@ -62,6 +74,10 @@ const BRANDS: Record<BrandId, Brand> = {
     tagline: 'Keep every chair glowing.',
     domainLabel: 'Beauty',
     domainCode: 'ONDC:RET13',
+    resourceNounSingular: 'Stylist',
+    resourceNounPlural: 'Stylists',
+    customerNoun: 'customer',
+    businessNoun: 'salon',
     heroHeadline: 'Never let a chair sit empty.',
     heroSubtext:
       "List your salon on an open booking network and get discovered by real customers - no cost to start, you're covered for six months.",
@@ -115,6 +131,10 @@ const BRANDS: Record<BrandId, Brand> = {
     tagline: 'Run your practice, without the chaos.',
     domainLabel: 'Healthcare',
     domainCode: 'ONDC:SRV13',
+    resourceNounSingular: 'Doctor',
+    resourceNounPlural: 'Doctors',
+    customerNoun: 'patient',
+    businessNoun: 'clinic',
     heroHeadline: 'Never miss a patient booking again.',
     heroSubtext:
       "List your clinic so patients can find and book you right away, at no cost for your first six months.",
@@ -175,6 +195,10 @@ const BRANDS: Record<BrandId, Brand> = {
     tagline: 'Keep every bay booked.',
     domainLabel: 'Automotive',
     domainCode: 'BECKN:AUTO01',
+    resourceNounSingular: 'Mechanic',
+    resourceNounPlural: 'Mechanics',
+    customerNoun: 'customer',
+    businessNoun: 'garage',
     heroHeadline: 'Never let a bay sit idle.',
     heroSubtext:
       "List your garage on an open booking network and get discovered by real customers - no cost to start, you're covered for six months.",

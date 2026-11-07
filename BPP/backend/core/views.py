@@ -578,18 +578,24 @@ def resource_create_view(request):
             )
         domain_data = {**domain_data, "location_id": str(location_id)}
 
-    # Doctors tab: every doctor gets a server-generated, owner-scoped, immutable
-    # "DOC-0001"-style id — never client-supplied (mirrors owner_ref above), and
-    # never editable afterwards (resource_update_view rejects it outright). The
-    # increment happens under a row lock on the owning account so two concurrent
-    # creates can't race to the same number.
-    if domain_data.get("resource_type") == "doctor":
+    # Doctors/Stylists tabs: every doctor or stylist gets a server-generated,
+    # owner-scoped, immutable "DOC-0001"/"STY-0001"-style id — never client-
+    # supplied (mirrors owner_ref above), and never editable afterwards
+    # (resource_update_view rejects it outright). The increment happens under a
+    # row lock on the owning account so two concurrent creates can't race to the
+    # same number. One shared counter field (next_doctor_sequence) backs both —
+    # a business account's domain_code is fixed, so it only ever creates one of
+    # the two resource_types, never both; a separate per-domain counter would be
+    # unused machinery, not a real collision risk this avoids.
+    _STAFF_ID_BY_RESOURCE_TYPE = {"doctor": ("doctor_id", "DOC"), "stylist": ("staff_id", "STY")}
+    if domain_data.get("resource_type") in _STAFF_ID_BY_RESOURCE_TYPE:
+        id_key, prefix = _STAFF_ID_BY_RESOURCE_TYPE[domain_data["resource_type"]]
         with transaction.atomic():
             account = get_user_model().objects.select_for_update().get(pk=request.user.pk)
             sequence = account.next_doctor_sequence
             account.next_doctor_sequence = sequence + 1
             account.save(update_fields=["next_doctor_sequence"])
-        domain_data = {**domain_data, "doctor_id": f"DOC-{sequence:04d}"}
+        domain_data = {**domain_data, id_key: f"{prefix}-{sequence:04d}"}
 
     resource = Resource.objects.create(
         owner_ref=str(request.user.id),
@@ -667,15 +673,14 @@ def resource_update_view(request, resource_id):
             return error_response(
                 "VALIDATION_ERROR", "domain_data must be an object", 400, field="domain_data"
             )
-        # Doctors tab: doctor_id is server-generated at creation and permanent —
-        # never accepted from a client here, regardless of what the frontend form
-        # sends, so a direct API call can't reassign it either.
-        if "doctor_id" in incoming and incoming["doctor_id"] != resource.domain_data.get(
-            "doctor_id"
-        ):
-            return error_response(
-                "VALIDATION_ERROR", "doctor_id cannot be changed", 400, field="doctor_id"
-            )
+        # Doctors/Stylists tabs: doctor_id/staff_id is server-generated at creation
+        # and permanent — never accepted from a client here, regardless of what the
+        # frontend form sends, so a direct API call can't reassign it either.
+        for id_key in ("doctor_id", "staff_id"):
+            if id_key in incoming and incoming[id_key] != resource.domain_data.get(id_key):
+                return error_response(
+                    "VALIDATION_ERROR", f"{id_key} cannot be changed", 400, field=id_key
+                )
         merged_domain_data = {**resource.domain_data, **incoming}
         adapter = get_adapter(request.user.domain_code)
         try:

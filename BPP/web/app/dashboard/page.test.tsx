@@ -94,14 +94,14 @@ describe('DashboardPage', () => {
     render(<DashboardPage />);
 
     await screen.findByText('Welcome back');
-    expect(getStatValue('Total doctors')).toBe('5');
+    expect(getStatValue('Total stylists')).toBe('5');
     expect(getStatValue('Available today')).toBe('3');
     expect(getStatValue('Not available today')).toBe('2');
     expect(getStatValue('Overall rating')).toBe('4.6 ★');
     expect(getStatValue('Pending payments')).toBe('3');
     expect(getStatValue('Cancellation rate')).toBe('8.3%');
     expect(getStatValue('Avg. booking value')).toBe('₹620');
-    expect(getStatValue('Top doctor (this month)')).toBe('Dr. Kavya - ₹45,000');
+    expect(getStatValue('Top stylist (this month)')).toBe('Dr. Kavya - ₹45,000');
     expect(screen.getByText('Dr. Kavya')).toBeInTheDocument();
     expect(screen.getByText('Gynecology & Obstetrics')).toBeInTheDocument();
     expect(screen.getByText('Dr. Mehta')).toBeInTheDocument();

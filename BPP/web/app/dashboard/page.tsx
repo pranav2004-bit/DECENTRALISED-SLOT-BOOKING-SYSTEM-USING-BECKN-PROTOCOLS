@@ -7,6 +7,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { me, type BusinessAccount } from '@/lib/auth-api';
 import { fetchDashboardStats, type DashboardStats, type DoctorPerformanceRow } from '@/lib/dashboard-api';
 import { formatAmount } from '@/lib/format';
+import { BRAND } from '@/lib/brand';
 
 /**
  * Dashboard home (2026-11-06) — the business owner's/staff's real at-a-glance
@@ -305,19 +306,19 @@ function DoctorPerformance({
   return (
     <section className="flex flex-col gap-3">
       <h2 className="text-xs font-bold uppercase tracking-wide text-neutral-500">
-        Doctor performance (this month)
+        {BRAND.resourceNounSingular} performance (this month)
       </h2>
       <div className="flex max-h-[181px] flex-col overflow-hidden rounded-xl border border-neutral-200 bg-white">
         {doctors.length === 0 ? (
           <p className="flex flex-1 items-center justify-center px-5 py-8 text-center text-sm text-neutral-500">
-            No doctors yet.
+            No {BRAND.resourceNounPlural.toLowerCase()} yet.
           </p>
         ) : (
           <div className="min-h-0 flex-1 overflow-auto">
             <table className="w-full min-w-[480px] border-collapse text-sm">
               <thead>
                 <tr className="sticky top-0 bg-neutral-50 text-left text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                  <th className="px-5 py-2">Doctor</th>
+                  <th className="px-5 py-2">{BRAND.resourceNounSingular}</th>
                   <th className="px-3 py-2">Specialisation</th>
                   {/* Numeric columns right-align, text columns left-align —
                       the same convention every real data table (Stripe's own
@@ -442,9 +443,11 @@ function DashboardContent({ account }: { account: BusinessAccount }) {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <section className="flex flex-col gap-3">
-          <h2 className="text-xs font-bold uppercase tracking-wide text-neutral-500">Doctors</h2>
+          <h2 className="text-xs font-bold uppercase tracking-wide text-neutral-500">
+            {BRAND.resourceNounPlural}
+          </h2>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <StatCard label="Total doctors" value={String(stats.total_doctors)} />
+            <StatCard label={`Total ${BRAND.resourceNounPlural.toLowerCase()}`} value={String(stats.total_doctors)} />
             <StatCard label="Available today" value={String(stats.doctors_available_today)} />
             <StatCard label="Not available today" value={String(stats.doctors_unavailable_today)} />
             <StatCard
@@ -493,7 +496,7 @@ function DashboardContent({ account }: { account: BusinessAccount }) {
               value={stats.cancellation_rate ? `${stats.cancellation_rate}%` : '-'}
             />
             <StatCard
-              label="Top doctor (this month)"
+              label={`Top ${BRAND.resourceNounSingular.toLowerCase()} (this month)`}
               value={
                 stats.top_doctor
                   ? `${stats.top_doctor.name} - ${formatAmount(stats.top_doctor.revenue, stats.currency)}`

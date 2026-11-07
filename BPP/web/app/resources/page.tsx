@@ -37,6 +37,7 @@ import { BRAND } from '@/lib/brand';
  */
 
 const IS_HEALTHCARE = BRAND.id === 'medical';
+const IS_BEAUTY = BRAND.id === 'beauty';
 
 // ============================================================================
 // Generic (Beauty/Automotive) view — unchanged from before the Doctors rework.
@@ -407,6 +408,25 @@ const SPECIALISATIONS = [
   'Emergency Medicine',
 ];
 
+// Mirrored in BPP/backend/core/beauty_adapter.py's own SPECIALISATIONS
+// constant — same fixed-list convention as Healthcare's SPECIALISATIONS above.
+const BEAUTY_SERVICES = [
+  'Hair Styling',
+  'Hair Cutting',
+  'Hair Coloring',
+  'Hair Spa & Treatment',
+  'Bridal Makeup',
+  'Party Makeup',
+  'Facial & Skin Care',
+  'Manicure',
+  'Pedicure',
+  'Waxing',
+  'Threading',
+  'Mehendi (Henna)',
+  'Massage & Spa',
+  'Nail Art',
+];
+
 interface Doctor {
   id: string;
   name: string;
@@ -418,6 +438,10 @@ interface Doctor {
   hasLiveAvailability: boolean;
   domain_data: {
     doctor_id?: string;
+    // Beauty's equivalent of doctor_id (StaffTableView/AddStylistForm below)
+    // — same type reused for both rather than a separate near-identical
+    // interface, since the field shapes already line up one-for-one.
+    staff_id?: string;
     specialisation?: string;
     education?: string;
     years_of_experience?: number;
@@ -708,9 +732,13 @@ function SlotDayGrid({
 function AvailabilityModal({
   doctor,
   onClose,
+  customerNoun = 'patient',
 }: {
   doctor: Doctor;
   onClose: () => void;
+  /** Reused as-is for Beauty's stylists (StylistsView below) — only this one
+   * word in the preview copy differs between the two. */
+  customerNoun?: string;
 }) {
   const { showToast } = useToast();
   // Date and time kept as separate inputs (not one combined datetime-local
@@ -1299,7 +1327,7 @@ function AvailabilityModal({
         {showPreview && (
           <div className="flex flex-col gap-3 rounded-lg border border-neutral-200 bg-neutral-50 p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-              Preview — what a patient sees
+              Preview — what a {customerNoun} sees
             </p>
             {!preview ? (
               <p className="text-sm text-neutral-600">
@@ -1902,6 +1930,626 @@ function DoctorsView({ account }: { account: BusinessAccount }) {
 }
 
 // ============================================================================
+// Beauty — the "Stylists" table. Mirrors the Doctors table above structurally
+// (same AvailabilityModal/DoctorStatusToggle/SlotDayGrid/slot helpers, reused
+// as-is) but with its own copy and fields: a service specialisation from
+// BEAUTY_SERVICES instead of a medical one, no "education" (no real salon-
+// credential equivalent to a medical degree), id key "staff_id" instead of
+// "doctor_id". Kept as its own set of components rather than parameterizing
+// AddDoctorForm/EditDoctorModal/DoctorRow/DoctorsView in place — those stay
+// completely untouched so CareNest's own behavior can't regress from this.
+// ============================================================================
+
+function AddStylistForm({
+  onCreated,
+  onCancel,
+}: {
+  onCreated: (stylist: Doctor) => void;
+  onCancel: () => void;
+}) {
+  const { showToast } = useToast();
+  const [name, setName] = useState('');
+  const [specialisation, setSpecialisation] = useState(BEAUTY_SERVICES[0]);
+  const [yearsOfExperience, setYearsOfExperience] = useState('');
+  const [gender, setGender] = useState('female');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canSubmit = name.trim() && specialisation && yearsOfExperience !== '';
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const stylist = await createResource(name.trim(), 'stylist', {
+        specialisation,
+        years_of_experience: Number(yearsOfExperience),
+        gender,
+      });
+      onCreated({
+        id: stylist.id,
+        name: stylist.name,
+        is_active: stylist.is_active,
+        hasLiveAvailability: false,
+        domain_data: stylist.domain_data,
+        price_currency: stylist.price_currency,
+        price_value: stylist.price_value,
+        created_at: stylist.created_at,
+      });
+      showToast('Stylist added successfully');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not add this stylist');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+      <FormField label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus required />
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="stylist-specialisation" className="text-sm font-medium text-neutral-900">
+          Service
+        </label>
+        <select
+          id="stylist-specialisation"
+          value={specialisation}
+          onChange={(e) => setSpecialisation(e.target.value)}
+          className="rounded-md border border-neutral-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900"
+        >
+          {BEAUTY_SERVICES.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </div>
+      <FormField
+        label="Years of experience"
+        type="number"
+        min={0}
+        max={80}
+        value={yearsOfExperience}
+        onChange={(e) => setYearsOfExperience(e.target.value)}
+        required
+      />
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="stylist-gender" className="text-sm font-medium text-neutral-900">
+          Gender
+        </label>
+        <select
+          id="stylist-gender"
+          value={gender}
+          onChange={(e) => setGender(e.target.value)}
+          className="rounded-md border border-neutral-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900"
+        >
+          {GENDER_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      {error && (
+        <p role="alert" className="text-sm text-red-600">
+          {error}
+        </p>
+      )}
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          disabled={submitting || !canSubmit}
+          className="cursor-pointer rounded-md bg-[var(--brand-600)] px-4 py-2 text-sm text-white hover:bg-[var(--brand-700)] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {submitting ? 'Adding…' : 'Add stylist'}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={submitting}
+          className="cursor-pointer rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function EditStylistModal({
+  stylist,
+  onClose,
+  onSaved,
+}: {
+  stylist: Doctor;
+  onClose: () => void;
+  onSaved: (stylist: Doctor) => void;
+}) {
+  const { showToast } = useToast();
+  const [name, setName] = useState(stylist.name);
+  const [specialisation, setSpecialisation] = useState(
+    stylist.domain_data.specialisation ?? BEAUTY_SERVICES[0]
+  );
+  const [yearsOfExperience, setYearsOfExperience] = useState(
+    String(stylist.domain_data.years_of_experience ?? '')
+  );
+  const [gender, setGender] = useState(stylist.domain_data.gender ?? 'female');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canSubmit = name.trim() && specialisation && yearsOfExperience !== '';
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const updated = await updateResource(stylist.id, {
+        name: capitalizeWords(name.trim()),
+        domain_data: {
+          specialisation,
+          years_of_experience: Number(yearsOfExperience),
+          gender,
+        },
+      });
+      showToast('Stylist updated successfully');
+      onSaved({
+        ...stylist,
+        id: updated.id,
+        name: updated.name,
+        is_active: updated.is_active,
+        domain_data: updated.domain_data as Doctor['domain_data'],
+      });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not update this stylist');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Modal title={`Edit ${stylist.name}`} onClose={onClose}>
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <FormField label="Name" value={name} onChange={(e) => setName(e.target.value)} required />
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="edit-stylist-specialisation" className="text-sm font-medium text-neutral-900">
+            Service
+          </label>
+          <select
+            id="edit-stylist-specialisation"
+            value={specialisation}
+            onChange={(e) => setSpecialisation(e.target.value)}
+            className="rounded-md border border-neutral-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900"
+          >
+            {BEAUTY_SERVICES.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </div>
+        <FormField
+          label="Years of experience"
+          type="number"
+          min={0}
+          max={80}
+          value={yearsOfExperience}
+          onChange={(e) => setYearsOfExperience(e.target.value)}
+          required
+        />
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="edit-stylist-gender" className="text-sm font-medium text-neutral-900">
+            Gender
+          </label>
+          <select
+            id="edit-stylist-gender"
+            value={gender}
+            onChange={(e) => setGender(e.target.value)}
+            className="rounded-md border border-neutral-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900"
+          >
+            {GENDER_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        {error && (
+          <p role="alert" className="text-sm text-red-600">
+            {error}
+          </p>
+        )}
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            disabled={submitting || !canSubmit}
+            className="cursor-pointer rounded-md bg-[var(--brand-600)] px-4 py-2 text-sm text-white hover:bg-[var(--brand-700)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {submitting ? 'Saving…' : 'Save'}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="cursor-pointer rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function StylistRow({
+  stylist,
+  onOpenAvailability,
+  onOpenEdit,
+  onUpdated,
+  onDeleted,
+}: {
+  stylist: Doctor;
+  onOpenAvailability: (stylist: Doctor) => void;
+  onOpenEdit: (stylist: Doctor) => void;
+  onUpdated: (stylist: Doctor) => void;
+  onDeleted: (stylistId: string) => void;
+}) {
+  const { showToast } = useToast();
+  const [deleting, setDeleting] = useState(false);
+
+  async function handleDelete() {
+    if (!window.confirm(`Delete ${stylist.name}? This can't be undone.`)) return;
+    setDeleting(true);
+    try {
+      await deleteResource(stylist.id);
+      onDeleted(stylist.id);
+      showToast(`${stylist.name} deleted`);
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : 'Could not delete this stylist', 'error');
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <tr className={`border-t border-neutral-200 ${stylist.is_active ? '' : 'opacity-60'}`}>
+      <td className="px-4 py-3 text-sm font-mono text-neutral-600">
+        {stylist.domain_data.staff_id || '—'}
+      </td>
+      <td className="px-4 py-3 text-sm font-medium text-neutral-900">{stylist.name}</td>
+      <td className="px-4 py-3 text-sm text-neutral-700">
+        {stylist.domain_data.specialisation || '—'}
+      </td>
+      <td className="px-4 py-3 text-sm text-neutral-700">
+        {stylist.domain_data.years_of_experience !== undefined
+          ? `${stylist.domain_data.years_of_experience} yrs`
+          : '—'}
+      </td>
+      <td className="px-4 py-3 text-sm capitalize text-neutral-700">
+        {stylist.domain_data.gender || '—'}
+      </td>
+      <td className="px-4 py-3">
+        <Tooltip label={stylist.hasLiveAvailability ? 'Has open slots' : 'No open slots'}>
+          <button
+            type="button"
+            onClick={() => onOpenAvailability(stylist)}
+            className={`cursor-pointer rounded-md border px-3 py-1.5 text-sm font-medium text-white ${
+              stylist.hasLiveAvailability
+                ? 'border-green-600 bg-green-600 hover:bg-green-700'
+                : 'border-red-600 bg-red-600 hover:bg-red-700'
+            }`}
+          >
+            Availability
+          </button>
+        </Tooltip>
+      </td>
+      <td className="px-4 py-3">
+        <div className="flex items-center gap-3">
+          <Tooltip label="Edit">
+            <button
+              type="button"
+              onClick={() => onOpenEdit(stylist)}
+              aria-label={`Edit ${stylist.name}`}
+              className="cursor-pointer text-neutral-500 hover:text-neutral-900"
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+              </svg>
+            </button>
+          </Tooltip>
+          <DoctorStatusToggle doctor={stylist} onUpdated={onUpdated} />
+          <Tooltip label="Delete">
+            <button
+              type="button"
+              onClick={handleDelete}
+              disabled={deleting}
+              aria-label={`Delete ${stylist.name}`}
+              className="cursor-pointer text-red-500 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16Z" />
+              </svg>
+            </button>
+          </Tooltip>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function StylistsView({ account }: { account: BusinessAccount }) {
+  const [stylists, setStylists] = useState<Doctor[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [availabilityStylist, setAvailabilityStylist] = useState<Doctor | null>(null);
+  const [editStylist, setEditStylist] = useState<Doctor | null>(null);
+  const [addStylistOpen, setAddStylistOpen] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [genderFilter, setGenderFilter] = useState('all');
+  const [specialisationFilter, setSpecialisationFilter] = useState('all');
+  const [staffIdSearch, setStaffIdSearch] = useState('');
+
+  const ownedResourceIds = useMemo(
+    () => account.owned_resource_ids ?? [],
+    [account.owned_resource_ids]
+  );
+
+  const loadStylists = useCallback(async () => {
+    try {
+      const results = await Promise.all(ownedResourceIds.map((id) => getSlots(id)));
+      const mapped = results.map(({ resource, slots }) => ({
+        id: resource.id,
+        name: resource.name,
+        is_active: resource.is_active,
+        hasLiveAvailability: slots.some(isSlotLiveThisWeek),
+        domain_data: resource.domain_data as Doctor['domain_data'],
+        price_currency: resource.price_currency,
+        price_value: resource.price_value,
+        created_at: resource.created_at,
+      }));
+      // Recently created stylists on top — same reasoning as DoctorsView's
+      // identical sort (staff_id is assigned in strictly increasing order at
+      // creation). A plain "chair" resource has no staff_id at all — those
+      // sort last, which is fine, this view only ever creates stylists.
+      mapped.sort((a, b) =>
+        (b.domain_data.staff_id ?? '').localeCompare(a.domain_data.staff_id ?? '', undefined, {
+          numeric: true,
+        })
+      );
+      setStylists(mapped);
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : 'Could not load your stylists');
+    }
+  }, [ownedResourceIds]);
+
+  useEffect(() => {
+    let ignore = false;
+    loadStylists().then(() => {
+      if (ignore) return;
+    });
+    return () => {
+      ignore = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ownedResourceIds]);
+
+  function handleUpdated(updated: Doctor) {
+    setStylists((prev) => (prev ?? []).map((d) => (d.id === updated.id ? updated : d)));
+  }
+
+  if (loadError) return <ErrorState description={loadError} onRetry={loadStylists} />;
+  if (stylists === null) return <LoadingState label="Loading your stylists…" />;
+
+  const filteredStylists = stylists.filter((s) => {
+    if (statusFilter === 'active' && !s.is_active) return false;
+    if (statusFilter === 'inactive' && s.is_active) return false;
+    if (genderFilter !== 'all' && s.domain_data.gender !== genderFilter) return false;
+    if (specialisationFilter !== 'all' && s.domain_data.specialisation !== specialisationFilter) {
+      return false;
+    }
+    if (
+      staffIdSearch.trim() &&
+      !(s.domain_data.staff_id ?? '').toLowerCase().includes(staffIdSearch.trim().toLowerCase())
+    ) {
+      return false;
+    }
+    return true;
+  });
+
+  const addStylistButton = (
+    <Tooltip label="Add">
+      <button
+        type="button"
+        onClick={() => setAddStylistOpen(true)}
+        className="cursor-pointer rounded-md bg-[var(--brand-600)] px-4 py-2 text-sm font-semibold text-white hover:bg-[var(--brand-700)]"
+      >
+        Add stylist
+      </button>
+    </Tooltip>
+  );
+
+  return (
+    <div className="flex w-full flex-1 flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8">
+      {stylists.length > 0 && <div className="flex justify-end">{addStylistButton}</div>}
+
+      {stylists.length > 0 && (
+        <div className="flex flex-wrap items-end gap-4">
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="filter-staff-id" className="text-xs font-medium text-neutral-600">
+              Stylist ID
+            </label>
+            <div className="relative">
+              <input
+                id="filter-staff-id"
+                type="text"
+                value={staffIdSearch}
+                onChange={(e) => setStaffIdSearch(e.target.value)}
+                placeholder="e.g. STY-0001"
+                className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900"
+              />
+              {staffIdSearch && (
+                <button
+                  type="button"
+                  onClick={() => setStaffIdSearch('')}
+                  aria-label="Clear stylist ID search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-neutral-400 hover:text-neutral-700"
+                >
+                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M18 6 6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="filter-stylist-status" className="text-xs font-medium text-neutral-600">
+              Status
+            </label>
+            <select
+              id="filter-stylist-status"
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
+              className="w-36 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900"
+            >
+              <option value="all">All</option>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="filter-stylist-gender" className="text-xs font-medium text-neutral-600">
+              Gender
+            </label>
+            <select
+              id="filter-stylist-gender"
+              value={genderFilter}
+              onChange={(e) => setGenderFilter(e.target.value)}
+              className="w-36 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900"
+            >
+              <option value="all">All</option>
+              {GENDER_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="filter-stylist-specialisation" className="text-xs font-medium text-neutral-600">
+              Service
+            </label>
+            <select
+              id="filter-stylist-specialisation"
+              value={specialisationFilter}
+              onChange={(e) => setSpecialisationFilter(e.target.value)}
+              className="w-64 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900"
+            >
+              <option value="all">All</option>
+              {BEAUTY_SERVICES.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+
+      {stylists.length === 0 ? (
+        <EmptyState
+          title="No stylists yet"
+          description="Add your first stylist to start taking bookings."
+          action={addStylistButton}
+        />
+      ) : filteredStylists.length === 0 ? (
+        <EmptyState
+          title="No stylists match these filters"
+          description="Try changing or clearing a filter above."
+          action={
+            <button
+              type="button"
+              onClick={() => {
+                setStaffIdSearch('');
+                setStatusFilter('all');
+                setGenderFilter('all');
+                setSpecialisationFilter('all');
+              }}
+              className="cursor-pointer rounded-md border border-neutral-300 bg-white px-4 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
+            >
+              Clear filters
+            </button>
+          }
+        />
+      ) : (
+        <div className="w-full overflow-x-auto overflow-y-hidden rounded-lg border border-neutral-200 bg-white">
+          <table className="w-full min-w-[640px] border-collapse">
+            <thead>
+              <tr className="bg-neutral-50 text-left text-xs font-bold uppercase tracking-wide text-neutral-500">
+                <th className="px-4 py-3">Stylist ID</th>
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Service</th>
+                <th className="px-4 py-3">Experience</th>
+                <th className="px-4 py-3">Gender</th>
+                <th className="px-4 py-3">Availability</th>
+                <th className="px-4 py-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredStylists.map((stylist) => (
+                <StylistRow
+                  key={stylist.id}
+                  stylist={stylist}
+                  onOpenAvailability={setAvailabilityStylist}
+                  onOpenEdit={setEditStylist}
+                  onUpdated={handleUpdated}
+                  onDeleted={(id) => setStylists((prev) => (prev ?? []).filter((d) => d.id !== id))}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {addStylistOpen && (
+        <Modal title="Add a stylist" onClose={() => setAddStylistOpen(false)}>
+          <AddStylistForm
+            onCreated={(stylist) => {
+              setStylists((prev) => [stylist, ...(prev ?? [])]);
+              setAddStylistOpen(false);
+            }}
+            onCancel={() => setAddStylistOpen(false)}
+          />
+        </Modal>
+      )}
+
+      {availabilityStylist && (
+        <AvailabilityModal
+          doctor={availabilityStylist}
+          customerNoun="customer"
+          onClose={() => {
+            setAvailabilityStylist(null);
+            loadStylists();
+          }}
+        />
+      )}
+      {editStylist && (
+        <EditStylistModal
+          stylist={editStylist}
+          onClose={() => setEditStylist(null)}
+          onSaved={(updated) => {
+            handleUpdated(updated);
+            setEditStylist(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
 
 export default function ResourcesPage() {
   const router = useRouter();
@@ -1928,5 +2576,7 @@ export default function ResourcesPage() {
   }, [router]);
 
   if (account === 'loading' || account === null) return <LoadingState label="Checking session…" />;
-  return IS_HEALTHCARE ? <DoctorsView account={account} /> : <GenericResourcesView account={account} />;
+  if (IS_HEALTHCARE) return <DoctorsView account={account} />;
+  if (IS_BEAUTY) return <StylistsView account={account} />;
+  return <GenericResourcesView account={account} />;
 }

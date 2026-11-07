@@ -246,7 +246,7 @@ describe('OrdersPage', () => {
     await screen.findByText('October 2026');
     for (const column of [
       'Customer ID', 'Booking ID', 'Customer name', 'Email', 'Phone',
-      'Consulted doctor', 'Slot time', 'Amount (INR)', 'Payment status', 'Status',
+      'Consulted stylist', 'Slot time', 'Amount (INR)', 'Payment status', 'Status',
     ]) {
       expect(screen.getByRole('columnheader', { name: column })).toBeInTheDocument();
     }
@@ -284,7 +284,7 @@ describe('OrdersPage', () => {
     render(<OrdersPage />);
 
     await screen.findByText('October 2026');
-    const doctorFilter = await screen.findByLabelText('Filter by consulted doctor');
+    const doctorFilter = await screen.findByLabelText('Filter by consulted stylist');
     expect(resourcesApi.fetchOwnedResources).toHaveBeenCalledWith(['doc-1', 'doc-2']);
     expect(within(doctorFilter).getByRole('option', { name: 'Dr. Kavya' })).toBeInTheDocument();
     expect(within(doctorFilter).getByRole('option', { name: 'Dr. Laxmisree' })).toBeInTheDocument();

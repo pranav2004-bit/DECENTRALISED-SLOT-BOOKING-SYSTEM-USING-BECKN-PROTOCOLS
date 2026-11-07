@@ -9,6 +9,7 @@ import type { ResourceInfo } from '@/lib/availability-api';
 import { fetchOrders, updateFulfillmentStatus, type OrderRow } from '@/lib/orders-api';
 import { useRealtimeConnection } from '@/lib/realtime/useRealtimeConnection';
 import { shortId } from '@/lib/format';
+import { BRAND } from '@/lib/brand';
 
 /**
  * Orders page — the date-browsing shell (current month strip + year/month/date
@@ -135,7 +136,7 @@ function BookingsTable({
               <th className="px-4 py-3">Customer name</th>
               <th className="px-4 py-3">Email</th>
               <th className="px-4 py-3">Phone</th>
-              <th className="px-4 py-3">Consulted doctor</th>
+              <th className="px-4 py-3">Consulted {BRAND.resourceNounSingular.toLowerCase()}</th>
               <th className="px-4 py-3">Slot time</th>
               <th className="px-4 py-3">Amount (INR)</th>
               <th className="px-4 py-3">Payment status</th>
@@ -411,10 +412,10 @@ function OrdersCalendar({ account }: { account: BusinessAccount }) {
               <select
                 value={bookingDoctorFilter}
                 onChange={(e) => setBookingDoctorFilter(e.target.value)}
-                aria-label="Filter by consulted doctor"
+                aria-label={`Filter by consulted ${BRAND.resourceNounSingular.toLowerCase()}`}
                 className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900"
               >
-                <option value="ALL">All doctors</option>
+                <option value="ALL">All {BRAND.resourceNounPlural.toLowerCase()}</option>
                 {doctorNames.map((name) => (
                   <option key={name} value={name}>
                     {name}

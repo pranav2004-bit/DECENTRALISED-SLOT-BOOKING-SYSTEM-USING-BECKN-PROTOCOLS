@@ -52,7 +52,12 @@ def _signup_and_login(client, *, business_name="Glow Salon", contact="owner@exam
     )
 
 
-def _create_resource(client, *, name="Stylist A", resource_type="stylist"):
+def _create_resource(client, *, name="Stylist A", resource_type="chair"):
+    # "chair" (not "stylist") is this helper's default deliberately: the new
+    # required stylist profile fields (specialisation/years_of_experience/gender
+    # — BeautyDomainAdapter.validate_resource_domain_data) would otherwise reject
+    # every one of this file's many unrelated callers that just need *some* valid
+    # resource and don't care about its type.
     return client.post(
         reverse("resource-create"),
         data={"name": name, "domain_data": {"resource_type": resource_type}},
@@ -148,7 +153,7 @@ def test_business_account_creates_a_real_resource(client):
     resource_id = resp.json()["id"]
     resource = Resource.objects.get(id=resource_id)
     assert resource.name == "Stylist A"
-    assert resource.domain_data == {"resource_type": "stylist"}
+    assert resource.domain_data == {"resource_type": "chair"}
 
 
 @pytest.mark.django_db
@@ -443,6 +448,69 @@ def test_healthcare_business_creates_a_doctor_resource(client):
     # assert the submitted fields round-tripped, not byte-equality against the
     # stored dict, so this doesn't re-break the next time that field is touched.
     assert resource.domain_data == {**domain_data, "doctor_id": "DOC-0001"}
+
+
+@pytest.mark.django_db
+def test_beauty_business_creates_a_stylist_resource(client):
+    """Mirrors test_healthcare_business_creates_a_doctor_resource above —
+    BeautyDomainAdapter.validate_resource_domain_data now requires the same
+    "not enough information to book" fields for a stylist (minus education,
+    which has no real salon-credential equivalent) that Healthcare already
+    requires for a doctor."""
+    _signup_and_login(client)
+
+    domain_data = {
+        "resource_type": "stylist",
+        "specialisation": "Hair Styling",
+        "years_of_experience": 5,
+        "gender": "female",
+    }
+    resp = client.post(
+        reverse("resource-create"),
+        data={"name": "Asha", "domain_data": domain_data},
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 201
+    resource = Resource.objects.get(id=resp.json()["id"])
+    # Same server-generated, never-client-supplied id pattern as doctor_id above
+    # — "STY-0001" instead of "DOC-0001", sharing the one next_doctor_sequence
+    # counter field (a business account's domain_code is fixed, so it only ever
+    # creates one of the two resource_types, never both).
+    assert resource.domain_data == {**domain_data, "staff_id": "STY-0001"}
+
+
+@pytest.mark.django_db
+def test_beauty_business_cannot_create_a_stylist_without_required_fields(client):
+    _signup_and_login(client)
+
+    resp = client.post(
+        reverse("resource-create"),
+        data={"name": "Asha", "domain_data": {"resource_type": "stylist"}},
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"]["field"] == "domain_data"
+    assert Resource.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_beauty_business_creates_a_chair_resource_without_stylist_fields(client):
+    """A "chair" is an inanimate bookable resource, not a person — it never
+    carries (or requires) specialisation/years_of_experience/gender, and it
+    gets no server-generated staff_id either (only "doctor"/"stylist" do)."""
+    _signup_and_login(client)
+
+    resp = client.post(
+        reverse("resource-create"),
+        data={"name": "Chair 1", "domain_data": {"resource_type": "chair"}},
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 201
+    resource = Resource.objects.get(id=resp.json()["id"])
+    assert resource.domain_data == {"resource_type": "chair"}
 
 
 @pytest.mark.django_db

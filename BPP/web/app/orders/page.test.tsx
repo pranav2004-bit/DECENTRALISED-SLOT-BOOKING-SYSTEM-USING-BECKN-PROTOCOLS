@@ -73,7 +73,17 @@ describe('OrdersPage', () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    vi.restoreAllMocks();
+    // Found live on a real CI run (2026-11-08): restoreAllMocks() tears fetchOrders/
+    // fetchOwnedResources back down to their real implementations immediately, but a
+    // still-in-flight effect from the test that just finished can fire its own
+    // (now-unmocked) call in the gap before the next test's beforeEach re-mocks them —
+    // hitting the real apiFetch (NEXT_PUBLIC_API_BASE_URL unconfigured here) and
+    // throwing an unhandled rejection blamed on whatever test happens to be running
+    // next. clearAllMocks() keeps every mock's current implementation in place (so
+    // that stale call still resolves harmlessly) while still resetting call history —
+    // safe here because every test's own beforeEach/body unconditionally re-mocks
+    // whatever it needs anyway, nothing relies on an implementation being removed.
+    vi.clearAllMocks();
   });
 
   it('redirects to /login when no session exists', async () => {

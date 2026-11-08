@@ -328,17 +328,26 @@ def _run_slots(payload, *, bap_priv, bap_pub):
 @pytest.mark.django_db
 def test_slots_lists_real_open_windows_in_order(doctor):
     now = timezone.now()
+    # Fixed +1h/+4h offsets used to flake whenever this ran within ~4h of IST
+    # midnight (the later slot rolled into tomorrow, so _today_ist() only ever
+    # saw the earlier one) — found live 2026-11-08. Both offsets are now a
+    # fraction of whatever time actually remains before IST midnight, so they
+    # always land inside "today" no matter when the suite runs.
+    end_of_today_ist = dt.datetime.combine(
+        now.astimezone(INDIA_TZ).date(), dt.time(23, 59), tzinfo=INDIA_TZ
+    )
+    remaining = end_of_today_ist - now
     later = Slot.objects.create(
         resource=doctor,
-        start_time=now + dt.timedelta(hours=4),
-        end_time=now + dt.timedelta(hours=4, minutes=30),
+        start_time=now + remaining / 2,
+        end_time=now + remaining / 2 + dt.timedelta(minutes=30),
         capacity_total=1,
         capacity_remaining=1,
     )
     earlier = Slot.objects.create(
         resource=doctor,
-        start_time=now + dt.timedelta(hours=1),
-        end_time=now + dt.timedelta(hours=1, minutes=30),
+        start_time=now + remaining / 4,
+        end_time=now + remaining / 4 + dt.timedelta(minutes=30),
         capacity_total=1,
         capacity_remaining=1,
     )

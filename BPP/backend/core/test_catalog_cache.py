@@ -115,7 +115,7 @@ def test_creating_a_resource_via_the_real_endpoint_invalidates_the_cache(client)
     client.force_login(business)
     resp = client.post(
         reverse("resource-create"),
-        data={"name": "Stylist B", "domain_data": {"resource_type": "stylist"}},
+        data={"name": "Stylist B", "domain_data": {"resource_type": "chair"}},
         content_type="application/json",
     )
     assert resp.status_code == 201

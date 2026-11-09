@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { BRAND } from '@/lib/brand';
+import { capitalizeWords } from '@/lib/format';
 
 const VALUE_PROPS = [
   {
@@ -52,8 +53,7 @@ const STEPS = [
   },
   {
     label: 'Get discovered & booked',
-    description:
-      'Patients searching nearby can find your clinic right away and book you through any connected app.',
+    description: `${capitalizeWords(BRAND.customerNoun)}s searching nearby can find your ${BRAND.businessNoun} right away and book you through any connected app.`,
   },
   {
     label: 'Manage from one console',
@@ -67,8 +67,7 @@ const STEPS = [
   },
   {
     label: 'Build your reputation',
-    description:
-      'Patients rate their visit afterwards, helping more people discover and trust your clinic over time.',
+    description: `${capitalizeWords(BRAND.customerNoun)}s rate their visit afterwards, helping more people discover and trust your ${BRAND.businessNoun} over time.`,
   },
 ];
 

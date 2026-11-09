@@ -273,10 +273,16 @@ async function seedBusinessAndResource(): Promise<SeedData> {
 
   // --- resource (a Beauty "stylist" — the only two allowed by BeautyDomainAdapter are
   // "stylist"/"chair", confirmed directly against BPP/backend/core/beauty_adapter.py's
-  // `validate_resource_domain_data`) ---
+  // `validate_resource_domain_data`, which now also requires specialisation/
+  // years_of_experience/gender for a "stylist" — same fields AddStylistForm collects) ---
   const resourceResp = await bpp(jar, 'POST', '/api/v1/resources', {
     name: itemName,
-    domain_data: { resource_type: 'stylist' },
+    domain_data: {
+      resource_type: 'stylist',
+      specialisation: 'Hair Styling',
+      years_of_experience: 5,
+      gender: 'female',
+    },
     price_currency: 'INR',
     price_value: '500.00',
   });

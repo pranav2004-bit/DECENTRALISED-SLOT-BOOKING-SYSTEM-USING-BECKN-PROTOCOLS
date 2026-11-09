@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const { mockPush, mockRefresh } = vi.hoisted(() => ({
@@ -15,6 +15,19 @@ import ResourcesPage from './page';
 import * as authApi from '@/lib/auth-api';
 import * as availabilityApi from '@/lib/availability-api';
 import * as resourcesApi from '@/lib/resources-api';
+import { ToastProvider } from '@/components/ui/Toast';
+
+// StylistsView's row/form components call useToast() (same as DoctorsView's
+// own DoctorRow/AddDoctorForm, which this mirrors) — the old GenericResourcesView
+// this brand used before never did, so no test here needed a ToastProvider until
+// now.
+function renderResourcesPage() {
+  return render(
+    <ToastProvider>
+      <ResourcesPage />
+    </ToastProvider>
+  );
+}
 
 const OWNER_ACCOUNT = {
   id: 'biz-1',
@@ -46,7 +59,7 @@ describe('ResourcesPage', () => {
 
   it('redirects to /login when no session exists', async () => {
     vi.spyOn(authApi, 'me').mockResolvedValue(null);
-    render(<ResourcesPage />);
+    renderResourcesPage();
 
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/login'));
   });
@@ -57,7 +70,7 @@ describe('ResourcesPage', () => {
       role: 'STAFF',
       assigned_resource_ids: ['res-9'],
     });
-    render(<ResourcesPage />);
+    renderResourcesPage();
 
     await waitFor(() =>
       expect(mockPush).toHaveBeenCalledWith('/resources/res-9/availability')
@@ -66,10 +79,12 @@ describe('ResourcesPage', () => {
 
   it('livetracker3.md §7.1: shows the real empty state for a brand-new owner with zero resources', async () => {
     vi.spyOn(authApi, 'me').mockResolvedValue({ ...OWNER_ACCOUNT, owned_resource_ids: [] });
-    render(<ResourcesPage />);
+    renderResourcesPage();
 
-    expect(await screen.findByText('No services yet')).toBeInTheDocument();
-    expect(screen.getByText('Glow Salon')).toBeInTheDocument();
+    // StylistsView (the Beauty-specific rich table, mirroring CareNest's own
+    // Doctors table) replaced the old bare GenericResourcesView for this brand
+    // — "No stylists yet", not "No services yet".
+    expect(await screen.findByText('No stylists yet')).toBeInTheDocument();
   });
 
   it('livetracker3.md §7.1: lists an already-existing owner’s pre-existing resources (regression check)', async () => {
@@ -80,7 +95,7 @@ describe('ResourcesPage', () => {
     const getSlotsSpy = vi.spyOn(availabilityApi, 'getSlots').mockImplementation(async (id) => ({
       resource: {
         id,
-        name: id === 'res-1' ? 'Stylist A' : 'Stylist B',
+        name: id === 'res-1' ? 'Asha' : 'Divya',
         average_rating: null,
         rating_count: 0,
         assigned_staff_id: null,
@@ -92,83 +107,84 @@ describe('ResourcesPage', () => {
       },
       slots: [],
     }));
-    render(<ResourcesPage />);
+    renderResourcesPage();
 
-    expect(await screen.findByText('Stylist A')).toBeInTheDocument();
-    expect(screen.getByText('Stylist B')).toBeInTheDocument();
+    expect(await screen.findByText('Asha')).toBeInTheDocument();
+    expect(screen.getByText('Divya')).toBeInTheDocument();
     expect(getSlotsSpy).toHaveBeenCalledWith('res-1');
     expect(getSlotsSpy).toHaveBeenCalledWith('res-2');
-    expect(screen.queryByText('No services yet')).not.toBeInTheDocument();
+    expect(screen.queryByText('No stylists yet')).not.toBeInTheDocument();
   });
 
-  it('livetracker3.md §7.1: the full new-business reachability chain — creates a resource, then generates real availability for it', async () => {
+  it("adapts CareNest's doctor-table UI for StyleNest's stylists: adds one with a service/experience/gender, then opens its availability modal", async () => {
     const user = userEvent.setup();
     vi.spyOn(authApi, 'me').mockResolvedValue({ ...OWNER_ACCOUNT, owned_resource_ids: [] });
-    const createResourceSpy = vi
-      .spyOn(resourcesApi, 'createResource')
-      .mockResolvedValue({
+    const createResourceSpy = vi.spyOn(resourcesApi, 'createResource').mockResolvedValue({
+      id: 'res-new',
+      name: 'Asha',
+      domain_data: {
+        resource_type: 'stylist',
+        staff_id: 'STY-0001',
+        specialisation: 'Hair Coloring',
+        years_of_experience: 4,
+        gender: 'female',
+      },
+      is_active: true,
+      price_currency: 'INR',
+      price_value: '0.00',
+      created_at: '2026-01-01T00:00:00Z',
+    });
+    vi.spyOn(availabilityApi, 'getSlots').mockResolvedValue({
+      resource: {
         id: 'res-new',
-        name: 'Stylist A',
+        name: 'Asha',
+        average_rating: null,
+        rating_count: 0,
+        assigned_staff_id: null,
         domain_data: {},
         is_active: true,
         price_currency: 'INR',
         price_value: '0.00',
         created_at: '2026-01-01T00:00:00Z',
-      });
-    const createAvailabilitySpy = vi
-      .spyOn(resourcesApi, 'createAvailability')
-      .mockResolvedValue({ calendar_id: 'cal-1', slots_created: 4 });
-    render(<ResourcesPage />);
+      },
+      slots: [],
+    });
+    renderResourcesPage();
 
-    expect(await screen.findByText('No services yet')).toBeInTheDocument();
+    expect(await screen.findByText('No stylists yet')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Add stylist' }));
 
-    await user.type(screen.getByLabelText('Name'), 'Stylist A');
-    await user.selectOptions(screen.getByLabelText('Type'), 'stylist');
-    await user.click(screen.getByRole('button', { name: 'Add resource' }));
+    const dialog = screen.getByRole('dialog');
+    await user.type(within(dialog).getByLabelText('Name'), 'Asha');
+    await user.selectOptions(within(dialog).getByLabelText('Service'), 'Hair Coloring');
+    await user.type(within(dialog).getByLabelText('Years of experience'), '4');
+    await user.selectOptions(within(dialog).getByLabelText('Gender'), 'female');
+    await user.click(within(dialog).getByRole('button', { name: 'Add stylist' }));
 
-    expect(createResourceSpy).toHaveBeenCalledWith('Stylist A', 'stylist');
-    expect(await screen.findByText('Set up availability for Stylist A')).toBeInTheDocument();
+    expect(createResourceSpy).toHaveBeenCalledWith('Asha', 'stylist', {
+      specialisation: 'Hair Coloring',
+      years_of_experience: 4,
+      gender: 'female',
+    });
+    expect(await screen.findByText('Asha')).toBeInTheDocument();
+    expect(within(screen.getByRole('table')).getByText('Hair Coloring')).toBeInTheDocument();
+    expect(screen.queryByText('No stylists yet')).not.toBeInTheDocument();
 
-    // livetracker3.md §7.1: real bug found live — the new resource used to never
-    // appear in the list (loadResources() re-fetched using a stale, pre-creation
-    // owned_resource_ids snapshot from account, which never included the new id).
-    // The resource card must appear and the empty state must be gone, with no
-    // page reload — proving the list updates from the create response directly.
-    expect(screen.getAllByText('Stylist A').length).toBeGreaterThan(0);
-    expect(screen.queryByText('No services yet')).not.toBeInTheDocument();
-
-    // jsdom does not reliably simulate keystroke-by-keystroke typing into a native
-    // <input type="date"> the way userEvent.type() does for text inputs — set the
-    // value directly, matching this well-known testing-library/jsdom limitation.
-    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-08-10' } });
-    fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-08-11' } });
-    await user.clear(screen.getByLabelText('Times (comma-separated, e.g. 09:00, 14:00)'));
-    await user.type(
-      screen.getByLabelText('Times (comma-separated, e.g. 09:00, 14:00)'),
-      '09:00, 10:00'
-    );
-    await user.click(screen.getByRole('button', { name: 'Generate availability' }));
-
-    expect(createAvailabilitySpy).toHaveBeenCalledWith(
-      'res-new',
-      expect.objectContaining({ times: ['09:00', '10:00'], slotDurationMinutes: 30, slotCapacity: 1 })
-    );
-    expect(await screen.findByText(/Availability generated for/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'View availability dashboard' })).toHaveAttribute(
-      'href',
-      '/resources/res-new/availability'
-    );
+    // Availability is managed separately per stylist (the same Availability
+    // button/modal CareNest's doctors use) — not an inline form shown
+    // immediately after creation the way the old generic view worked.
+    await user.click(screen.getByRole('button', { name: 'Availability' }));
+    expect(await screen.findByText('Availability for Asha')).toBeInTheDocument();
   });
 
-  it('livetracker3.md §7.1 audit fix: creating a second resource does not discard the first one’s still-pending availability setup', async () => {
+  it('creating a second stylist does not replace the first one in the table', async () => {
     const user = userEvent.setup();
     vi.spyOn(authApi, 'me').mockResolvedValue({ ...OWNER_ACCOUNT, owned_resource_ids: [] });
-    vi
-      .spyOn(resourcesApi, 'createResource')
+    vi.spyOn(resourcesApi, 'createResource')
       .mockResolvedValueOnce({
         id: 'res-1',
-        name: 'Stylist A',
-        domain_data: {},
+        name: 'Asha',
+        domain_data: { resource_type: 'stylist', staff_id: 'STY-0001' },
         is_active: true,
         price_currency: 'INR',
         price_value: '0.00',
@@ -176,29 +192,30 @@ describe('ResourcesPage', () => {
       })
       .mockResolvedValueOnce({
         id: 'res-2',
-        name: 'Stylist B',
-        domain_data: {},
+        name: 'Divya',
+        domain_data: { resource_type: 'stylist', staff_id: 'STY-0002' },
         is_active: true,
         price_currency: 'INR',
         price_value: '0.00',
         created_at: '2026-01-01T00:00:00Z',
       });
-    render(<ResourcesPage />);
+    renderResourcesPage();
 
-    expect(await screen.findByText('No services yet')).toBeInTheDocument();
+    expect(await screen.findByText('No stylists yet')).toBeInTheDocument();
 
-    await user.type(screen.getByLabelText('Name'), 'Stylist A');
-    await user.click(screen.getByRole('button', { name: 'Add resource' }));
-    expect(await screen.findByText('Set up availability for Stylist A')).toBeInTheDocument();
+    async function addStylist(name: string) {
+      await user.click(screen.getAllByRole('button', { name: 'Add stylist' })[0]);
+      const dialog = screen.getByRole('dialog');
+      await user.type(within(dialog).getByLabelText('Name'), name);
+      await user.type(within(dialog).getByLabelText('Years of experience'), '2');
+      await user.click(within(dialog).getByRole('button', { name: 'Add stylist' }));
+      expect(await screen.findByText(name)).toBeInTheDocument();
+    }
 
-    // Real gap found on this phase's own post-close audit: creating a second
-    // resource before finishing the first's availability setup used to silently
-    // replace (not add to) the pending-setup form, permanently orphaning the
-    // first resource with no UI path to ever generate its availability.
-    await user.type(screen.getByLabelText('Name'), 'Stylist B');
-    await user.click(screen.getByRole('button', { name: 'Add resource' }));
+    await addStylist('Asha');
+    await addStylist('Divya');
 
-    expect(await screen.findByText('Set up availability for Stylist B')).toBeInTheDocument();
-    expect(screen.getByText('Set up availability for Stylist A')).toBeInTheDocument();
+    expect(screen.getByText('Asha')).toBeInTheDocument();
+    expect(screen.getByText('Divya')).toBeInTheDocument();
   });
 });

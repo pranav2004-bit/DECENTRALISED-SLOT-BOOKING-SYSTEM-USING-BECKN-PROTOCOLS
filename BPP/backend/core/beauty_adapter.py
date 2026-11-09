@@ -19,6 +19,28 @@ from inventory_core.models import Slot
 from inventory_core.reservation import hold_slot
 
 RESOURCE_TYPES = ("stylist", "chair")
+GENDER_OPTIONS = ("male", "female", "other")
+# Mirrored in BPP/web/app/resources/page.tsx's own BEAUTY_SERVICES constant
+# (ADR-0004: duplicated, not shared across the frontend/backend language boundary,
+# same convention HealthcareDomainAdapter's SPECIALISATIONS already uses) — a fixed
+# list, not free text, for the same reason: comparable, filterable service values
+# across different salons, not each business inventing its own spelling.
+SPECIALISATIONS = (
+    "Hair Styling",
+    "Hair Cutting",
+    "Hair Coloring",
+    "Hair Spa & Treatment",
+    "Bridal Makeup",
+    "Party Makeup",
+    "Facial & Skin Care",
+    "Manicure",
+    "Pedicure",
+    "Waxing",
+    "Threading",
+    "Mehendi (Henna)",
+    "Massage & Spa",
+    "Nail Art",
+)
 
 
 class BeautyDomainAdapter(DomainAdapter):
@@ -30,6 +52,28 @@ class BeautyDomainAdapter(DomainAdapter):
             raise ValidationError(
                 f"resource_type must be one of {RESOURCE_TYPES}, got {resource_type!r}"
             )
+
+        # Stylist profile fields — required, same "not enough information to book"
+        # reasoning as HealthcareDomainAdapter's doctor fields. A "chair" is an
+        # inanimate bookable resource, not a person, so it never carries these.
+        if resource_type != "stylist":
+            return
+
+        specialisation = domain_data.get("specialisation")
+        if specialisation not in SPECIALISATIONS:
+            raise ValidationError(
+                f"specialisation must be one of {SPECIALISATIONS}, got {specialisation!r}"
+            )
+
+        years_of_experience = domain_data.get("years_of_experience")
+        if not isinstance(years_of_experience, int) or isinstance(years_of_experience, bool):
+            raise ValidationError("years_of_experience must be a whole number")
+        if years_of_experience < 0 or years_of_experience > 80:
+            raise ValidationError("years_of_experience must be between 0 and 80")
+
+        gender = domain_data.get("gender")
+        if gender not in GENDER_OPTIONS:
+            raise ValidationError(f"gender must be one of {GENDER_OPTIONS}, got {gender!r}")
 
     def validate_booking_domain_data(self, domain_data: dict) -> None:
         if not domain_data.get("combo"):

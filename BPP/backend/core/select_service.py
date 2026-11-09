@@ -31,16 +31,13 @@ from django.conf import settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django_observability.context import correlation_id_var
-from inventory_core.domain_adapter import get_adapter
-from inventory_core.models import Booking, Resource, Slot
-from inventory_core.reservation import hold_multi_resource_booking, hold_slot, release_hold_now
+from inventory_core.models import Resource, Slot
+from inventory_core.reservation import hold_slot, release_hold_now
 
 from . import registry_client, trust
-from .automotive_adapter import find_paired_resource
 from .crypto import sign_outbound_request
 from .domain_scope import DomainNotSupportedError, validate_domain_supported
 from .events import get_event_bus
-from .models import BusinessAccount
 from .participant_keys import get_signing_keys
 
 logger = logging.getLogger("bpp")
@@ -172,88 +169,6 @@ def _on_select_context(*, request_context: dict) -> dict:
     )
 
 
-def _hold_multi_resource_selection(
-    *,
-    resource: Resource,
-    slot: Slot,
-    requested_time,
-    requested_timestamp: str,
-    transaction_id: str,
-    customer_domain_data: dict,
-    hold_ttl_seconds: float,
-) -> tuple[dict | None, dict | None]:
-    """§4.2's multi-resource selection path — Automotive's own case, and the reason
-    `required_resource_count()` (Phase 1.5's own hook, unused until this phase) now
-    has a real caller. Finds the paired resource (bay<->mechanic, same business, same
-    time) and holds both slots together via `hold_multi_resource_booking()`. Returns
-    `(error, resolved_order)`, exactly one of which is non-`None` — the same contract
-    `dispatch_on_select`'s single-resource branch already follows, so both branches
-    slot into the same response-building code below unchanged."""
-    paired = find_paired_resource(resource, requested_time)
-    if paired is None:
-        return (
-            {
-                "code": "SLOT_UNAVAILABLE",
-                "message": "The other required resource is not available at this time",
-            },
-            None,
-        )
-    paired_resource, paired_slot = paired
-
-    bookings = hold_multi_resource_booking(
-        [slot.id, paired_slot.id],
-        holder_ref=transaction_id,
-        redis_client=_redis_client(),
-        ttl_seconds=hold_ttl_seconds,
-        event_bus=get_event_bus(),
-    )
-    if bookings is None:
-        return (
-            {"code": "SLOT_UNAVAILABLE", "message": "Slot no longer available"},
-            None,
-        )
-
-    if customer_domain_data:
-        for booking in bookings:
-            booking.domain_data = {**booking.domain_data, **customer_domain_data}
-        Booking.objects.bulk_update(bookings, ["domain_data"])
-
-    # livetracker4.md §2.1 cutover (2026-08-02): hold-created metrics and the live
-    # dashboard broadcast used to fire inline, right here. Both are now driven by the
-    # real event worker consuming the `SlotEvent.RESERVED` `hold_multi_resource_booking`
-    # just published above (one per resource) — see `core/events_worker.py`'s
-    # `DISPATCH[SlotEvent.RESERVED]`. This is a deliberate metric-semantics decision,
-    # confirmed with the project owner: a multi-resource booking (e.g. Automotive's
-    # bay+mechanic pair) now counts as 2 holds created, not 1 — one per real `Booking`
-    # row, matching what the event bus naturally publishes, not the prior "one count per
-    # customer action" behavior.
-    resources = [resource, paired_resource]
-    total_value = resource.price_value + paired_resource.price_value
-    resolved_order = {
-        "provider": {"id": resource.owner_ref},
-        "items": [{"id": str(r.id)} for r in resources],
-        "fulfillments": [
-            {
-                "id": str(booking.id),
-                "stops": [{"type": "start", "time": {"timestamp": requested_timestamp}}],
-            }
-            for booking in bookings
-        ],
-        "quote": {
-            "price": {"currency": resource.price_currency, "value": str(total_value)},
-            "breakup": [
-                {
-                    "item": {"id": str(r.id)},
-                    "title": r.name,
-                    "price": {"currency": r.price_currency, "value": str(r.price_value)},
-                }
-                for r in resources
-            ],
-        },
-    }
-    return None, resolved_order
-
-
 def dispatch_on_select(*, payload: dict, correlation_id: str | None = None) -> None:
     """Resolves the requested item + time against **live** availability (Source-of-
     Truth rule, §3.2's own Test Gate) and attempts the real, already-proven atomic hold
@@ -284,6 +199,13 @@ def dispatch_on_select(*, payload: dict, correlation_id: str | None = None) -> N
         hold_ttl_seconds = max(
             10, min(requested_hold_seconds, settings.RESERVATION_HOLD_TTL_SECONDS)
         )
+    # Project-defined (no real Select field for it), same "no real Select
+    # field" territory as hold_seconds above — AutoCare's own token/queue mode
+    # only: which *specific* Slot (of possibly many sharing the identical
+    # requested_timestamp) the customer actually picked. Every other domain's
+    # own caller never sends this, so the plain start_time lookup below stays
+    # exactly as it always has for them.
+    requested_slot_id = payload["message"].get("slot_id")
 
     error = None
     resolved_order = None
@@ -301,8 +223,24 @@ def dispatch_on_select(*, payload: dict, correlation_id: str | None = None) -> N
             }
         else:
             try:
-                slot = Slot.objects.get(resource=resource, start_time=requested_time)
-            except Slot.DoesNotExist:
+                if requested_slot_id:
+                    # Re-validated against resource+start_time regardless of
+                    # the caller's own claim — an id for a different resource
+                    # or a stale/mismatched time is rejected the same
+                    # SLOT_UNAVAILABLE way as any other bad request here, not
+                    # trusted at face value just because it parsed.
+                    slot = Slot.objects.get(
+                        pk=requested_slot_id, resource=resource, start_time=requested_time
+                    )
+                else:
+                    # Token/queue mode aside, exactly one Slot ever matches
+                    # resource+start_time — unchanged for every existing
+                    # caller that never sends slot_id.
+                    slot = Slot.objects.get(resource=resource, start_time=requested_time)
+            except (Slot.DoesNotExist, ValueError):
+                # ValueError: same malformed-pk case Resource.objects.get(pk=item_id)
+                # above already catches the same way — a malformed slot_id is just
+                # another "no matching slot", not a separate error shape.
                 error = {
                     "code": "SLOT_UNAVAILABLE",
                     "message": "No matching slot for the requested time",
@@ -318,73 +256,57 @@ def dispatch_on_select(*, payload: dict, correlation_id: str | None = None) -> N
                     transaction_id=context["transaction_id"], correlation_id=correlation_id
                 )
 
-                # §4.2: how many resources this domain's own adapter says a booking
-                # genuinely needs (Automotive's bay+mechanic pair = 2; every domain
-                # before it = 1) — the real consumer `required_resource_count()` was
-                # missing since Phase 1.5 first defined it.
-                business = BusinessAccount.objects.get(id=resource.owner_ref)
-                adapter = get_adapter(business.domain_code)
-                required_count = adapter.required_resource_count({})
-
-                if required_count > 1:
-                    error, resolved_order = _hold_multi_resource_selection(
-                        resource=resource,
-                        slot=slot,
-                        requested_time=requested_time,
-                        requested_timestamp=requested_timestamp,
-                        transaction_id=context["transaction_id"],
-                        customer_domain_data=customer_domain_data,
-                        hold_ttl_seconds=hold_ttl_seconds,
-                    )
+                # Every domain adapter's required_resource_count() is 1 (Automotive's
+                # own former bay+mechanic pairing is gone — a mechanic is staff, not a
+                # second Resource, so a booking only ever needs the one bay/stylist/
+                # doctor the customer actually selected).
+                booking = hold_slot(
+                    slot.id,
+                    # transaction_id, not bap_id: bap_id identifies the BAP
+                    # *application*, shared across every one of its customers —
+                    # using it as holder_ref would make one customer's
+                    # re-selection release an unrelated customer's hold.
+                    # transaction_id is unique per real Beckn transaction, i.e.
+                    # per individual customer's shopping session.
+                    holder_ref=context["transaction_id"],
+                    redis_client=_redis_client(),
+                    ttl_seconds=hold_ttl_seconds,
+                    event_bus=get_event_bus(),
+                )
+                if booking is None:
+                    error = {
+                        "code": "SLOT_UNAVAILABLE",
+                        "message": "Slot no longer available",
+                    }
                 else:
-                    booking = hold_slot(
-                        slot.id,
-                        # transaction_id, not bap_id: bap_id identifies the BAP
-                        # *application*, shared across every one of its customers —
-                        # using it as holder_ref would make one customer's
-                        # re-selection release an unrelated customer's hold.
-                        # transaction_id is unique per real Beckn transaction, i.e.
-                        # per individual customer's shopping session.
-                        holder_ref=context["transaction_id"],
-                        redis_client=_redis_client(),
-                        ttl_seconds=hold_ttl_seconds,
-                        event_bus=get_event_bus(),
-                    )
-                    if booking is None:
-                        error = {
-                            "code": "SLOT_UNAVAILABLE",
-                            "message": "Slot no longer available",
-                        }
-                    else:
-                        if customer_domain_data:
-                            booking.domain_data = {**booking.domain_data, **customer_domain_data}
-                            booking.save(update_fields=["domain_data", "updated_at"])
-                        # livetracker4.md §2.1 cutover: see the multi-resource branch's
-                        # own comment above — hold-created metrics and the availability
-                        # broadcast are now driven by the real event worker consuming
-                        # the `SlotEvent.RESERVED` `hold_slot` just published, not fired
-                        # inline here.
-                        resolved_order = {
-                            "provider": {"id": resource.owner_ref},
-                            "items": [{"id": str(resource.id)}],
-                            "fulfillments": [
-                                {
-                                    "id": str(booking.id),
-                                    "stops": [
-                                        {
-                                            "type": "start",
-                                            "time": {"timestamp": requested_timestamp},
-                                        }
-                                    ],
-                                }
-                            ],
-                            "quote": {
-                                "price": {
-                                    "currency": resource.price_currency,
-                                    "value": str(resource.price_value),
-                                }
-                            },
-                        }
+                    if customer_domain_data:
+                        booking.domain_data = {**booking.domain_data, **customer_domain_data}
+                        booking.save(update_fields=["domain_data", "updated_at"])
+                    # livetracker4.md §2.1 cutover: hold-created metrics and the
+                    # availability broadcast are driven by the real event worker
+                    # consuming the `SlotEvent.RESERVED` `hold_slot` just published,
+                    # not fired inline here.
+                    resolved_order = {
+                        "provider": {"id": resource.owner_ref},
+                        "items": [{"id": str(resource.id)}],
+                        "fulfillments": [
+                            {
+                                "id": str(booking.id),
+                                "stops": [
+                                    {
+                                        "type": "start",
+                                        "time": {"timestamp": requested_timestamp},
+                                    }
+                                ],
+                            }
+                        ],
+                        "quote": {
+                            "price": {
+                                "currency": resource.price_currency,
+                                "value": str(resource.price_value),
+                            }
+                        },
+                    }
 
     on_select_context = _on_select_context(request_context=context)
     on_select_message: dict = {}

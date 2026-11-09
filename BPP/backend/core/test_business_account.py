@@ -240,6 +240,101 @@ def test_business_account_generates_real_slots_via_availability_calendar(client)
 
 
 @pytest.mark.django_db
+def test_availability_creation_with_slot_count_creates_distinct_numbered_slots(client):
+    """AutoCare's own "max capacity / numbered slots" token mode, through the real
+    HTTP view (not just the model-level coverage in test_inventory_core.py) — this
+    view is domain-agnostic (every domain's own adapter never gates slot_count),
+    so proving it here against the generic "chair" resource is a real test of the
+    view's own plumbing, not something that needs an automotive-specific fixture."""
+    _signup_and_login(client)
+    resource_id = _create_resource(client).json()["id"]
+
+    resp = client.post(
+        reverse("resource-availability-create", args=[resource_id]),
+        data={
+            "range_start": "2026-08-03T00:00:00Z",
+            "range_end": "2026-08-03T23:59:59Z",
+            "times": ["09:00"],
+            "slot_duration_minutes": 540,  # 09:00-18:00
+            "slot_capacity": 1,
+            "slot_count": 20,
+        },
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["slots_created"] == 20
+    slots = Slot.objects.filter(resource_id=resource_id)
+    assert slots.count() == 20
+    assert len({(s.start_time, s.end_time) for s in slots}) == 1  # one shared window
+    assert all(s.capacity_total == 1 and s.capacity_remaining == 1 for s in slots)
+
+
+@pytest.mark.django_db
+def test_availability_creation_rejects_slot_count_with_multiple_time_anchors(client):
+    _signup_and_login(client)
+    resource_id = _create_resource(client).json()["id"]
+
+    resp = client.post(
+        reverse("resource-availability-create", args=[resource_id]),
+        data={
+            "range_start": "2026-08-03T00:00:00Z",
+            "range_end": "2026-08-03T23:59:59Z",
+            "times": ["09:00", "14:00"],
+            "slot_duration_minutes": 30,
+            "slot_capacity": 1,
+            "slot_count": 5,
+        },
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert AvailabilityCalendar.objects.count() == 0
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("value", [0, -1, "not-a-number"])
+def test_availability_creation_rejects_invalid_slot_count(client, value):
+    _signup_and_login(client)
+    resource_id = _create_resource(client).json()["id"]
+
+    resp = client.post(
+        reverse("resource-availability-create", args=[resource_id]),
+        data={
+            "range_start": "2026-08-03T00:00:00Z",
+            "range_end": "2026-08-03T23:59:59Z",
+            "times": ["09:00"],
+            "slot_duration_minutes": 30,
+            "slot_capacity": 1,
+            "slot_count": value,
+        },
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert AvailabilityCalendar.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_availability_creation_rejects_slot_count_over_the_max(client):
+    _signup_and_login(client)
+    resource_id = _create_resource(client).json()["id"]
+
+    resp = client.post(
+        reverse("resource-availability-create", args=[resource_id]),
+        data={
+            "range_start": "2026-08-03T00:00:00Z",
+            "range_end": "2026-08-03T23:59:59Z",
+            "times": ["09:00"],
+            "slot_duration_minutes": 30,
+            "slot_capacity": 1,
+            "slot_count": 501,
+        },
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert AvailabilityCalendar.objects.count() == 0
+
+
+@pytest.mark.django_db
 def test_availability_creation_rejects_a_range_exceeding_the_max_span(client):
     """SEC (§3.7): an unbounded date range would make generate_slots() attempt
     to materialize an unbounded number of real Slot rows — a genuine

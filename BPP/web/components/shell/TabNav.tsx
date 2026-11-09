@@ -7,12 +7,13 @@ import { RESOURCE_TYPES_BY_DOMAIN } from '@/lib/constants';
 
 /** The Resources tab's label — brand-aware, matching signup's own categoryLabel
  * precedent (BPP/web/app/signup/page.tsx): a domain with exactly one resource type
- * (Healthcare -> Doctor) shows that type's own name, since it's more specific than
- * the generic label ("Doctors" reads better than "Resources" on CareNest); a domain
- * with multiple resource types (Beauty: Stylist/Chair, Automotive: Bay/Mechanic) has
- * no single equivalent, so it falls back to the generic "Resources". The route stays
- * /resources for every brand regardless — only the displayed label changes, the same
- * label-vs-route split the Bookings tab (-> /orders) already established. */
+ * (Healthcare -> Doctor, Automotive -> Bay) shows that type's own name, since it's
+ * more specific than the generic label ("Doctors"/"Bays" reads better than
+ * "Resources" on CareNest/AutoCare); only Beauty still has multiple resource types
+ * (Stylist/Chair) with no single equivalent, so it falls back to the generic
+ * "Resources". The route stays /resources for every brand regardless — only the
+ * displayed label changes, the same label-vs-route split the Bookings tab
+ * (-> /orders) already established. */
 function resourcesTabLabel(): string {
   const types = RESOURCE_TYPES_BY_DOMAIN[BRAND.domainCode] ?? [];
   return types.length === 1 ? `${types[0].label}s` : 'Resources';

@@ -291,10 +291,23 @@ def list_available_slots(
             end_time__gt=lower_bound,
         )
         .exclude(status=Slot.Status.CANCELLED)
-        .order_by("start_time")[:MAX_SLOTS_RETURNED]
+        # `id` is the tiebreaker, not just `start_time` — AutoCare's own
+        # token/queue mode (slot_count) creates many Slot rows sharing one
+        # identical start_time, and a tie with no secondary sort key has no
+        # guaranteed stable order in Postgres, which would make the numbered
+        # (1..N) display BAP shows for them reshuffle between requests.
+        .order_by("start_time", "id")[:MAX_SLOTS_RETURNED]
     )
     response["message"]["slots"] = [
         {
+            # Project-defined, not a real Schedule/Time field (no such concept
+            # exists in the real protocol schema) — exists only so a BAP can
+            # disambiguate which *specific* Slot a customer picked when more
+            # than one shares the identical start_time (AutoCare's token/queue
+            # mode); every other domain's own UI can and does ignore it, same
+            # "additive, ignorable by existing callers" precedent as
+            # trigger_select's own hold_seconds.
+            "id": str(s.id),
             "start_time": s.start_time.isoformat(),
             "end_time": s.end_time.isoformat(),
             "status": (

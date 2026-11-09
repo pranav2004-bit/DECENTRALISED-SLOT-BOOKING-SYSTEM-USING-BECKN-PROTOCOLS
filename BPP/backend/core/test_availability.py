@@ -45,6 +45,19 @@ def _today_ist() -> dt.date:
     return timezone.now().astimezone(INDIA_TZ).date()
 
 
+def _later_today(now, fraction):
+    """A fixed `now + Nh` offset flakes whenever the suite runs within N hours of
+    IST midnight — the slot rolls into tomorrow and _today_ist() no longer sees
+    it (found live 2026-11-08, re-found live 2026-11-09 in sibling tests this
+    helper didn't yet cover). Scaling to a fraction of whatever time actually
+    remains before IST midnight keeps the slot inside "today" no matter when the
+    suite runs."""
+    end_of_today_ist = dt.datetime.combine(
+        now.astimezone(INDIA_TZ).date(), dt.time(23, 59), tzinfo=INDIA_TZ
+    )
+    return now + (end_of_today_ist - now) * fraction
+
+
 def _payload(*, resource_ids, date, bap_id="bap.example.com", domain=HEALTHCARE):
     return {
         "context": {
@@ -110,10 +123,11 @@ def _run(payload, *, bap_priv, bap_pub):
 @pytest.mark.django_db
 def test_true_for_a_resource_with_a_real_open_slot_today(doctor):
     now = timezone.now()
+    start_time = _later_today(now, 0.25)
     Slot.objects.create(
         resource=doctor,
-        start_time=now + dt.timedelta(hours=1),
-        end_time=now + dt.timedelta(hours=2),
+        start_time=start_time,
+        end_time=start_time + dt.timedelta(minutes=30),
         capacity_total=1,
         capacity_remaining=1,
     )
@@ -205,10 +219,11 @@ def test_true_for_a_future_date_with_a_slot_that_day(doctor):
 @pytest.mark.django_db
 def test_false_for_an_unknown_resource_id_mixed_into_a_valid_batch(doctor):
     now = timezone.now()
+    start_time = _later_today(now, 0.25)
     Slot.objects.create(
         resource=doctor,
-        start_time=now + dt.timedelta(hours=1),
-        end_time=now + dt.timedelta(hours=2),
+        start_time=start_time,
+        end_time=start_time + dt.timedelta(minutes=30),
         capacity_total=1,
         capacity_remaining=1,
     )
@@ -391,10 +406,11 @@ def test_slots_includes_a_held_slot_marked_booked_not_excluded(doctor):
     slot and grey out the ones it can't offer — so this must come back, just
     marked unavailable, not be silently dropped."""
     now = timezone.now()
+    start_time = _later_today(now, 0.25)
     held = Slot.objects.create(
         resource=doctor,
-        start_time=now + dt.timedelta(hours=1),
-        end_time=now + dt.timedelta(hours=1, minutes=30),
+        start_time=start_time,
+        end_time=start_time + dt.timedelta(minutes=30),
         capacity_total=1,
         capacity_remaining=1,
         status=Slot.Status.HELD,
@@ -413,10 +429,11 @@ def test_slots_includes_a_held_slot_marked_booked_not_excluded(doctor):
 @pytest.mark.django_db
 def test_slots_includes_a_booked_slot_marked_booked(doctor):
     now = timezone.now()
+    start_time = _later_today(now, 0.25)
     booked = Slot.objects.create(
         resource=doctor,
-        start_time=now + dt.timedelta(hours=1),
-        end_time=now + dt.timedelta(hours=1, minutes=30),
+        start_time=start_time,
+        end_time=start_time + dt.timedelta(minutes=30),
         capacity_total=1,
         capacity_remaining=0,
         status=Slot.Status.BOOKED,
@@ -460,10 +477,11 @@ def test_slots_marks_a_zero_capacity_available_slot_as_booked(doctor):
     capacity has been fully consumed is, for display purposes, exactly as taken
     as an explicitly BOOKED one — must not be reported as selectable."""
     now = timezone.now()
+    start_time = _later_today(now, 0.25)
     full = Slot.objects.create(
         resource=doctor,
-        start_time=now + dt.timedelta(hours=1),
-        end_time=now + dt.timedelta(hours=1, minutes=30),
+        start_time=start_time,
+        end_time=start_time + dt.timedelta(minutes=30),
         capacity_total=3,
         capacity_remaining=0,
         status=Slot.Status.AVAILABLE,

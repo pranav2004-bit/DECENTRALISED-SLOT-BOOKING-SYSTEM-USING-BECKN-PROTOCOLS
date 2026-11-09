@@ -105,10 +105,11 @@ def validate_and_ack_payment_status(
 
 def record_payment_status(*, payload: dict) -> None:
     """Resolves every `Booking` this transaction_id covers (a multi-resource confirm
-    group — e.g. Automotive's bay+mechanic pair — shares one `holder_ref`, same
-    precedent as `confirm_service.dispatch_on_confirm`'s own bulk `confirmed_total_
-    value` write) and records the new payment status on all of them together, then
-    publishes one `BookingEvent` per booking for the real-time dashboard broadcast
+    group — were any domain to require more than one resource at once — shares one
+    `holder_ref`, same precedent as `confirm_service.dispatch_on_confirm`'s own bulk
+    `confirmed_total_value` write) and records the new payment status on all of them
+    together, then publishes one `BookingEvent` per booking for the real-time
+    dashboard broadcast
     (`core/realtime.py::broadcast_payment_status_consumer`) and audit trail
     (`inventory_core.consumers.audit_log_consumer`) to react to.
 

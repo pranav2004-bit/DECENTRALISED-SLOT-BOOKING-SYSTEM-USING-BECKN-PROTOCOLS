@@ -174,13 +174,15 @@ def dispatch_on_init(*, payload: dict) -> None:
                 "message": "This booking's hold is no longer active",
             }
         else:
-            # §4.2: report every resource in the group (Automotive's bay+mechanic
-            # pair), not just the one `fulfillments[0].id` itself named — otherwise
-            # a customer would see a combined quote at /select (both resources'
-            # combined price) and then a misleadingly smaller single-resource price
-            # here at /init, a real quote-consistency bug, not just a cosmetic one.
-            # `find_group_bookings` returns just `[booking]` unchanged for every
-            # domain before this phase, so this is a no-op widening for them.
+            # §4.2: report every resource in a multi-resource group, not just the
+            # one `fulfillments[0].id` itself named — otherwise a customer would
+            # see a combined quote at /select (every resource's combined price)
+            # and then a misleadingly smaller single-resource price here at /init,
+            # a real quote-consistency bug, not just a cosmetic one. Relevant for
+            # any domain whose adapter ever requires more than one resource at
+            # once (none currently do, since Automotive's former bay+mechanic
+            # pairing was removed). `find_group_bookings` returns just `[booking]`
+            # unchanged for every domain today, so this is a no-op widening.
             group = find_group_bookings(booking)
             resources = [b.slot.resource for b in group]
             total_value = sum(r.price_value for r in resources)

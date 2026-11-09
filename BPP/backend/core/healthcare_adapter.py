@@ -8,9 +8,9 @@ Registered with `inventory_core.domain_adapter`'s registry at app startup (`core
 `ONDC:SRV13` — see `protocol_compliance_notes_v1.1.md`'s "Remaining Open Items" for how that
 value was confirmed).
 
-No multi-resource booking here — that concept is Automotive's (§4.2: bay *and* mechanic
-simultaneously), not a real Healthcare requirement, so `required_resource_count` is always 1,
-matching Beauty's own reasoning for the same field.
+No multi-resource booking here — `required_resource_count` is always 1, matching every
+other domain's own reasoning for the same field (Automotive's own former bay+mechanic
+simultaneous pairing was removed — a mechanic is staff, not a second Resource).
 """
 
 from django.conf import settings

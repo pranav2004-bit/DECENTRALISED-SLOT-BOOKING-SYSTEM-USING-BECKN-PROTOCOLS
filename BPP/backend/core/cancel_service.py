@@ -142,10 +142,12 @@ def dispatch_on_cancel(*, payload: dict, correlation_id: str | None = None) -> N
     elif booking.holder_ref != context["transaction_id"]:
         error = {"code": "SLOT_UNAVAILABLE", "message": "No matching booking for this order"}
     else:
-        # §4.2: cancel every booking in the group together (Automotive's bay+mechanic
-        # pair) — `find_group_bookings` returns just `[booking]` unchanged for every
-        # domain before this phase, so this is a no-op widening for them, not a
-        # behavior change.
+        # §4.2: cancel every booking in a multi-resource group together, for any
+        # domain whose adapter ever requires more than one resource at once (none
+        # currently do, since Automotive's former bay+mechanic pairing was removed
+        # — a mechanic is staff, not a second Resource) — `find_group_bookings`
+        # returns just `[booking]` unchanged for every domain today, so this is a
+        # no-op widening for all of them, not a behavior change.
         group = find_group_bookings(booking)
         try:
             cancelled_bookings = [

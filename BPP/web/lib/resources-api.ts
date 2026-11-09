@@ -108,6 +108,11 @@ export async function createAvailability(
     days?: string;
     slotDurationMinutes: number;
     slotCapacity: number;
+    /** Token/queue mode (AutoCare's numbered bays only) — when set, the backend
+     * generates this many *identical*-time slots per day instead of one slot per
+     * `times` anchor. Omitted for every other brand, matching
+     * AvailabilityCalendar.slot_count's own "additive, not a replacement" field. */
+    slotCount?: number;
   }
 ): Promise<CreatedAvailability> {
   const resp = await apiFetch(`/api/v1/resources/${resourceId}/availability`, {
@@ -121,6 +126,7 @@ export async function createAvailability(
       days: params.days ?? '',
       slot_duration_minutes: params.slotDurationMinutes,
       slot_capacity: params.slotCapacity,
+      ...(params.slotCount !== undefined ? { slot_count: params.slotCount } : {}),
     }),
   });
   return resp.json();

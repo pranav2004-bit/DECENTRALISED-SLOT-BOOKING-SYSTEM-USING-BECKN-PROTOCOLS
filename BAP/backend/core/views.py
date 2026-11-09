@@ -366,6 +366,9 @@ def select_trigger_view(request):
     hold_seconds = (
         max(10, min(hold_seconds, MAX_REQUESTABLE_HOLD_SECONDS)) if hold_seconds else None
     )
+    # Project-defined, same territory as hold_seconds above — AutoCare's own
+    # token/queue mode only; every other domain's own caller never sends this.
+    slot_id = (payload.get("slot_id") or "").strip() or None
 
     customer = request.user if request.user.is_authenticated else None
     try:
@@ -378,6 +381,7 @@ def select_trigger_view(request):
             customer_email=customer_email,
             customer_phone=customer_phone,
             hold_seconds=hold_seconds,
+            slot_id=slot_id,
         )
     except select_service.SelectError as exc:
         return error_response("SELECT_UNAVAILABLE", exc.message, exc.status_code)

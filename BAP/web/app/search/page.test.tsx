@@ -112,7 +112,7 @@ describe('SearchPage', () => {
     vi.spyOn(bookingApi, 'checkAvailability').mockResolvedValue({ 'item-1': true });
     const slotStart = '2026-08-01T10:00:00+00:00';
     vi.spyOn(bookingApi, 'listAvailableSlots').mockResolvedValue([
-      { start_time: slotStart, end_time: '2026-08-01T10:30:00+00:00', status: 'available' },
+      { id: 'slot-1', start_time: slotStart, end_time: '2026-08-01T10:30:00+00:00', status: 'available' },
     ]);
     vi.spyOn(bookingApi, 'triggerSelect').mockResolvedValue(undefined);
     vi.spyOn(bookingApi, 'getSelectResult').mockResolvedValue({

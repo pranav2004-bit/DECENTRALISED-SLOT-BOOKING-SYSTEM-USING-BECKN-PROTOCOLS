@@ -184,8 +184,9 @@ def test_payment_status_view_rejects_an_unrecognized_status_before_acking(resour
 
 
 def test_record_payment_status_updates_every_booking_in_the_holder_ref_group(resource, bus):
-    """A multi-resource confirm group (e.g. Automotive's bay+mechanic pair) shares
-    one holder_ref — the same bulk-update precedent as `confirmed_total_value`."""
+    """A multi-resource confirm group (were any domain to require more than one
+    resource at once) shares one holder_ref — the same bulk-update precedent as
+    `confirmed_total_value`."""
     booking_a = _make_booking(resource, holder_ref="txn-group")
     booking_b = _make_booking(resource, holder_ref="txn-group")
 

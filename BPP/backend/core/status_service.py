@@ -138,11 +138,13 @@ def dispatch_on_status(*, payload: dict) -> None:
         # reasoning as /init and /confirm (protocol_compliance_notes_v1.1.md §J/§L).
         error = {"code": "SLOT_UNAVAILABLE", "message": "No matching booking for this order"}
     else:
-        # §4.2: report every resource in the group (Automotive's bay+mechanic pair),
-        # not just the one this booking_id itself names — a customer checking status
-        # on a multi-resource booking must see every resource actually reserved for
-        # them, not just one. `find_group_bookings` returns just `[booking]` unchanged
-        # for every domain before this phase, so this is a no-op widening for them.
+        # §4.2: report every resource in a multi-resource group, not just the one
+        # this booking_id itself names — a customer checking status on such a
+        # booking must see every resource actually reserved for them, not just
+        # one. Relevant for any domain whose adapter ever requires more than one
+        # resource at once (none currently do, since Automotive's former
+        # bay+mechanic pairing was removed). `find_group_bookings` returns just
+        # `[booking]` unchanged for every domain today, so this is a no-op widening.
         group = find_group_bookings(booking)
         resources = [b.slot.resource for b in group]
         resolved_order = {

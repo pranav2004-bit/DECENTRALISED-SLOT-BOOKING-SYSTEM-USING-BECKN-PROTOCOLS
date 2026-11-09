@@ -475,6 +475,17 @@ class AvailabilityCalendar(models.Model):
 
     slot_duration = models.DurationField(help_text="Length of each generated slot.")
     slot_capacity = models.PositiveIntegerField(default=1)
+    # Opt-in token/queue mode (e.g. Automotive's numbered bays): when set, each
+    # eligible day gets `slot_count` *identical*-time `Slot` rows (all sharing
+    # one start/end — the single `times` anchor through `slot_duration` later,
+    # i.e. the whole daily operating window) instead of one `Slot` per
+    # `times` anchor. Each gets capacity_total=capacity_remaining=1, so slot #7
+    # booking out doesn't touch #8 — a real distinct, independently-holdable
+    # slot per number, not one shared-capacity slot relabelled. `None` (the
+    # default) leaves every existing caller's behavior byte-identical — this
+    # field is additive, not a replacement for `slot_capacity`'s own meaning
+    # in the ordinary per-time-anchor case.
+    slot_count = models.PositiveIntegerField(null=True, blank=True, default=None)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -516,6 +527,19 @@ class AvailabilityCalendar(models.Model):
             if self._parse_holiday(raw) is None:
                 errors["holidays"] = f"invalid holiday date: {raw!r}. Expected YYYY-MM-DD."
                 break
+
+        if self.slot_count is not None:
+            if self.slot_count <= 0:
+                errors["slot_count"] = "slot_count must be a positive integer when set."
+            elif len(self.times) != 1:
+                # Multiple anchors + slot_count has no clean meaning — which anchor's
+                # window would the N identical slots share? Token/queue mode is one
+                # window per day, by design, so it takes exactly one anchor (the
+                # window's own start).
+                errors["slot_count"] = (
+                    "slot_count requires exactly one time-of-day anchor "
+                    "(the daily window's start time)."
+                )
 
         if errors:
             raise ValidationError(errors)
@@ -582,16 +606,33 @@ class AvailabilityCalendar(models.Model):
                     naive_start = datetime.combine(current.date(), tod)
                     start = timezone.make_aware(naive_start, _OPERATING_TIMEZONE)
                     end = start + self.slot_duration
-                    slots.append(
-                        Slot(
-                            resource=self.resource,
-                            start_time=start,
-                            end_time=end,
-                            capacity_total=self.slot_capacity,
-                            capacity_remaining=self.slot_capacity,
-                            status=Slot.Status.AVAILABLE,
+                    if self.slot_count:
+                        # Token/queue mode: `slot_count` *distinct* Slot rows, all
+                        # sharing this identical start/end — each its own real,
+                        # independently-holdable row (capacity 1 each), not one
+                        # shared-capacity slot. Booking #7 out doesn't touch #8.
+                        slots.extend(
+                            Slot(
+                                resource=self.resource,
+                                start_time=start,
+                                end_time=end,
+                                capacity_total=1,
+                                capacity_remaining=1,
+                                status=Slot.Status.AVAILABLE,
+                            )
+                            for _ in range(self.slot_count)
                         )
-                    )
+                    else:
+                        slots.append(
+                            Slot(
+                                resource=self.resource,
+                                start_time=start,
+                                end_time=end,
+                                capacity_total=self.slot_capacity,
+                                capacity_remaining=self.slot_capacity,
+                                status=Slot.Status.AVAILABLE,
+                            )
+                        )
             current += self.frequency
 
         created = Slot.objects.bulk_create(slots)

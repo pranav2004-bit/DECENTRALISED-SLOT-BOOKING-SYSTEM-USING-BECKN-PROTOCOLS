@@ -154,13 +154,15 @@ def dispatch_on_update(*, payload: dict, correlation_id: str | None = None) -> N
     §4.2: real gap found live, not in code review — the original single-booking
     `reschedule_active_booking()` only ever moved the *one* resource
     `fulfillments[0].id` itself named, silently leaving any other resource in a
-    multi-resource group (Automotive's bay+mechanic pair) at its old time, a
-    real half-rescheduled state. Now resolves *every* resource in
-    `find_group_bookings(booking)`'s own group to its own new slot at the same
-    requested time, and moves them all together via `reschedule_booking_group()`
-    — all-or-nothing, matching `hold_multi_resource_booking()`'s own guarantee.
-    `find_group_bookings` returns just `[booking]` unchanged for every domain
-    before this phase, so this is a no-op widening for them.
+    multi-resource group at its old time, a real half-rescheduled state (relevant
+    for any domain whose adapter ever requires more than one resource at once —
+    none currently do, since Automotive's former bay+mechanic pairing was
+    removed). Now resolves *every* resource in `find_group_bookings(booking)`'s
+    own group to its own new slot at the same requested time, and moves them all
+    together via `reschedule_booking_group()` — all-or-nothing, matching
+    `hold_multi_resource_booking()`'s own guarantee. `find_group_bookings`
+    returns just `[booking]` unchanged for every domain today, so this is a
+    no-op widening.
 
     `correlation_id` (§3.10): same explicit-threading pattern as
     `confirm_service.dispatch_on_confirm`."""

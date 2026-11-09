@@ -31,13 +31,14 @@ import { BRAND } from '@/lib/brand';
  * bookable resources from. Two real, different UIs live in this one file: Healthcare
  * gets the purpose-built "Doctors" table (name/specialisation/gender/availability/
  * actions, per this brand's own domain_data fields) at the user's explicit request;
- * every other brand keeps the original generic resource list unchanged — a stylist or
- * a mechanic has no "specialisation"/"years of experience" concept, so those fields
+ * every other brand keeps the original generic resource list unchanged — a chair or
+ * a bay has no "specialisation"/"years of experience" concept, so those fields
  * only apply, and only render, for Healthcare.
  */
 
 const IS_HEALTHCARE = BRAND.id === 'medical';
 const IS_BEAUTY = BRAND.id === 'beauty';
+const IS_AUTOMOTIVE = BRAND.id === 'automotive';
 
 // ============================================================================
 // Generic (Beauty/Automotive) view — unchanged from before the Doctors rework.
@@ -362,9 +363,15 @@ const GENDER_OPTIONS = [
 ];
 
 // A single doctor can only see one patient per appointment slot — unlike a
-// salon chair or a mechanic bay, "capacity per slot" isn't a real choice
+// salon chair or a garage bay, "capacity per slot" isn't a real choice
 // here, so it's fixed rather than exposed as a form field.
 const DOCTOR_SLOT_CAPACITY = 1;
+
+// Mirrors BPP/backend/core/views.py's own MAX_SLOT_COUNT exactly — the
+// client-side input's own ceiling, so a value the backend would reject
+// outright isn't even typeable first (same "mirrored, not shared across the
+// language boundary" convention as SPECIALISATIONS/BEAUTY_SERVICES above).
+const MAX_SLOT_COUNT = 500;
 
 // Matches AvailabilityCalendar.days' own weekday tokens (shared/inventory_core/models.py's
 // _WEEKDAY_TOKENS) exactly — sent to the backend as-is, never translated.
@@ -442,6 +449,10 @@ interface Doctor {
     // — same type reused for both rather than a separate near-identical
     // interface, since the field shapes already line up one-for-one.
     staff_id?: string;
+    // Automotive's equivalent — a bay has no person-only fields below
+    // (specialisation/education/years_of_experience/gender), just a name,
+    // price and this id.
+    bay_id?: string;
     specialisation?: string;
     education?: string;
     years_of_experience?: number;
@@ -591,6 +602,17 @@ function formatSlotStart(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
+/** Formats a plain "HH:MM" time-of-day string (not an ISO instant — see
+ * formatSlotStart above for that) as 12-hour clock time, e.g. "17:00" ->
+ * "5:00 PM". Used by AutoCare's token/queue mode to show the daily window
+ * (start-end) as a single label, instead of per-time-anchor slot chips. */
+function formatClockTime(time: string): string {
+  const [h, m] = time.split(':').map(Number);
+  const period = h >= 12 ? 'PM' : 'AM';
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  return `${hour12}:${String(m).padStart(2, '0')} ${period}`;
+}
+
 // A real AVAILABLE slot whose end_time has already passed was never booked and
 // is no longer offerable — it's stale history, not something a patient could
 // still book, so the owner-facing view shouldn't color it the same live teal
@@ -698,17 +720,26 @@ function SlotDayGrid({
             year: 'numeric',
           })}
         </p>
-        {slotDurationLabel(group.slots) && (
-          <p className="text-xs text-neutral-500">{slotDurationLabel(group.slots)}</p>
+        {IS_AUTOMOTIVE && group.slots.length > 0 ? (
+          // Token/queue mode: every slot this day shares the identical window
+          // (slotDurationLabel's "N min slots" would be true but meaningless
+          // here — the window is the whole day's span, not a per-slot length).
+          <p className="text-xs text-neutral-500">
+            {formatSlotStart(group.slots[0].start_time)} – {formatSlotStart(group.slots[0].end_time)}
+          </p>
+        ) : (
+          slotDurationLabel(group.slots) && (
+            <p className="text-xs text-neutral-500">{slotDurationLabel(group.slots)}</p>
+          )
         )}
       </div>
       <div className="grid grid-cols-4 gap-1.5">
-        {group.slots.map((slot) => (
+        {group.slots.map((slot, index) => (
           <span
             key={slot.id}
             className={`rounded-lg border px-1.5 py-1.5 text-center text-xs font-semibold ${slotStatusClasses(displaySlotStatus(slot))}`}
           >
-            {formatSlotStart(slot.start_time)}
+            {IS_AUTOMOTIVE ? `#${index + 1}` : formatSlotStart(slot.start_time)}
           </span>
         ))}
       </div>
@@ -766,6 +797,13 @@ function AvailabilityModal({
     ? rangeStartTime || nowTimeString
     : undefined;
   const [slotDurationMinutes, setSlotDurationMinutes] = useState(30);
+  // AutoCare's token/queue mode only (IS_AUTOMOTIVE) — how many identical-time,
+  // individually-bookable numbered slots the daily window generates, replacing
+  // "Slot duration" (which doesn't apply here: every slot shares the whole
+  // window, nothing is sliced by duration). Kept as a string, same pattern as
+  // AddStylistForm's yearsOfExperience, so an empty field doesn't coerce to a
+  // misleading 0.
+  const [maxCapacity, setMaxCapacity] = useState('20');
   // Which weekdays this recurring window applies to — all 7 selected by default
   // (matches the previous, implicit every-day behavior). Sent to the backend as
   // AvailabilityCalendar.days; blank/all-selected means "every day" there too.
@@ -872,6 +910,17 @@ function AvailabilityModal({
     return expanded;
   }
 
+  // AutoCare's token/queue mode only — the whole daily window's own length
+  // (end - start) in minutes, which becomes AvailabilityCalendar.slot_duration
+  // for that mode (every one of the slot_count identical slots spans the full
+  // window, there's no per-time-anchor slicing to compute here).
+  function windowMinutes(startTime: string, endTime: string): number {
+    if (!/^\d{1,2}:\d{2}$/.test(startTime) || !/^\d{1,2}:\d{2}$/.test(endTime)) return 0;
+    const [sh, sm] = startTime.split(':').map(Number);
+    const [eh, em] = endTime.split(':').map(Number);
+    return eh * 60 + em - (sh * 60 + sm);
+  }
+
   // Preview — a local simulation of the slots this form will generate (daily
   // recurrence, same as the real submit below), computed from the unsaved
   // form values so the owner can sanity-check it before actually calling the
@@ -884,8 +933,25 @@ function AvailabilityModal({
     const end = new Date(rangeEnd);
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) return null;
 
-    const expandedTimes = expandTimes(rangeStartTime, rangeEndTime, slotDurationMinutes);
-    if (expandedTimes.length === 0) return null;
+    let expandedTimes: string[];
+    let tokenCount: number | undefined;
+    if (IS_AUTOMOTIVE) {
+      // Token/queue mode: one shared window per day, not sliced by duration —
+      // `times` carries just the window's own start (matching
+      // AvailabilityCalendar's "slot_count requires exactly one anchor" rule),
+      // `tokenCount` is how many identical, independently-bookable numbered
+      // slots that one window generates.
+      const count = Number(maxCapacity);
+      if (!/^\d{1,2}:\d{2}$/.test(rangeStartTime) || !/^\d{1,2}:\d{2}$/.test(rangeEndTime)) {
+        return null;
+      }
+      if (!Number.isFinite(count) || count <= 0) return null;
+      expandedTimes = [rangeStartTime];
+      tokenCount = count;
+    } else {
+      expandedTimes = expandTimes(rangeStartTime, rangeEndTime, slotDurationMinutes);
+      if (expandedTimes.length === 0) return null;
+    }
 
     const days: Date[] = [];
     let totalDays = 0;
@@ -897,9 +963,17 @@ function AvailabilityModal({
       }
       cursor.setDate(cursor.getDate() + 1);
     }
-    return { days, times: expandedTimes, totalDays };
+    return { days, times: expandedTimes, totalDays, tokenCount };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rangeStart, rangeEnd, rangeStartTime, rangeEndTime, slotDurationMinutes, selectedDays]);
+  }, [
+    rangeStart,
+    rangeEnd,
+    rangeStartTime,
+    rangeEndTime,
+    slotDurationMinutes,
+    maxCapacity,
+    selectedDays,
+  ]);
 
   // "Recent" groups the real, already-generated Slot rows (from getSlots, the
   // same source the live availability dashboard uses) by calendar day — the
@@ -971,6 +1045,10 @@ function AvailabilityModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!rangeStart || !rangeEnd || selectedDays.length === 0) return;
+    const maxCapacityNumber = Number(maxCapacity);
+    if (IS_AUTOMOTIVE && (!maxCapacity || !Number.isFinite(maxCapacityNumber) || maxCapacityNumber <= 0)) {
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
@@ -985,13 +1063,24 @@ function AvailabilityModal({
         // implicit start/end-of-day anchoring.
         rangeStart: new Date(rangeStart).toISOString(),
         rangeEnd: new Date(rangeEnd).toISOString(),
-        times: expandTimes(rangeStartTime, rangeEndTime, slotDurationMinutes),
+        // Token/queue mode (AutoCare only): a single anchor — the window's own
+        // start — matching AvailabilityCalendar's "slot_count requires exactly
+        // one time-of-day anchor" rule; every other brand keeps today's
+        // multi-anchor, duration-sliced expansion unchanged.
+        times: IS_AUTOMOTIVE ? [rangeStartTime] : expandTimes(rangeStartTime, rangeEndTime, slotDurationMinutes),
         frequencyDays: 1,
         // All 7 selected is sent as '' (every day) — identical to the old,
         // implicit behavior — rather than spelling out all 7 tokens.
         days: selectedDays.length === WEEKDAY_TOKENS.length ? '' : selectedDays.join(','),
-        slotDurationMinutes,
+        // Token/queue mode's "slot_duration" is the whole daily window's own
+        // length (end - start), not a single slot's length — every one of the
+        // slot_count identical slots spans the full window. windowMinutes(...)
+        // below (same HH:MM parsing expandTimes already uses) computes that.
+        slotDurationMinutes: IS_AUTOMOTIVE
+          ? windowMinutes(rangeStartTime, rangeEndTime)
+          : slotDurationMinutes,
         slotCapacity: DOCTOR_SLOT_CAPACITY,
+        ...(IS_AUTOMOTIVE ? { slotCount: maxCapacityNumber } : {}),
       });
       showToast(`Availability set for ${doctor.name}`);
       onClose();
@@ -1270,14 +1359,26 @@ function AvailabilityModal({
             <p className="text-xs text-red-600">Select at least one day.</p>
           )}
         </div>
-        <FormField
-          label="Slot duration (minutes)"
-          type="number"
-          min={1}
-          value={slotDurationMinutes}
-          onChange={(e) => setSlotDurationMinutes(Number(e.target.value))}
-          required
-        />
+        {IS_AUTOMOTIVE ? (
+          <FormField
+            label="Max capacity"
+            type="number"
+            min={1}
+            max={MAX_SLOT_COUNT}
+            value={maxCapacity}
+            onChange={(e) => setMaxCapacity(e.target.value)}
+            required
+          />
+        ) : (
+          <FormField
+            label="Slot duration (minutes)"
+            type="number"
+            min={1}
+            value={slotDurationMinutes}
+            onChange={(e) => setSlotDurationMinutes(Number(e.target.value))}
+            required
+          />
+        )}
         <FormField
           label={`Fee per slot (${doctor.price_currency || 'INR'})`}
           type="number"
@@ -1295,7 +1396,11 @@ function AvailabilityModal({
         <div className="flex flex-wrap gap-2">
           <button
             type="submit"
-            disabled={submitting || selectedDays.length === 0}
+            disabled={
+              submitting ||
+              selectedDays.length === 0 ||
+              (IS_AUTOMOTIVE && (!maxCapacity || Number(maxCapacity) <= 0))
+            }
             className="cursor-pointer rounded-md bg-[var(--brand-600)] px-4 py-2 text-sm text-white hover:bg-[var(--brand-700)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting ? 'Generating…' : 'Generate availability'}
@@ -1346,14 +1451,24 @@ function AvailabilityModal({
                       })}
                     </p>
                     <div className="flex flex-wrap gap-2">
-                      {preview.times.map((t) => (
-                        <span
-                          key={t}
-                          className="rounded-full border border-[var(--brand-600)] bg-white px-3 py-1 text-xs font-medium text-[var(--brand-700)]"
-                        >
-                          {formatSlotWindow(t)}
+                      {IS_AUTOMOTIVE ? (
+                        // One shared window, slot_count identical numbered
+                        // slots — not a chip per time anchor, there's only
+                        // ever the one anchor in token/queue mode.
+                        <span className="rounded-full border border-[var(--brand-600)] bg-white px-3 py-1 text-xs font-medium text-[var(--brand-700)]">
+                          {formatClockTime(rangeStartTime)} – {formatClockTime(rangeEndTime)} ·{' '}
+                          {preview.tokenCount} slot{preview.tokenCount === 1 ? '' : 's'}
                         </span>
-                      ))}
+                      ) : (
+                        preview.times.map((t) => (
+                          <span
+                            key={t}
+                            className="rounded-full border border-[var(--brand-600)] bg-white px-3 py-1 text-xs font-medium text-[var(--brand-700)]"
+                          >
+                            {formatSlotWindow(t)}
+                          </span>
+                        ))
+                      )}
                     </div>
                   </div>
                 ))}
@@ -2550,6 +2665,456 @@ function StylistsView({ account }: { account: BusinessAccount }) {
 }
 
 // ============================================================================
+// Automotive — the "Bays" table. Mirrors the Doctors/Stylists tables above
+// structurally (same AvailabilityModal/DoctorStatusToggle/SlotDayGrid/slot
+// helpers, reused as-is) but with no person-only fields at all — a bay is a
+// physical thing, not staff, so it carries just a name, price and its own
+// server-generated "BAY-0001"-style id. A mechanic is staff assigned to a bay
+// (the existing Staff page), not a second resource type here.
+// ============================================================================
+
+function AddBayForm({
+  onCreated,
+  onCancel,
+}: {
+  onCreated: (bay: Doctor) => void;
+  onCancel: () => void;
+}) {
+  const { showToast } = useToast();
+  const [name, setName] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canSubmit = Boolean(name.trim());
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const bay = await createResource(name.trim(), 'bay');
+      onCreated({
+        id: bay.id,
+        name: bay.name,
+        is_active: bay.is_active,
+        hasLiveAvailability: false,
+        domain_data: bay.domain_data,
+        price_currency: bay.price_currency,
+        price_value: bay.price_value,
+        created_at: bay.created_at,
+      });
+      showToast('Bay added successfully');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not add this bay');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+      <FormField label="Name" value={name} onChange={(e) => setName(e.target.value)} autoFocus required />
+      {error && (
+        <p role="alert" className="text-sm text-red-600">
+          {error}
+        </p>
+      )}
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          disabled={submitting || !canSubmit}
+          className="cursor-pointer rounded-md bg-[var(--brand-600)] px-4 py-2 text-sm text-white hover:bg-[var(--brand-700)] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {submitting ? 'Adding…' : 'Add bay'}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={submitting}
+          className="cursor-pointer rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function EditBayModal({
+  bay,
+  onClose,
+  onSaved,
+}: {
+  bay: Doctor;
+  onClose: () => void;
+  onSaved: (bay: Doctor) => void;
+}) {
+  const { showToast } = useToast();
+  const [name, setName] = useState(bay.name);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canSubmit = Boolean(name.trim());
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const updated = await updateResource(bay.id, { name: capitalizeWords(name.trim()) });
+      showToast('Bay updated successfully');
+      onSaved({
+        ...bay,
+        id: updated.id,
+        name: updated.name,
+        is_active: updated.is_active,
+        domain_data: updated.domain_data as Doctor['domain_data'],
+      });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not update this bay');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Modal title={`Edit ${bay.name}`} onClose={onClose}>
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <FormField label="Name" value={name} onChange={(e) => setName(e.target.value)} required />
+        {error && (
+          <p role="alert" className="text-sm text-red-600">
+            {error}
+          </p>
+        )}
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            disabled={submitting || !canSubmit}
+            className="cursor-pointer rounded-md bg-[var(--brand-600)] px-4 py-2 text-sm text-white hover:bg-[var(--brand-700)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {submitting ? 'Saving…' : 'Save'}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="cursor-pointer rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function BayRow({
+  bay,
+  onOpenAvailability,
+  onOpenEdit,
+  onUpdated,
+  onDeleted,
+}: {
+  bay: Doctor;
+  onOpenAvailability: (bay: Doctor) => void;
+  onOpenEdit: (bay: Doctor) => void;
+  onUpdated: (bay: Doctor) => void;
+  onDeleted: (bayId: string) => void;
+}) {
+  const { showToast } = useToast();
+  const [deleting, setDeleting] = useState(false);
+
+  async function handleDelete() {
+    if (!window.confirm(`Delete ${bay.name}? This can't be undone.`)) return;
+    setDeleting(true);
+    try {
+      await deleteResource(bay.id);
+      onDeleted(bay.id);
+      showToast(`${bay.name} deleted`);
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : 'Could not delete this bay', 'error');
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <tr className={`border-t border-neutral-200 ${bay.is_active ? '' : 'opacity-60'}`}>
+      <td className="px-4 py-3 text-sm font-mono text-neutral-600">{bay.domain_data.bay_id || '—'}</td>
+      <td className="px-4 py-3 text-sm font-medium text-neutral-900">{bay.name}</td>
+      <td className="px-4 py-3">
+        <Tooltip label={bay.hasLiveAvailability ? 'Has open slots' : 'No open slots'}>
+          <button
+            type="button"
+            onClick={() => onOpenAvailability(bay)}
+            className={`cursor-pointer rounded-md border px-3 py-1.5 text-sm font-medium text-white ${
+              bay.hasLiveAvailability
+                ? 'border-green-600 bg-green-600 hover:bg-green-700'
+                : 'border-red-600 bg-red-600 hover:bg-red-700'
+            }`}
+          >
+            Availability
+          </button>
+        </Tooltip>
+      </td>
+      <td className="px-4 py-3">
+        <div className="flex items-center gap-3">
+          <Tooltip label="Edit">
+            <button
+              type="button"
+              onClick={() => onOpenEdit(bay)}
+              aria-label={`Edit ${bay.name}`}
+              className="cursor-pointer text-neutral-500 hover:text-neutral-900"
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+              </svg>
+            </button>
+          </Tooltip>
+          <DoctorStatusToggle doctor={bay} onUpdated={onUpdated} />
+          <Tooltip label="Delete">
+            <button
+              type="button"
+              onClick={handleDelete}
+              disabled={deleting}
+              aria-label={`Delete ${bay.name}`}
+              className="cursor-pointer text-red-500 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16Z" />
+              </svg>
+            </button>
+          </Tooltip>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function BaysView({ account }: { account: BusinessAccount }) {
+  const [bays, setBays] = useState<Doctor[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [availabilityBay, setAvailabilityBay] = useState<Doctor | null>(null);
+  const [editBay, setEditBay] = useState<Doctor | null>(null);
+  const [addBayOpen, setAddBayOpen] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [bayIdSearch, setBayIdSearch] = useState('');
+
+  const ownedResourceIds = useMemo(
+    () => account.owned_resource_ids ?? [],
+    [account.owned_resource_ids]
+  );
+
+  const loadBays = useCallback(async () => {
+    try {
+      const results = await Promise.all(ownedResourceIds.map((id) => getSlots(id)));
+      const mapped = results.map(({ resource, slots }) => ({
+        id: resource.id,
+        name: resource.name,
+        is_active: resource.is_active,
+        hasLiveAvailability: slots.some(isSlotLiveThisWeek),
+        domain_data: resource.domain_data as Doctor['domain_data'],
+        price_currency: resource.price_currency,
+        price_value: resource.price_value,
+        created_at: resource.created_at,
+      }));
+      // Recently created bays on top — same reasoning as DoctorsView's/
+      // StylistsView's identical sort (bay_id is assigned in strictly
+      // increasing order at creation).
+      mapped.sort((a, b) =>
+        (b.domain_data.bay_id ?? '').localeCompare(a.domain_data.bay_id ?? '', undefined, {
+          numeric: true,
+        })
+      );
+      setBays(mapped);
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : 'Could not load your bays');
+    }
+  }, [ownedResourceIds]);
+
+  useEffect(() => {
+    let ignore = false;
+    loadBays().then(() => {
+      if (ignore) return;
+    });
+    return () => {
+      ignore = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ownedResourceIds]);
+
+  function handleUpdated(updated: Doctor) {
+    setBays((prev) => (prev ?? []).map((d) => (d.id === updated.id ? updated : d)));
+  }
+
+  if (loadError) return <ErrorState description={loadError} onRetry={loadBays} />;
+  if (bays === null) return <LoadingState label="Loading your bays…" />;
+
+  const filteredBays = bays.filter((b) => {
+    if (statusFilter === 'active' && !b.is_active) return false;
+    if (statusFilter === 'inactive' && b.is_active) return false;
+    if (
+      bayIdSearch.trim() &&
+      !(b.domain_data.bay_id ?? '').toLowerCase().includes(bayIdSearch.trim().toLowerCase())
+    ) {
+      return false;
+    }
+    return true;
+  });
+
+  const addBayButton = (
+    <Tooltip label="Add">
+      <button
+        type="button"
+        onClick={() => setAddBayOpen(true)}
+        className="cursor-pointer rounded-md bg-[var(--brand-600)] px-4 py-2 text-sm font-semibold text-white hover:bg-[var(--brand-700)]"
+      >
+        Add bay
+      </button>
+    </Tooltip>
+  );
+
+  return (
+    <div className="flex w-full flex-1 flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8">
+      {bays.length > 0 && <div className="flex justify-end">{addBayButton}</div>}
+
+      {bays.length > 0 && (
+        <div className="flex flex-wrap items-end gap-4">
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="filter-bay-id" className="text-xs font-medium text-neutral-600">
+              Bay ID
+            </label>
+            <div className="relative">
+              <input
+                id="filter-bay-id"
+                type="text"
+                value={bayIdSearch}
+                onChange={(e) => setBayIdSearch(e.target.value)}
+                placeholder="e.g. BAY-0001"
+                className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900"
+              />
+              {bayIdSearch && (
+                <button
+                  type="button"
+                  onClick={() => setBayIdSearch('')}
+                  aria-label="Clear bay ID search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-neutral-400 hover:text-neutral-700"
+                >
+                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M18 6 6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="filter-bay-status" className="text-xs font-medium text-neutral-600">
+              Status
+            </label>
+            <select
+              id="filter-bay-status"
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
+              className="w-36 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-900"
+            >
+              <option value="all">All</option>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </select>
+          </div>
+        </div>
+      )}
+
+      {bays.length === 0 ? (
+        <EmptyState
+          title="No bays yet"
+          description="Add your first bay to start taking bookings."
+          action={addBayButton}
+        />
+      ) : filteredBays.length === 0 ? (
+        <EmptyState
+          title="No bays match these filters"
+          description="Try changing or clearing a filter above."
+          action={
+            <button
+              type="button"
+              onClick={() => {
+                setBayIdSearch('');
+                setStatusFilter('all');
+              }}
+              className="cursor-pointer rounded-md border border-neutral-300 bg-white px-4 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
+            >
+              Clear filters
+            </button>
+          }
+        />
+      ) : (
+        <div className="w-full overflow-x-auto overflow-y-hidden rounded-lg border border-neutral-200 bg-white">
+          <table className="w-full min-w-[480px] border-collapse">
+            <thead>
+              <tr className="bg-neutral-50 text-left text-xs font-bold uppercase tracking-wide text-neutral-500">
+                <th className="px-4 py-3">Bay ID</th>
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Availability</th>
+                <th className="px-4 py-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredBays.map((bay) => (
+                <BayRow
+                  key={bay.id}
+                  bay={bay}
+                  onOpenAvailability={setAvailabilityBay}
+                  onOpenEdit={setEditBay}
+                  onUpdated={handleUpdated}
+                  onDeleted={(id) => setBays((prev) => (prev ?? []).filter((d) => d.id !== id))}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {addBayOpen && (
+        <Modal title="Add a bay" onClose={() => setAddBayOpen(false)}>
+          <AddBayForm
+            onCreated={(bay) => {
+              setBays((prev) => [bay, ...(prev ?? [])]);
+              setAddBayOpen(false);
+            }}
+            onCancel={() => setAddBayOpen(false)}
+          />
+        </Modal>
+      )}
+
+      {availabilityBay && (
+        <AvailabilityModal
+          doctor={availabilityBay}
+          customerNoun="customer"
+          onClose={() => {
+            setAvailabilityBay(null);
+            loadBays();
+          }}
+        />
+      )}
+      {editBay && (
+        <EditBayModal
+          bay={editBay}
+          onClose={() => setEditBay(null)}
+          onSaved={(updated) => {
+            handleUpdated(updated);
+            setEditBay(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
 
 export default function ResourcesPage() {
   const router = useRouter();
@@ -2578,5 +3143,6 @@ export default function ResourcesPage() {
   if (account === 'loading' || account === null) return <LoadingState label="Checking session…" />;
   if (IS_HEALTHCARE) return <DoctorsView account={account} />;
   if (IS_BEAUTY) return <StylistsView account={account} />;
+  if (IS_AUTOMOTIVE) return <BaysView account={account} />;
   return <GenericResourcesView account={account} />;
 }

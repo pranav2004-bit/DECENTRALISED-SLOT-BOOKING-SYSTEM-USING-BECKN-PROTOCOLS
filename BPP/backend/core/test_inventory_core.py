@@ -68,6 +68,128 @@ def test_generate_slots_recurring_rule_with_holiday_produces_correct_set(resourc
 
 
 @pytest.mark.django_db
+def test_generate_slots_token_mode_creates_distinct_independently_bookable_slots(resource):
+    """AutoCare's own "max capacity / numbered slots" mode (livetracker reference:
+    design discussed and locked live, 2026-11-09) — `slot_count` set means N real,
+    distinct `Slot` rows sharing one identical window, not one shared-capacity slot.
+    Booking slot #7 out must never touch #8's own capacity — proven here by actually
+    mutating one and re-querying the rest."""
+    today = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    range_start = today + dt.timedelta(days=1)
+    # Same calendar day, later instant — range_end must be strictly after
+    # range_start (clean()'s own check), even though a single day is enough
+    # to prove the per-day fan-out this test is actually about.
+    range_end = range_start + dt.timedelta(hours=12)
+
+    calendar = AvailabilityCalendar.objects.create(
+        resource=resource,
+        frequency=dt.timedelta(days=1),
+        range_start=range_start,
+        range_end=range_end,
+        days="",
+        times=["09:00"],
+        slot_duration=dt.timedelta(hours=9),  # the whole 09:00-18:00 window
+        slot_capacity=1,
+        slot_count=20,
+    )
+
+    slots = calendar.generate_slots()
+
+    assert len(slots) == 20
+    assert Slot.objects.filter(resource=resource).count() == 20
+    start_times = {s.start_time for s in slots}
+    end_times = {s.end_time for s in slots}
+    # Every one of the 20 shares the identical window — that's the whole point of
+    # this mode — but they're still 20 distinct rows (distinct ids), not one row
+    # with capacity_total=20.
+    assert start_times == {slots[0].start_time}
+    assert end_times == {slots[0].end_time}
+    assert slots[0].end_time - slots[0].start_time == dt.timedelta(hours=9)
+    assert len({s.id for s in slots}) == 20
+    for slot in slots:
+        assert slot.capacity_total == 1
+        assert slot.capacity_remaining == 1
+        assert slot.status == Slot.Status.AVAILABLE
+
+    # Book #7 out — #8 (and every other sibling) must be completely unaffected.
+    booked = Slot.objects.get(id=slots[6].id)
+    booked.capacity_remaining = 0
+    booked.status = Slot.Status.BOOKED
+    booked.save(update_fields=["capacity_remaining", "status"])
+
+    untouched = Slot.objects.get(id=slots[7].id)
+    assert untouched.capacity_remaining == 1
+    assert untouched.status == Slot.Status.AVAILABLE
+    assert Slot.objects.filter(resource=resource, status=Slot.Status.AVAILABLE).count() == 19
+
+
+@pytest.mark.django_db
+def test_generate_slots_token_mode_rejects_multiple_time_anchors(resource):
+    """slot_count's own window is ambiguous with more than one `times` anchor —
+    which anchor's window would the N identical slots even share? Rejected at
+    clean()/generate_slots() time, not silently resolved one way or the other."""
+    today = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    calendar = AvailabilityCalendar(
+        resource=resource,
+        frequency=dt.timedelta(days=1),
+        range_start=today + dt.timedelta(days=1),
+        range_end=today + dt.timedelta(days=1),
+        times=["09:00", "14:00"],
+        slot_duration=dt.timedelta(hours=1),
+        slot_capacity=1,
+        slot_count=5,
+    )
+    with pytest.raises(ValidationError, match="slot_count"):
+        calendar.generate_slots()
+
+
+@pytest.mark.django_db
+def test_generate_slots_token_mode_rejects_non_positive_count(resource):
+    today = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    calendar = AvailabilityCalendar(
+        resource=resource,
+        frequency=dt.timedelta(days=1),
+        range_start=today + dt.timedelta(days=1),
+        range_end=today + dt.timedelta(days=1),
+        times=["09:00"],
+        slot_duration=dt.timedelta(hours=1),
+        slot_capacity=1,
+        slot_count=0,
+    )
+    with pytest.raises(ValidationError, match="slot_count"):
+        calendar.generate_slots()
+
+
+@pytest.mark.django_db
+def test_generate_slots_without_slot_count_unchanged(resource):
+    """slot_count is additive — omitted (the default), behavior must be byte-
+    identical to every pre-existing caller's own expectations. Same fixture shape
+    as test_generate_slots_recurring_rule_with_holiday_produces_correct_set above,
+    just without the holiday, to isolate this from that test's own assertions."""
+    today = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    range_start = today + dt.timedelta(days=1)
+
+    calendar = AvailabilityCalendar.objects.create(
+        resource=resource,
+        frequency=dt.timedelta(days=1),
+        range_start=range_start,
+        range_end=range_start + dt.timedelta(hours=12),
+        days="",
+        times=["09:00", "14:00"],
+        slot_duration=dt.timedelta(minutes=30),
+        slot_capacity=2,
+    )
+    assert calendar.slot_count is None
+
+    slots = calendar.generate_slots()
+
+    assert len(slots) == 2
+    for slot in slots:
+        assert slot.capacity_total == 2
+        assert slot.capacity_remaining == 2
+
+
+@pytest.mark.django_db
 def test_generate_slots_respects_weekday_filter(resource):
     today = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
     range_start = today + dt.timedelta(days=1)

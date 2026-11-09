@@ -195,8 +195,8 @@ const BRANDS: Record<BrandId, Brand> = {
     tagline: 'Keep every bay booked.',
     domainLabel: 'Automotive',
     domainCode: 'BECKN:AUTO01',
-    resourceNounSingular: 'Mechanic',
-    resourceNounPlural: 'Mechanics',
+    resourceNounSingular: 'Bay',
+    resourceNounPlural: 'Bays',
     customerNoun: 'customer',
     businessNoun: 'garage',
     heroHeadline: 'Never let a bay sit idle.',
@@ -210,38 +210,38 @@ const BRANDS: Record<BrandId, Brand> = {
     demoWidgetBusinessName: 'Downtown Auto Garage',
     demoWidgetProfiles: [
       {
-        name: 'Ravi Teja - Brake Specialist',
+        name: 'Bay 1',
         slots: ['1:30 PM', '2:00 PM', '2:30 PM', '3:00 PM', '3:30 PM', '4:00 PM', '4:30 PM', '5:00 PM'],
       },
       {
-        name: 'Suresh - Engine Diagnostics',
+        name: 'Bay 2',
         slots: ['10:00 AM', '10:30 AM', '11:00 AM', '11:30 AM', '12:00 PM', '12:30 PM', '1:00 PM', '1:30 PM'],
       },
       {
-        name: 'Kiran - Tyre & Alignment',
+        name: 'Bay 3',
         slots: ['3:00 PM', '3:30 PM', '4:00 PM', '4:30 PM', '5:00 PM', '5:30 PM', '6:00 PM', '6:30 PM'],
       },
       {
-        name: 'Arjun - AC & Electrical',
+        name: 'Bay 4',
         slots: ['5:00 PM', '5:30 PM', '6:00 PM', '6:30 PM', '7:00 PM', '7:30 PM', '8:00 PM', '8:30 PM'],
       },
     ],
     demoWidgetSlotStatus: {
-      'Ravi Teja - Brake Specialist': { '1:30 PM': 'taken', '2:00 PM': 'taken', '2:30 PM': 'selected' },
-      'Suresh - Engine Diagnostics': {
+      'Bay 1': { '1:30 PM': 'taken', '2:00 PM': 'taken', '2:30 PM': 'selected' },
+      'Bay 2': {
         '10:00 AM': 'taken',
         '10:30 AM': 'taken',
         '11:00 AM': 'taken',
         '11:30 AM': 'taken',
       },
-      'Kiran - Tyre & Alignment': {
+      'Bay 3': {
         '3:00 PM': 'taken',
         '3:30 PM': 'taken',
         '4:00 PM': 'taken',
         '4:30 PM': 'taken',
         '5:00 PM': 'taken',
       },
-      'Arjun - AC & Electrical': { '5:00 PM': 'taken', '5:30 PM': 'taken', '6:00 PM': 'taken' },
+      'Bay 4': { '5:00 PM': 'taken', '5:30 PM': 'taken', '6:00 PM': 'taken' },
     },
     colors: { 50: '#eff6ff', 100: '#dbeafe', 600: '#2563eb', 700: '#1d4ed8' },
   },

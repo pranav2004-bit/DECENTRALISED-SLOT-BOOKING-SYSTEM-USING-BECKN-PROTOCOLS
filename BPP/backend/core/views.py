@@ -52,6 +52,13 @@ from .realtime import broadcast_slot_update
 # number derived from real production capacity data (none exists yet).
 MAX_AVAILABILITY_RANGE_DAYS = 366
 
+# Caps AvailabilityCalendar.slot_count (the token/queue mode's "how many numbered
+# slots per day") — same reasoning as MAX_AVAILABILITY_RANGE_DAYS: a deliberately
+# generous, honest ceiling (no real garage runs 500 bays through one bay resource
+# in a day) against the same resource-exhaustion concern, not a number backed by
+# real usage data yet.
+MAX_SLOT_COUNT = 500
+
 # Profile page's Status toggle — a business can't go "Live" with a half-filled
 # listing, so every one of these BusinessAccount fields must be non-empty before
 # is_accepting_bookings can be set True (business_profile_update_view). Mirrored
@@ -578,16 +585,22 @@ def resource_create_view(request):
             )
         domain_data = {**domain_data, "location_id": str(location_id)}
 
-    # Doctors/Stylists tabs: every doctor or stylist gets a server-generated,
-    # owner-scoped, immutable "DOC-0001"/"STY-0001"-style id — never client-
-    # supplied (mirrors owner_ref above), and never editable afterwards
-    # (resource_update_view rejects it outright). The increment happens under a
-    # row lock on the owning account so two concurrent creates can't race to the
-    # same number. One shared counter field (next_doctor_sequence) backs both —
-    # a business account's domain_code is fixed, so it only ever creates one of
-    # the two resource_types, never both; a separate per-domain counter would be
-    # unused machinery, not a real collision risk this avoids.
-    _STAFF_ID_BY_RESOURCE_TYPE = {"doctor": ("doctor_id", "DOC"), "stylist": ("staff_id", "STY")}
+    # Doctors/Stylists/Bays tabs: every doctor, stylist or bay gets a server-
+    # generated, owner-scoped, immutable "DOC-0001"/"STY-0001"/"BAY-0001"-style
+    # id — never client-supplied (mirrors owner_ref above), and never editable
+    # afterwards (resource_update_view rejects it outright). The increment
+    # happens under a row lock on the owning account so two concurrent creates
+    # can't race to the same number. One shared counter field
+    # (next_doctor_sequence) backs all three — a business account's domain_code
+    # is fixed, so it only ever creates one of these resource_types, never more
+    # than one; a separate per-domain counter would be unused machinery, not a
+    # real collision risk this avoids. Beauty's own "chair" never gets one — it's
+    # the one remaining resource type with no dedicated management UI of its own.
+    _STAFF_ID_BY_RESOURCE_TYPE = {
+        "doctor": ("doctor_id", "DOC"),
+        "stylist": ("staff_id", "STY"),
+        "bay": ("bay_id", "BAY"),
+    }
     if domain_data.get("resource_type") in _STAFF_ID_BY_RESOURCE_TYPE:
         id_key, prefix = _STAFF_ID_BY_RESOURCE_TYPE[domain_data["resource_type"]]
         with transaction.atomic():
@@ -673,10 +686,11 @@ def resource_update_view(request, resource_id):
             return error_response(
                 "VALIDATION_ERROR", "domain_data must be an object", 400, field="domain_data"
             )
-        # Doctors/Stylists tabs: doctor_id/staff_id is server-generated at creation
-        # and permanent — never accepted from a client here, regardless of what the
-        # frontend form sends, so a direct API call can't reassign it either.
-        for id_key in ("doctor_id", "staff_id"):
+        # Doctors/Stylists/Bays tabs: doctor_id/staff_id/bay_id is server-generated
+        # at creation and permanent — never accepted from a client here, regardless
+        # of what the frontend form sends, so a direct API call can't reassign it
+        # either.
+        for id_key in ("doctor_id", "staff_id", "bay_id"):
             if id_key in incoming and incoming[id_key] != resource.domain_data.get(id_key):
                 return error_response(
                     "VALIDATION_ERROR", f"{id_key} cannot be changed", 400, field=id_key
@@ -954,19 +968,45 @@ def _resource_availability_post(request, resource_id):
     if not isinstance(slot_capacity, int) or slot_capacity <= 0:
         return error_response("VALIDATION_ERROR", "slot_capacity must be a positive integer", 400)
 
+    # Token/queue mode (e.g. Automotive's numbered bays) — optional, omitted/None
+    # for every existing caller, same "additive, not a replacement" contract as
+    # AvailabilityCalendar.slot_count itself. `clean()` (called inside
+    # generate_slots() below) separately rejects it alongside more than one
+    # `times` anchor; the bounds check here is the resource-exhaustion guard,
+    # same role MAX_AVAILABILITY_RANGE_DAYS plays for the date range above.
+    slot_count = payload.get("slot_count")
+    if slot_count is not None:
+        if not isinstance(slot_count, int) or slot_count <= 0:
+            return error_response(
+                "VALIDATION_ERROR", "slot_count must be a positive integer when set", 400
+            )
+        if slot_count > MAX_SLOT_COUNT:
+            return error_response(
+                "VALIDATION_ERROR", f"slot_count must not exceed {MAX_SLOT_COUNT}", 400
+            )
+
     try:
-        calendar = AvailabilityCalendar.objects.create(
-            resource=resource,
-            frequency=dt.timedelta(days=frequency_days),
-            range_start=range_start,
-            range_end=range_end,
-            days=payload.get("days", ""),
-            times=payload.get("times", []),
-            holidays=payload.get("holidays", []),
-            slot_duration=dt.timedelta(minutes=slot_duration_minutes),
-            slot_capacity=slot_capacity,
-        )
-        slots = calendar.generate_slots()
+        # Real bug found live (2026-11-09): generate_slots() calls self.clean()
+        # internally — which is where the "slot_count requires exactly one
+        # time-of-day anchor" rule (and every other model-level rule) actually
+        # lives — but .create() above it already persists the row. Without an
+        # atomic() wrapper, a clean()-only validation failure (unlike every
+        # other check in this view, all of which run *before* .create()) left
+        # a stray, invalid AvailabilityCalendar row behind on a 400 response.
+        with transaction.atomic():
+            calendar = AvailabilityCalendar.objects.create(
+                resource=resource,
+                frequency=dt.timedelta(days=frequency_days),
+                range_start=range_start,
+                range_end=range_end,
+                days=payload.get("days", ""),
+                times=payload.get("times", []),
+                holidays=payload.get("holidays", []),
+                slot_duration=dt.timedelta(minutes=slot_duration_minutes),
+                slot_capacity=slot_capacity,
+                slot_count=slot_count,
+            )
+            slots = calendar.generate_slots()
     except DjangoValidationError as exc:
         return error_response("VALIDATION_ERROR", str(exc), 400)
 

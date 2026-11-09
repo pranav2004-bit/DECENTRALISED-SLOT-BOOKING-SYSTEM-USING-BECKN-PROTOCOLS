@@ -148,6 +148,7 @@ def trigger_select(
     customer_email: str | None = None,
     customer_phone: str | None = None,
     hold_seconds: int | None = None,
+    slot_id: str | None = None,
 ) -> None:
     """Customer-facing selection trigger — builds and sends the real signed Beckn
     /select to Gateway, targeting the one specific BPP that actually offered this item.
@@ -168,7 +169,14 @@ def trigger_select(
     §J.1's `Stop.yaml` confirmation: `person`/`contact` are real Stop fields, not
     invented ones). Sent once, at select time, since /init and /confirm both resolve
     the same already-created Booking by `fulfillments[0].id` rather than re-reading
-    the order body — there is no later point where re-sending this would do anything."""
+    the order body — there is no later point where re-sending this would do anything.
+
+    `slot_id` (project-defined, same "no real Select field for it" territory as
+    `hold_seconds` above): disambiguates which *specific* Slot a customer picked
+    when more than one shares the identical `requested_timestamp` — AutoCare's own
+    token/queue mode (BPP/backend/core/select_service.py's own handling of it is
+    the authoritative side; this is just the pass-through). `None` for every other
+    domain, same as `hold_seconds` being 0/unset for most callers today."""
     try:
         session = resolve_owned_session(transaction_id=transaction_id, requesting_customer=customer)
     except SessionAccessError as exc:
@@ -218,6 +226,8 @@ def trigger_select(
     message: dict = {"order": order}
     if hold_seconds:
         message["hold_seconds"] = hold_seconds
+    if slot_id:
+        message["slot_id"] = slot_id
     payload = {"context": context, "message": message}
     body = json.dumps(payload).encode()
 

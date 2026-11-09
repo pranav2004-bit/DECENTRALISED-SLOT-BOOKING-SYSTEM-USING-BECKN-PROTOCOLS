@@ -58,6 +58,12 @@ export async function checkAvailability(
 }
 
 export interface AvailableSlot {
+  // Project-defined, not a real Schedule field (BPP/backend/core/
+  // availability_service.py's own list_available_slots docstring) — only
+  // needed to disambiguate AutoCare's token/queue mode, where many slots for
+  // one resource share the identical start_time; every other domain's own
+  // rendering ignores it (start_time alone is already unique for them).
+  id: string;
   start_time: string;
   end_time: string;
   // 'available' = open; 'booked' = already taken (confirmed, or currently held
@@ -99,6 +105,10 @@ export async function triggerSelect(params: {
   itemId: string;
   requestedTimestamp: string;
   holdSeconds?: number;
+  /** AutoCare's token/queue mode only — disambiguates which of the possibly
+   * many identical-start_time slots the customer actually tapped (see
+   * AvailableSlot.id's own comment). Omitted for every other domain. */
+  slotId?: string;
 }): Promise<void> {
   await apiFetch('/api/v1/select', {
     method: 'POST',
@@ -107,6 +117,7 @@ export async function triggerSelect(params: {
       transaction_id: params.transactionId,
       item_id: params.itemId,
       requested_timestamp: params.requestedTimestamp,
+      ...(params.slotId ? { slot_id: params.slotId } : {}),
       ...(params.holdSeconds ? { hold_seconds: params.holdSeconds } : {}),
     }),
   });

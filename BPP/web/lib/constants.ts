@@ -29,10 +29,7 @@ export const RESOURCE_TYPES_BY_DOMAIN: Record<string, { value: string; label: st
     { value: 'chair', label: 'Chair' },
   ],
   'ONDC:SRV13': [{ value: 'doctor', label: 'Doctor' }],
-  'BECKN:AUTO01': [
-    { value: 'bay', label: 'Bay' },
-    { value: 'mechanic', label: 'Mechanic' },
-  ],
+  'BECKN:AUTO01': [{ value: 'bay', label: 'Bay' }],
 };
 
 /**

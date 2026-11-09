@@ -9,7 +9,7 @@ const SEARCH_TEXT = BRAND.demoSearchQuery;
 const TYPE_SPEED_MS = 100;
 const RESULTS = BRAND.demoResultNames;
 // Per-brand business name + staff/profile list + slot statuses, so CareNest
-// (doctors), StyleNest (stylists) and AutoCare (mechanics) each show their
+// (doctors), StyleNest (stylists) and AutoCare (bays) each show their
 // own relevant content here instead of one hardcoded hospital/doctor set.
 const DEMO_CLINIC = BRAND.demoWidgetBusinessName;
 const PROFILES = BRAND.demoWidgetProfiles.map((p) => ({ doctor: p.name, slots: p.slots }));

@@ -202,10 +202,13 @@ def dispatch_on_confirm(*, payload: dict, correlation_id: str | None = None) -> 
             "message": "message.order.fulfillments[0].stops[0].person.name is required to confirm",
         }
     else:
-        # §4.2: confirm every booking in the group together (Automotive's bay+mechanic
-        # pair), not just the one the wire request actually names — `find_group_bookings`
-        # returns just `[booking]` unchanged for every domain before this phase, so this
-        # is a no-op widening for Beauty/Healthcare, not a behavior change for them.
+        # §4.2: confirm every booking in a multi-resource group together, not just
+        # the one the wire request actually names — relevant for any domain whose
+        # adapter ever requires more than one resource at once (none currently do,
+        # since Automotive's former bay+mechanic pairing was removed — a mechanic
+        # is staff, not a second Resource). `find_group_bookings` returns just
+        # `[booking]` unchanged for every domain today, so this is a no-op widening
+        # for all of them, not a behavior change.
         group = find_group_bookings(booking)
         try:
             confirmed_bookings = [
@@ -252,8 +255,9 @@ def dispatch_on_confirm(*, payload: dict, correlation_id: str | None = None) -> 
             # worker consuming the `BookingEvent.CONFIRMED` `confirm_hold()` publishes
             # per booking (event_bus is threaded through above) — a deliberate
             # metric-semantics decision, confirmed with the project owner: a
-            # multi-resource confirm (e.g. Automotive's bay+mechanic pair) now counts as
-            # 2 confirmed bookings, not 1, matching what actually got confirmed.
+            # multi-resource confirm (were any domain to require more than one
+            # resource at once) counts as 2 confirmed bookings, not 1, matching
+            # what actually got confirmed.
             confirmed_booking = next(b for b in confirmed_bookings if b.id == booking.id)
             resources = [b.slot.resource for b in confirmed_bookings]
             total_value = sum(r.price_value for r in resources)

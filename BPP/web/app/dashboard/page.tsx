@@ -101,6 +101,12 @@ function StatCard({
   );
 }
 
+// AutoCare's bays have no specialisation at all (same reasoning as the Bays
+// management table already dropping Service/Experience/Gender) — the
+// performance table's own Specialisation column is dropped for this brand
+// only, CareNest/StyleNest keep it since their resources genuinely have one.
+const IS_AUTOMOTIVE = BRAND.id === 'automotive';
+
 const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function dayLabel(isoDate: string): string {
@@ -319,7 +325,7 @@ function DoctorPerformance({
               <thead>
                 <tr className="sticky top-0 bg-neutral-50 text-left text-xs font-semibold uppercase tracking-wide text-neutral-500">
                   <th className="px-5 py-2">{BRAND.resourceNounSingular}</th>
-                  <th className="px-3 py-2">Specialisation</th>
+                  {!IS_AUTOMOTIVE && <th className="px-3 py-2">Specialisation</th>}
                   {/* Numeric columns right-align, text columns left-align —
                       the same convention every real data table (Stripe's own
                       transaction list included) uses, so a column of amounts
@@ -332,7 +338,9 @@ function DoctorPerformance({
                 {doctors.map((doctor) => (
                   <tr key={doctor.name} className="hover:bg-neutral-50">
                     <td className="px-5 py-3 font-semibold text-neutral-900">{doctor.name}</td>
-                    <td className="px-3 py-3 text-neutral-600">{doctor.specialisation || '-'}</td>
+                    {!IS_AUTOMOTIVE && (
+                      <td className="px-3 py-3 text-neutral-600">{doctor.specialisation || '-'}</td>
+                    )}
                     <td className="px-3 py-3 text-right tabular-nums text-neutral-900">
                       {formatAmount(doctor.fee, currency)}
                     </td>

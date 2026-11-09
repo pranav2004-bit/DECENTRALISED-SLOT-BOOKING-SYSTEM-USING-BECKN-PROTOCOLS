@@ -39,7 +39,10 @@ interface ProviderGroup {
 const DOMAIN_NOUNS: Record<string, { provider: string; item: string }> = {
   'ONDC:SRV13': { provider: 'hospital', item: 'doctor' },
   'ONDC:RET13': { provider: 'salon', item: 'stylist' },
-  'BECKN:AUTO01': { provider: 'garage', item: 'mechanic' },
+  // "bay", not "mechanic" — AutoCare's own bay-only redesign (2026-11-09): a
+  // mechanic is staff, not a bookable item, same reasoning as
+  // BPP/web/lib/brand.ts's own resourceNounSingular/Plural for this brand.
+  'BECKN:AUTO01': { provider: 'garage', item: 'bay' },
 };
 const DEFAULT_NOUNS = { provider: 'provider', item: 'professional' };
 
@@ -80,8 +83,8 @@ function getTagValue(item: CatalogItem, code: string): string | undefined {
 }
 
 /** "Dr." is a real title, not decoration — only prepended for the healthcare
- * domain's own items (doctors), never a stylist/mechanic, and never doubled
- * when a business already entered it as part of the name themselves. */
+ * domain's own items (doctors), never a stylist/bay, and never doubled when a
+ * business already entered it as part of the name themselves. */
 function doctorDisplayName(name: string, isDoctorDomain: boolean): string {
   if (!isDoctorDomain || /^dr\.?\s/i.test(name)) return name;
   return `Dr. ${name}`;
@@ -235,7 +238,7 @@ function SearchPageInner() {
     // (see its own className logic below), so this only guards a stale closure
     // calling in after a slot flips to booked out from under it.
     if (slot.status === 'booked') return;
-    if (selectedSlot?.item.id === item.id && selectedSlot.slot.start_time === slot.start_time) {
+    if (selectedSlot?.item.id === item.id && selectedSlot.slot.id === slot.id) {
       // Tapping the already-selected slot again deselects it. The real hold
       // isn't explicitly released by this (no such "give it back early" call
       // exists) — it simply lapses on its own, within HOLD_SECONDS, same as
@@ -252,6 +255,11 @@ function SearchPageInner() {
         itemId: item.id,
         requestedTimestamp: slot.start_time,
         holdSeconds: HOLD_SECONDS,
+        // AutoCare's token/queue mode only — disambiguates which of possibly
+        // many identical-start_time slots this tap actually meant. Every
+        // other domain's own slot.id is already implied by start_time alone,
+        // so the backend ignores it there just as safely as omitting it.
+        slotId: slot.id,
       });
       const result = await pollUntil(
         () => getSelectResult(transactionId),
@@ -562,6 +570,12 @@ function SearchPageInner() {
   const domainLabel = SEARCH_DOMAINS.find((d) => d.code === domain)?.label ?? '';
   const nouns = DOMAIN_NOUNS[domain] ?? DEFAULT_NOUNS;
   const isDoctorDomain = domain === 'ONDC:SRV13';
+  // Gates the card-title/slot-picker branches below — AutoCare's own
+  // token/queue mode (bay-only redesign, 2026-11-09): every slot for one
+  // item on a given day shares the identical start_time, so the title shows
+  // the daily window instead of a (nonexistent) specialisation, and the
+  // slot picker shows numbers instead of times.
+  const isAutomotiveDomain = domain === 'BECKN:AUTO01';
 
   const trimmedQuery = searchQuery.trim().toLowerCase();
   const filteredProviderGroups = useMemo(() => {
@@ -981,6 +995,15 @@ function SearchPageInner() {
                   const specialisation = getTagValue(item, 'specialisation');
                   const name = doctorDisplayName(item.descriptor.name, isDoctorDomain);
                   const itemSlots = slotsByItem[item.id];
+                  // AutoCare has no specialisation to show — every one of its
+                  // slots shares the identical window (token/queue mode), so
+                  // the daily time window fills the same spot specialisation
+                  // occupies for every other domain, derived from whichever
+                  // slot's already loaded rather than a new catalog field.
+                  const automotiveWindow =
+                    isAutomotiveDomain && itemSlots && itemSlots.length > 0
+                      ? `${formatTime(itemSlots[0].start_time)} – ${formatTime(itemSlots[0].end_time)}`
+                      : undefined;
                   return (
                     <li
                       key={item.id}
@@ -1001,10 +1024,12 @@ function SearchPageInner() {
                       <div className="flex flex-wrap items-start justify-between gap-2 pr-8">
                         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                           <span className="text-base font-semibold text-neutral-900">{name}</span>
-                          {specialisation && (
+                          {(specialisation || automotiveWindow) && (
                             <>
                               <span className="text-xs text-neutral-300">•</span>
-                              <span className="text-sm font-medium text-[var(--brand-600)]">{specialisation}</span>
+                              <span className="text-sm font-medium text-[var(--brand-600)]">
+                                {specialisation || automotiveWindow}
+                              </span>
                             </>
                           )}
                         </div>
@@ -1021,10 +1046,10 @@ function SearchPageInner() {
                         )}
                         {itemSlots && itemSlots.length > 0 && (
                           <div className="flex flex-wrap gap-2">
-                            {itemSlots.map((slot) => {
+                            {itemSlots.map((slot, slotIndex) => {
                               const isThisSlot =
                                 selectedSlot?.item.id === item.id &&
-                                selectedSlot.slot.start_time === slot.start_time;
+                                selectedSlot.slot.id === slot.id;
                               const status = isThisSlot ? selectedSlot.status : null;
                               // Unified "can't have this one" state — a slot already
                               // booked (or currently held by someone else, in real
@@ -1032,10 +1057,22 @@ function SearchPageInner() {
                               // it) renders identically: dark grey, disabled, still
                               // visible. See the legend bar below for what each
                               // color means.
+                              //
+                              // heldByOthers is keyed by item_id:start_time, which
+                              // AutoCare's own token/queue mode shares identically
+                              // across every slot that day — consulting it there
+                              // would grey out all N the instant any *one* of them
+                              // is held by someone else, not just the one actually
+                              // taken. Skipped for this domain; real-slot booking
+                              // safety is unaffected either way (hold_slot's own
+                              // atomic check is the authoritative guard, this is
+                              // only the live-UI hint) — a slower refetch-driven
+                              // correction, not an instant push, for this one case.
                               const isBooked =
                                 !isThisSlot &&
                                 (slot.status === 'booked' ||
-                                  heldByOthers.has(`${item.id}:${slot.start_time}`));
+                                  (!isAutomotiveDomain &&
+                                    heldByOthers.has(`${item.id}:${slot.start_time}`)));
                               const className = isBooked
                                 ? 'cursor-not-allowed rounded-md border border-neutral-500 bg-neutral-500 px-3 py-1.5 text-xs font-medium text-neutral-100'
                                 : status === 'held'
@@ -1045,7 +1082,7 @@ function SearchPageInner() {
                                     : 'rounded-md border border-neutral-300 bg-neutral-100 px-3 py-1.5 text-xs font-medium text-neutral-700 transition-colors hover:border-[var(--brand-600)] hover:bg-[var(--brand-50)] hover:text-[var(--brand-700)]';
                               return (
                                 <button
-                                  key={slot.start_time}
+                                  key={slot.id}
                                   type="button"
                                   aria-pressed={status === 'held'}
                                   aria-disabled={isBooked}
@@ -1053,7 +1090,11 @@ function SearchPageInner() {
                                   onClick={() => handleSlotTap(item, slot)}
                                   className={className}
                                 >
-                                  {status === 'holding' ? 'Holding…' : formatTime(slot.start_time)}
+                                  {status === 'holding'
+                                    ? 'Holding…'
+                                    : isAutomotiveDomain
+                                      ? `#${slotIndex + 1}`
+                                      : formatTime(slot.start_time)}
                                 </button>
                               );
                             })}
@@ -1092,11 +1133,19 @@ function SearchPageInner() {
                 <h2 className="text-lg font-semibold text-neutral-900">
                   {doctorDisplayName(infoItem.descriptor.name, isDoctorDomain)}
                 </h2>
-                {getTagValue(infoItem, 'specialisation') && (
-                  <p className="mt-0.5 text-sm font-medium text-[var(--brand-600)]">
-                    {getTagValue(infoItem, 'specialisation')}
-                  </p>
-                )}
+                {(() => {
+                  const infoItemSlots = slotsByItem[infoItem.id];
+                  const infoAutomotiveWindow =
+                    isAutomotiveDomain && infoItemSlots && infoItemSlots.length > 0
+                      ? `${formatTime(infoItemSlots[0].start_time)} – ${formatTime(infoItemSlots[0].end_time)}`
+                      : undefined;
+                  const label = getTagValue(infoItem, 'specialisation') || infoAutomotiveWindow;
+                  return (
+                    label && (
+                      <p className="mt-0.5 text-sm font-medium text-[var(--brand-600)]">{label}</p>
+                    )
+                  );
+                })()}
               </div>
               <button
                 type="button"
@@ -1152,7 +1201,10 @@ function SearchPageInner() {
                 <p className="text-xs text-red-600">{selectedSlot.errorMessage}</p>
               ) : (
                 <p className="text-xs text-neutral-500">
-                  {selectedProvider.provider.descriptor.name} · {formatTime(selectedSlot.slot.start_time)}
+                  {selectedProvider.provider.descriptor.name} ·{' '}
+                  {isAutomotiveDomain
+                    ? `#${(slotsByItem[selectedSlot.item.id] ?? []).findIndex((s) => s.id === selectedSlot.slot.id) + 1}`
+                    : formatTime(selectedSlot.slot.start_time)}
                 </p>
               )}
             </div>

@@ -17,10 +17,10 @@ publishes when a hold's expiry first becomes observable — via `confirm_hold()`
 internal call to it on a customer's real `/confirm` arriving after the TTL lapsed, or
 via `sweep_expired_holds()`'s scheduled sweep catching a hold nobody ever touched
 again — not the currently-dead `release_expired_hold()` docstring's original design
-intent alone. A multi-resource booking (e.g. Automotive's bay+mechanic pair) counts as
-N holds/confirms/cancellations, one per real `Booking` row — a deliberate
-metric-semantics decision made as part of this cutover, not the prior "one count per
-customer action" behavior these functions had when called inline.
+intent alone. A multi-resource booking (were any domain to require more than one
+resource at once) counts as N holds/confirms/cancellations, one per real `Booking`
+row — a deliberate metric-semantics decision made as part of this cutover, not the
+prior "one count per customer action" behavior these functions had when called inline.
 """
 
 from django_observability.metrics import increment_counter, render_counter_family

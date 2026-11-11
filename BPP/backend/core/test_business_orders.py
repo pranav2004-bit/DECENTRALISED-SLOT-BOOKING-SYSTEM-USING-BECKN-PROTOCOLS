@@ -328,7 +328,11 @@ def test_orders_list_view_reports_slot_number_for_token_queue_siblings(owner_cli
         )
         for _ in range(3)
     ]
-    booked = siblings[1]  # the 2nd-created sibling, not the 1st
+    # Slot.id is a UUID, not a sequential field — Python creation order has no
+    # bearing on `.order_by("id")`'s actual result, so the real numbered
+    # position is whatever that ordering says, not list index + 1.
+    by_id_order = sorted(siblings, key=lambda s: s.id)
+    booked = by_id_order[1]
     booked.capacity_remaining = 0
     booked.save(update_fields=["capacity_remaining"])
     Booking.objects.create(slot=booked, holder_ref="tx-second-slot", status=Booking.Status.ACTIVE)

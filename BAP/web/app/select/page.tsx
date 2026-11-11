@@ -210,12 +210,18 @@ function SelectPageInner() {
 
   const fee = priceValue && priceCurrency ? formatPrice({ value: priceValue, currency: priceCurrency }) : null;
 
-  // A real Beckn error, not a generic one — surfaced verbatim when it's
-  // SLOT_UNAVAILABLE (the exact, specific "someone else just booked this"
-  // outcome the backend's own atomic Slot/Booking state machine already
-  // guarantees is correct), and as a plain message otherwise.
+  // A real Beckn error, not a generic one. SLOT_UNAVAILABLE covers two
+  // genuinely different outcomes the backend's own atomic Slot/Booking state
+  // machine distinguishes by message text (real gap found live 2026-11-11:
+  // collapsing both into "someone else just booked this" told a customer
+  // whose own hold simply timed out mid-checkout that a stranger beat them to
+  // it, which isn't what happened and isn't actionable the same way) — a
+  // timed-out hold just needs a fresh selection, not "try a different slot".
   function errorMessageFor(code: string | undefined, fallback: string, message: string): string {
     if (code === 'SLOT_UNAVAILABLE') {
+      if (message.includes('hold is no longer active') || message.includes('hold has already expired')) {
+        return "Your hold on this slot timed out. Please go back and select it again — it's usually still open.";
+      }
       return 'Someone else just booked this exact time. Please go back and pick another slot.';
     }
     return message || fallback;

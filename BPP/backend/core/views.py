@@ -1103,6 +1103,28 @@ def orders_list_view(request):
     has_more = len(page) > limit
     page = page[:limit]
 
+    # Position of this booking's slot among every Slot sharing the same
+    # (resource, start_time) — meaningful for AutoCare's slot_count mode, where
+    # several distinct Slot rows share an identical start_time and the BAP's
+    # own picker already numbers them #1..#N in this same id order
+    # (availability_service.list_available_slots); every other domain has
+    # exactly one Slot per start_time, so this is always 1 there.
+    start_times_by_resource: dict[str, set] = {}
+    for booking in page:
+        start_times_by_resource.setdefault(str(booking.slot.resource_id), set()).add(
+            booking.slot.start_time
+        )
+    slot_number_by_slot_id: dict[str, int] = {}
+    for resource_id, start_times in start_times_by_resource.items():
+        sibling_ids = Slot.objects.filter(
+            resource_id=resource_id, start_time__in=start_times
+        ).order_by("start_time", "id")
+        position_within_start_time: dict = {}
+        for sid, start_time in sibling_ids.values_list("id", "start_time"):
+            position = position_within_start_time.get(start_time, 0) + 1
+            position_within_start_time[start_time] = position
+            slot_number_by_slot_id[str(sid)] = position
+
     def _cursor_for(booking):
         return f"{booking.created_at.isoformat()}|{booking.id}"
 
@@ -1116,6 +1138,7 @@ def orders_list_view(request):
                     "resource_name": booking.slot.resource.name,
                     "slot_time": booking.slot.start_time.isoformat(),
                     "slot_end_time": booking.slot.end_time.isoformat(),
+                    "slot_number": slot_number_by_slot_id.get(str(booking.slot_id), 1),
                     "status": booking.status,
                     "fulfillment_status": booking.fulfillment_status,
                     "payment_status": booking.payment_status,

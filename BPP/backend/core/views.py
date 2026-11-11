@@ -1121,8 +1121,9 @@ def orders_list_view(request):
         ).order_by("start_time", "id")
         position_within_start_time: dict = {}
         for sid, start_time in sibling_ids.values_list("id", "start_time"):
-            position_within_start_time[start_time] = position_within_start_time.get(start_time, 0) + 1
-            slot_number_by_slot_id[str(sid)] = position_within_start_time[start_time]
+            position = position_within_start_time.get(start_time, 0) + 1
+            position_within_start_time[start_time] = position
+            slot_number_by_slot_id[str(sid)] = position
 
     def _cursor_for(booking):
         return f"{booking.created_at.isoformat()}|{booking.id}"

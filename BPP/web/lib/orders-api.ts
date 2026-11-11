@@ -12,6 +12,7 @@ export interface OrderRow {
   resource_name: string;
   slot_time: string;
   slot_end_time: string;
+  slot_number: number;
   status: string;
   fulfillment_status: 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | 'NO_SHOW';
   payment_status: string;

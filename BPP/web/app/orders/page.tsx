@@ -11,6 +11,13 @@ import { useRealtimeConnection } from '@/lib/realtime/useRealtimeConnection';
 import { shortId } from '@/lib/format';
 import { BRAND } from '@/lib/brand';
 
+// AutoCare's bays run token/queue mode — every slot for a resource on a given
+// day shares the identical start/end time, so a time range tells an owner
+// nothing about which booking is which. The numbered position the BAP's own
+// picker already showed the customer (#1..#N) is the only thing that
+// distinguishes them here.
+const IS_AUTOMOTIVE = BRAND.id === 'automotive';
+
 /**
  * Orders page — the date-browsing shell (current month strip + year/month/date
  * History drill-down) feeding a per-date Bookings table. Row data now comes
@@ -35,6 +42,7 @@ interface BookingRow {
   doctorName: string;
   slotStart: string;
   slotEnd: string;
+  slotNumber: number;
   amount: number;
   currency: string;
   paymentStatus: PaymentStatus;
@@ -59,6 +67,7 @@ function toBookingRow(order: OrderRow): BookingRow | null {
     doctorName: order.resource_name,
     slotStart: order.slot_time,
     slotEnd: order.slot_end_time,
+    slotNumber: order.slot_number,
     amount: order.amount ? Number(order.amount) : 0,
     currency: order.currency || 'INR',
     paymentStatus: (order.payment_status || '') as PaymentStatus,
@@ -137,7 +146,7 @@ function BookingsTable({
               <th className="px-4 py-3">Email</th>
               <th className="px-4 py-3">Phone</th>
               <th className="px-4 py-3">Consulted {BRAND.resourceNounSingular.toLowerCase()}</th>
-              <th className="px-4 py-3">Slot time</th>
+              <th className="px-4 py-3">{IS_AUTOMOTIVE ? 'Slot number' : 'Slot time'}</th>
               <th className="px-4 py-3">Amount (INR)</th>
               <th className="px-4 py-3">Payment status</th>
               <th className="px-4 py-3">Status</th>
@@ -166,7 +175,7 @@ function BookingsTable({
                   <td className="px-4 py-3 text-sm text-neutral-700">{row.customerPhone}</td>
                   <td className="px-4 py-3 text-sm text-neutral-700">{row.doctorName}</td>
                   <td className="px-4 py-3 text-sm text-neutral-700">
-                    {formatSlotTime(row.slotStart, row.slotEnd)}
+                    {IS_AUTOMOTIVE ? row.slotNumber : formatSlotTime(row.slotStart, row.slotEnd)}
                   </td>
                   <td className="px-4 py-3 text-sm text-neutral-700">{row.amount.toFixed(2)}</td>
                   <td className="px-4 py-3">

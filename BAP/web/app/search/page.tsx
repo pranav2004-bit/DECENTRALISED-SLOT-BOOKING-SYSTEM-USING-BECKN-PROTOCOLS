@@ -47,12 +47,19 @@ const DOMAIN_NOUNS: Record<string, { provider: string; item: string }> = {
 const DEFAULT_NOUNS = { provider: 'provider', item: 'professional' };
 
 // How long a tapped-but-not-yet-confirmed slot stays reserved against a 2nd
-// customer (BookMyShow-style seat hold) — deliberately much shorter than the
-// platform's own normal RESERVATION_HOLD_TTL_SECONDS default: this window
-// only needs to cover "fill in name/email/phone and tap Confirm," not a full
-// browse session. Backend-enforced (BAP/backend/core/views.py's
-// select_trigger_view clamps/honors this), not just a client-side countdown.
-const HOLD_SECONDS = 180;
+// customer (BookMyShow-style seat hold). Real gap found live 2026-11-11: this
+// was 180s on the theory that "fill in name/email/phone and tap Confirm" is a
+// short task — but that window has to cover the *entire* select -> init ->
+// confirm -> Razorpay-checkout-widget-load -> real card entry chain, and on a
+// real mobile device (slower typing, flakier network, a customer who pauses
+// to re-read something) that routinely runs past 180s. The hold then expires
+// mid-flow, which read to the customer as a baffling "someone else just
+// booked this" or a payment widget that can't find its own order anymore.
+// Matches the platform's own RESERVATION_HOLD_TTL_SECONDS ceiling now, not a
+// deliberately-shorter slice of it. Backend-enforced (BAP/backend/core/
+// views.py's select_trigger_view clamps/honors this), not just a client-side
+// countdown.
+const HOLD_SECONDS = 600;
 
 /** Polls `fetchFn` until `isDone` is true — same shape as select/page.tsx's
  * own `pollUntil` (not shared between the two files only because this one
@@ -1073,13 +1080,20 @@ function SearchPageInner() {
                                 (slot.status === 'booked' ||
                                   (!isAutomotiveDomain &&
                                     heldByOthers.has(`${item.id}:${slot.start_time}`)));
+                              // Every numbered token/queue button for this domain renders at
+                              // the same fixed size regardless of label length (1 vs 2 digits,
+                              // or the wider "Holding…" text) — a uniform grid, not sizes that
+                              // shift with each slot's own text.
+                              const sizeClassName = isAutomotiveDomain
+                                ? 'inline-flex h-9 w-14 items-center justify-center'
+                                : '';
                               const className = isBooked
-                                ? 'cursor-not-allowed rounded-md border border-neutral-500 bg-neutral-500 px-3 py-1.5 text-xs font-medium text-neutral-100'
+                                ? `cursor-not-allowed rounded-md border border-neutral-500 bg-neutral-500 px-3 py-1.5 text-xs font-medium text-neutral-100 ${sizeClassName}`
                                 : status === 'held'
-                                  ? 'rounded-md border border-[var(--brand-600)] bg-[var(--brand-600)] px-3 py-1.5 text-xs font-semibold text-white transition-colors'
+                                  ? `rounded-md border border-[var(--brand-600)] bg-[var(--brand-600)] px-3 py-1.5 text-xs font-semibold text-white transition-colors ${sizeClassName}`
                                   : status === 'holding'
-                                    ? 'rounded-md border border-[var(--brand-600)] bg-[var(--brand-100)] px-3 py-1.5 text-xs font-semibold text-[var(--brand-700)] opacity-70 transition-colors'
-                                    : 'rounded-md border border-neutral-300 bg-neutral-100 px-3 py-1.5 text-xs font-medium text-neutral-700 transition-colors hover:border-[var(--brand-600)] hover:bg-[var(--brand-50)] hover:text-[var(--brand-700)]';
+                                    ? `rounded-md border border-[var(--brand-600)] bg-[var(--brand-100)] px-3 py-1.5 text-xs font-semibold text-[var(--brand-700)] opacity-70 transition-colors ${sizeClassName}`
+                                    : `rounded-md border border-neutral-300 bg-neutral-100 px-3 py-1.5 text-xs font-medium text-neutral-700 transition-colors hover:border-[var(--brand-600)] hover:bg-[var(--brand-50)] hover:text-[var(--brand-700)] ${sizeClassName}`;
                               return (
                                 <button
                                   key={slot.id}
@@ -1093,7 +1107,7 @@ function SearchPageInner() {
                                   {status === 'holding'
                                     ? 'Holding…'
                                     : isAutomotiveDomain
-                                      ? `#${slotIndex + 1}`
+                                      ? `${slotIndex + 1}`
                                       : formatTime(slot.start_time)}
                                 </button>
                               );
@@ -1203,7 +1217,7 @@ function SearchPageInner() {
                 <p className="text-xs text-neutral-500">
                   {selectedProvider.provider.descriptor.name} ·{' '}
                   {isAutomotiveDomain
-                    ? `#${(slotsByItem[selectedSlot.item.id] ?? []).findIndex((s) => s.id === selectedSlot.slot.id) + 1}`
+                    ? `${(slotsByItem[selectedSlot.item.id] ?? []).findIndex((s) => s.id === selectedSlot.slot.id) + 1}`
                     : formatTime(selectedSlot.slot.start_time)}
                 </p>
               )}

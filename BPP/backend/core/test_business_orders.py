@@ -310,6 +310,36 @@ def test_orders_list_view_a_different_businesss_orders_are_absent(owner_client, 
 
 
 @pytest.mark.django_db
+def test_orders_list_view_reports_slot_number_for_token_queue_siblings(owner_client, resource_a):
+    """AutoCare's own slot_count mode: several Slot rows for the same resource
+    share an identical start_time, and the owner's Bookings table shows which
+    *numbered* one a customer actually booked (BAP's own picker already showed
+    them #1..#N in this same id order) instead of a time range that's
+    identical — and therefore useless — for every one of them."""
+    now = timezone.now()
+    start_time = now + dt.timedelta(hours=1)
+    siblings = [
+        Slot.objects.create(
+            resource=resource_a,
+            start_time=start_time,
+            end_time=start_time + dt.timedelta(minutes=30),
+            capacity_total=1,
+            capacity_remaining=1,
+        )
+        for _ in range(3)
+    ]
+    booked = siblings[1]  # the 2nd-created sibling, not the 1st
+    booked.capacity_remaining = 0
+    booked.save(update_fields=["capacity_remaining"])
+    Booking.objects.create(slot=booked, holder_ref="tx-second-slot", status=Booking.Status.ACTIVE)
+
+    resp = owner_client.get("/api/v1/orders")
+    [row] = resp.json()["orders"]
+    assert row["transaction_id"] == "tx-second-slot"
+    assert row["slot_number"] == 2
+
+
+@pytest.mark.django_db
 def test_orders_list_view_staff_sees_only_their_assigned_resources_orders(
     owner_client, resource_a, resource_b, owner
 ):

@@ -118,6 +118,30 @@ describe('SelectPage', () => {
     expect(mockPush).not.toHaveBeenCalled();
   });
 
+  it('shows a distinct, actionable message when the customer\'s own hold simply timed out', async () => {
+    const user = userEvent.setup({ delay: null });
+    vi.spyOn(bookingApi, 'triggerInit').mockResolvedValue(undefined);
+    vi.spyOn(bookingApi, 'getInitResult').mockResolvedValue({
+      transaction_id: 'tx-1',
+      init_order: null,
+      init_error: {
+        code: 'SLOT_UNAVAILABLE',
+        message: "This booking's hold is no longer active",
+      },
+    });
+    render(<SelectPage />);
+
+    await openDetailsForm(user);
+    await user.click(screen.getByRole('button', { name: 'Proceed to payment' }));
+
+    expect(
+      await screen.findByText(
+        "Your hold on this slot timed out. Please go back and select it again — it's usually still open."
+      )
+    ).toBeInTheDocument();
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
   it('shows a multi-resource (bay + mechanic) booking summary using the already-joined item name', () => {
     setParams({ ...BASE_PARAMS, item_name: 'Bay 1 + Mechanic John' });
     render(<SelectPage />);
